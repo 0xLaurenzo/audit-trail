@@ -10,6 +10,12 @@ import {
 import { Type } from "typebox";
 
 const ENTRY_TYPE = "audit-trail-control";
+/// Reviewer preference, most advanced first. The Anthropic entries only apply
+/// when the working model is from another provider (e.g. OpenAI); the
+/// different-provider constraint filters them out otherwise. The Codex entry
+/// covers Anthropic working models, where the alphabetically-first eligible
+/// model may be unusable on the configured account.
+const REVIEW_MODEL_PREFERENCE = [/fable/i, /opus-4-8/i, /gpt-5\.6-sol/i];
 const HEADER = [
 	"id",
 	"ts",
@@ -421,13 +427,17 @@ function reconstructState(ctx: ExtensionContext): AuditState | undefined {
 	return state;
 }
 
-function extractFinalAssistantOutput(stdout: string): string {
+function extractFinalAssistantOutput(stdout: string): { output: string; error?: string } {
 	let output = "";
+	let error: string | undefined;
 	for (const line of stdout.split(/\r?\n/)) {
 		if (!line.trim()) continue;
 		try {
 			const event = JSON.parse(line);
 			if (event.type !== "message_end" || event.message?.role !== "assistant") continue;
+			if (event.message.stopReason === "error") {
+				error = event.message.errorMessage || "assistant message ended with an error";
+			}
 			const text = (event.message.content ?? [])
 				.filter((part: any) => part?.type === "text")
 				.map((part: any) => part.text)
@@ -437,7 +447,7 @@ function extractFinalAssistantOutput(stdout: string): string {
 			// Ignore non-JSON diagnostics.
 		}
 	}
-	return output;
+	return { output, error };
 }
 
 export default function auditTrailExtension(pi: ExtensionAPI) {
@@ -604,9 +614,12 @@ export default function auditTrailExtension(pi: ExtensionAPI) {
 			const requested = args.trim();
 			const available = await ctx.modelRegistry.getAvailable();
 			const currentProvider = ctx.model?.provider;
-			let reviewModel = requested
+			const eligible = available.filter((model) => model.provider !== currentProvider);
+			const reviewModel = requested
 				? available.find((model) => `${model.provider}/${model.id}` === requested)
-				: available.find((model) => model.provider !== currentProvider);
+				: (REVIEW_MODEL_PREFERENCE.map((pattern) =>
+						eligible.find((model) => pattern.test(model.id)),
+					).find(Boolean) ?? eligible[0]);
 			if (!reviewModel) {
 				ctx.ui.notify(
 					requested
@@ -649,7 +662,8 @@ export default function auditTrailExtension(pi: ExtensionAPI) {
 				if (invocation.code !== 0) {
 					throw new Error(invocation.stderr.trim() || `reviewer exited with code ${invocation.code}`);
 				}
-				const output = extractFinalAssistantOutput(invocation.stdout);
+				const { output, error } = extractFinalAssistantOutput(invocation.stdout);
+				if (error) throw new Error(`reviewer model failed: ${error}`);
 				if (!output) throw new Error("reviewer produced no final assistant output");
 				const stamp = new Date().toISOString().replace(/[:.]/g, "-");
 				const reviewPath = resolve(ctx.cwd, ".audit", `${state.task}.review.${stamp}.md`);
