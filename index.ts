@@ -46,15 +46,35 @@ interface AuditRow {
 	supersedes: string;
 }
 
+interface GitProvenance {
+	version: 1;
+	task: string;
+	startedAt: string;
+	repository: string;
+	repositoryUrl: string;
+	branch: string;
+	startCommit: string;
+	worktreeDirty: boolean;
+	sessionId: string;
+}
+
 interface AuditState {
 	task: string;
 	logPath: string;
+	provenancePath?: string;
+	provenance?: GitProvenance;
 	reviewPath?: string;
 	reviewedCount?: number;
 }
 
 type ControlData =
-	| { action: "start"; task: string; logPath: string }
+	| {
+			action: "start";
+			task: string;
+			logPath: string;
+			provenancePath?: string;
+			provenance?: GitProvenance;
+	  }
 	| { action: "review"; task: string; logPath: string; reviewPath: string; reviewedCount: number }
 	| { action: "close"; task: string; logPath: string };
 
@@ -95,6 +115,172 @@ function safeSlug(input: string): string {
 function displayPath(path: string, cwd: string): string {
 	const rel = relative(cwd, path);
 	return rel && !rel.startsWith("..") && !isAbsolute(rel) ? rel : path;
+}
+
+function parseGitHubRemote(remote: string): { repository: string; repositoryUrl: string } | undefined {
+	const trimmed = remote.trim().replace(/\.git$/, "");
+	const match = trimmed.match(/github\.com[/:]([^/]+\/[^/]+)$/i);
+	if (!match) return undefined;
+	return {
+		repository: match[1],
+		repositoryUrl: `https://github.com/${match[1]}`,
+	};
+}
+
+async function captureGitProvenance(
+	pi: ExtensionAPI,
+	ctx: ExtensionContext,
+	task: string,
+): Promise<GitProvenance> {
+	const runGit = async (args: string[], allowFailure = false) => {
+		const result = await pi.exec("git", args, { timeout: 10_000 });
+		if (result.code !== 0 && !allowFailure) {
+			throw new Error(result.stderr.trim() || `git ${args.join(" ")} failed`);
+		}
+		return result.stdout.trim();
+	};
+
+	await runGit(["rev-parse", "--show-toplevel"]);
+	const remote = parseGitHubRemote(await runGit(["remote", "get-url", "origin"]));
+	if (!remote) throw new Error("origin is not a GitHub repository");
+	const branch = (await runGit(["branch", "--show-current"])) || "DETACHED";
+	const startCommit = await runGit(["rev-parse", "HEAD"]);
+	const status = await runGit(["status", "--porcelain"], true);
+
+	return {
+		version: 1,
+		task,
+		startedAt: new Date().toISOString(),
+		repository: remote.repository,
+		repositoryUrl: remote.repositoryUrl,
+		branch,
+		startCommit,
+		worktreeDirty: Boolean(status),
+		sessionId: ctx.sessionManager.getSessionId(),
+	};
+}
+
+async function ensureProvenance(
+	pi: ExtensionAPI,
+	ctx: ExtensionContext,
+	task: string,
+	provenancePath: string,
+): Promise<GitProvenance> {
+	return withFileMutationQueue(provenancePath, async () => {
+		try {
+			const existing = JSON.parse(await readFile(provenancePath, "utf8")) as GitProvenance;
+			if (existing.version !== 1 || existing.task !== task) {
+				throw new Error(`Unexpected provenance metadata in ${provenancePath}`);
+			}
+			return existing;
+		} catch (error: any) {
+			if (error?.code !== "ENOENT") throw error;
+		}
+
+		const provenance = await captureGitProvenance(pi, ctx, task);
+		await mkdir(dirname(provenancePath), { recursive: true });
+		await writeFile(provenancePath, `${JSON.stringify(provenance, null, 2)}\n`, {
+			encoding: "utf8",
+			mode: 0o600,
+		});
+		return provenance;
+	});
+}
+
+function markdownCell(value: string): string {
+	return value.replace(/\|/g, "\\|").replace(/[\r\n]+/g, " ").trim() || "—";
+}
+
+function githubRefUrl(repositoryUrl: string, kind: "tree" | "commit", ref: string): string {
+	return `${repositoryUrl}/${kind}/${encodeURIComponent(ref)}`;
+}
+
+function sanitizeReviewForGitHub(review: string, state: AuditState, ctx: ExtensionContext): string {
+	let sanitized = review
+		.split(/\r?\n/)
+		.filter((line) => !line.startsWith("- Audit log:") && !line.startsWith("- Pi session:"))
+		.join("\n");
+	for (const localPath of [state.logPath, state.reviewPath, ctx.cwd, ctx.sessionManager.getSessionFile()]) {
+		if (localPath) sanitized = sanitized.split(localPath).join("[local path]");
+	}
+	return sanitized.trim();
+}
+
+function truncateGitHubComment(body: string, maxBytes = 60_000): string {
+	if (Buffer.byteLength(body, "utf8") <= maxBytes) return body;
+	let truncated = body;
+	while (Buffer.byteLength(truncated, "utf8") > maxBytes - 100) truncated = truncated.slice(0, -500);
+	return `${truncated.trimEnd()}\n\n> Summary truncated to fit GitHub's comment limit.\n`;
+}
+
+async function buildGitHubSummary(
+	state: AuditState,
+	rows: AuditRow[],
+	ctx: ExtensionContext,
+): Promise<string> {
+	if (!state.provenance) throw new Error("This audit has no Git provenance; start a new audit with this version.");
+	const provenance = state.provenance;
+	const stats = summarize(rows);
+	const active = activeRows(rows);
+	const supersededIds = new Set(rows.map((row) => row.supersedes).filter(Boolean));
+	const superseded = rows.filter((row) => supersededIds.has(row.id));
+	const marker = `<!-- pi-audit-trail:${provenance.repository}:${state.task} -->`;
+	const branchLink = githubRefUrl(provenance.repositoryUrl, "tree", provenance.branch);
+	const commitLink = githubRefUrl(provenance.repositoryUrl, "commit", provenance.startCommit);
+	const lines = [
+		marker,
+		`## Decision audit: \`${state.task}\``,
+		"",
+		"### Provenance",
+		"",
+		"| Repository | Original branch | Starting commit | Worktree at start | Pi session |",
+		"|---|---|---|---|---|",
+		`| [${provenance.repository}](${provenance.repositoryUrl}) | [\`${markdownCell(provenance.branch)}\`](${branchLink}) | [\`${provenance.startCommit.slice(0, 12)}\`](${commitLink}) | ${provenance.worktreeDirty ? "dirty" : "clean"} | \`${provenance.sessionId}\` |`,
+		"",
+		`**Decisions:** ${stats.total} total · ${stats.active} active · ${superseded.length} superseded`,
+		"",
+		"### Active decisions",
+		"",
+		"| ID | Phase | Decision | Why | Confidence | Result | Evidence |",
+		"|---|---|---|---|---|---|---|",
+		...active.map(
+			(row) =>
+				`| \`${row.id}\` | ${markdownCell(row.phase)} | ${markdownCell(row.decision)} | ${markdownCell(row.why)} | ${row.confidence} | ${row.result} | ${markdownCell(row.evidence)} |`,
+		),
+	];
+
+	if (active.length === 0) lines.push("| — | — | No active decisions | — | — | — | — |");
+	if (superseded.length) {
+		lines.push(
+			"",
+			"<details>",
+			`<summary>Superseded decisions (${superseded.length})</summary>`,
+			"",
+			"| ID | Phase | Decision | Result |",
+			"|---|---|---|---|",
+			...superseded.map(
+				(row) => `| \`${row.id}\` | ${markdownCell(row.phase)} | ${markdownCell(row.decision)} | ${row.result} |`,
+			),
+			"",
+			"</details>",
+		);
+	}
+
+	const flags = [
+		...stats.unresolved.map((row) => `${row.id} unresolved`),
+		...stats.lowConfidence.map((row) => `${row.id} low confidence`),
+		...stats.missingEvidence.map((row) => `${row.id} missing evidence`),
+	];
+	lines.push("", "### Attention", "", flags.length ? flags.map((flag) => `- ${flag}`).join("\n") : "No decision-state flags.");
+
+	if (state.reviewPath) {
+		const review = sanitizeReviewForGitHub(await readFile(state.reviewPath, "utf8"), state, ctx);
+		lines.push("", "### Independent review", "", review || "Review completed with no textual findings.");
+	} else {
+		lines.push("", "### Independent review", "", "Not run.");
+	}
+	lines.push("", "---", "_Generated by [pi-audit-trail](https://github.com/0xLaurenzo/audit-trail)._", "");
+	return truncateGitHubComment(lines.join("\n"));
 }
 
 async function readRows(logPath: string): Promise<AuditRow[]> {
@@ -218,7 +404,14 @@ function reconstructState(ctx: ExtensionContext): AuditState | undefined {
 		if (entry.type !== "custom" || entry.customType !== ENTRY_TYPE) continue;
 		const data = entry.data as ControlData | undefined;
 		if (!data) continue;
-		if (data.action === "start") state = { task: data.task, logPath: data.logPath };
+		if (data.action === "start") {
+			state = {
+				task: data.task,
+				logPath: data.logPath,
+				provenancePath: data.provenancePath,
+				provenance: data.provenance,
+			};
+		}
 		if (data.action === "review" && state?.logPath === data.logPath) {
 			state.reviewPath = data.reviewPath;
 			state.reviewedCount = data.reviewedCount;
@@ -278,8 +471,12 @@ export default function auditTrailExtension(pi: ExtensionAPI) {
 		if (!state || (event.toolName !== "write" && event.toolName !== "edit")) return;
 		const input = event.input as { path?: unknown };
 		const inputPath = typeof input.path === "string" ? resolve(ctx.cwd, input.path) : undefined;
-		if (inputPath === resolve(state.logPath)) {
-			return { block: true, reason: "The active audit log is append-only; use audit_decision instead." };
+		const protectedPaths = [state.logPath, state.provenancePath].filter((path): path is string => Boolean(path));
+		if (inputPath && protectedPaths.some((path) => inputPath === resolve(path))) {
+			return {
+				block: true,
+				reason: "Audit logs and Git provenance are extension-managed; use audit_decision for corrections.",
+			};
 		}
 	});
 
@@ -333,12 +530,31 @@ export default function auditTrailExtension(pi: ExtensionAPI) {
 			}
 			const task = safeSlug(requested);
 			const logPath = resolve(ctx.cwd, ".audit", `${task}.tsv`);
+			const provenancePath = resolve(ctx.cwd, ".audit", `${task}.provenance.json`);
+			let provenance: GitProvenance | undefined;
+			try {
+				provenance = await ensureProvenance(pi, ctx, task, provenancePath);
+			} catch (error: any) {
+				ctx.ui.notify(
+					`Audit will remain local because GitHub provenance could not be captured: ${error?.message ?? error}`,
+					"warning",
+				);
+			}
 			await ensureLog(logPath);
-			state = { task, logPath };
-			pi.appendEntry(ENTRY_TYPE, { action: "start", task, logPath } satisfies ControlData);
+			state = { task, logPath, provenancePath: provenance ? provenancePath : undefined, provenance };
+			pi.appendEntry(ENTRY_TYPE, {
+				action: "start",
+				task,
+				logPath,
+				provenancePath: provenance ? provenancePath : undefined,
+				provenance,
+			} satisfies ControlData);
 			const rows = await readRows(logPath);
 			updateStatus(ctx, state, rows);
-			ctx.ui.notify(`Decision audit active: ${displayPath(logPath, ctx.cwd)}`, "info");
+			ctx.ui.notify(
+				`Decision audit active: ${displayPath(logPath, ctx.cwd)}${provenance ? `\nGitHub: ${provenance.repository}@${provenance.branch}` : ""}`,
+				"info",
+			);
 		},
 	});
 
@@ -362,6 +578,9 @@ export default function auditTrailExtension(pi: ExtensionAPI) {
 					`low confidence: ${low}`,
 					`missing evidence: ${missing}`,
 					`log: ${displayPath(state.logPath, ctx.cwd)}`,
+					state.provenance
+						? `origin: ${state.provenance.repository}@${state.provenance.branch} (${state.provenance.startCommit.slice(0, 12)})`
+						: "origin: unavailable (legacy audit)",
 					state.reviewPath ? `review: ${displayPath(state.reviewPath, ctx.cwd)}` : "review: not run",
 				].join("\n"),
 				stats.unresolved.length || stats.lowConfidence.length || stats.missingEvidence.length ? "warning" : "info",
@@ -453,6 +672,117 @@ export default function auditTrailExtension(pi: ExtensionAPI) {
 				ctx.ui.notify(`Audit review failed: ${error?.message ?? error}`, "error");
 			} finally {
 				await rm(tempDir, { recursive: true, force: true });
+			}
+		},
+	});
+
+	pi.registerCommand("audit-publish", {
+		description: "Create or update the audit summary comment on the branch PR: /audit-publish [number-or-url]",
+		handler: async (args, ctx) => {
+			if (!state) {
+				ctx.ui.notify("No decision audit is active", "error");
+				return;
+			}
+			if (!state.provenance) {
+				ctx.ui.notify("This legacy audit has no Git provenance; start a new audit before publishing", "error");
+				return;
+			}
+			const rows = await readRows(state.logPath);
+			if (!state.reviewPath || state.reviewedCount !== rows.length) {
+				ctx.ui.notify("Run /audit-review after the latest decision before publishing", "error");
+				return;
+			}
+
+			const provenance = state.provenance;
+			const requestedPr = args.trim();
+			const selector = requestedPr || (provenance.branch !== "DETACHED" ? provenance.branch : "");
+			if (!selector) {
+				ctx.ui.notify("Detached audits require /audit-publish <pr-number-or-url>", "error");
+				return;
+			}
+			ctx.ui.notify(`Resolving PR for ${provenance.repository}@${provenance.branch}...`, "info");
+
+			try {
+				const prResult = await pi.exec(
+					"gh",
+					[
+						"pr",
+						"view",
+						selector,
+						"--repo",
+						provenance.repository,
+						"--json",
+						"number,url,title,headRefName,baseRefName",
+					],
+					{ timeout: 30_000 },
+				);
+				if (prResult.code !== 0) throw new Error(prResult.stderr.trim() || "could not resolve pull request");
+				const pr = JSON.parse(prResult.stdout) as {
+					number: number;
+					url: string;
+					title: string;
+					headRefName: string;
+					baseRefName: string;
+				};
+				if (provenance.branch !== "DETACHED" && pr.headRefName !== provenance.branch) {
+					throw new Error(
+						`PR #${pr.number} belongs to ${pr.headRefName}, but this audit started on ${provenance.branch}`,
+					);
+				}
+
+				const body = await buildGitHubSummary(state, rows, ctx);
+				const marker = `<!-- pi-audit-trail:${provenance.repository}:${state.task} -->`;
+				const userResult = await pi.exec("gh", ["api", "user", "--jq", ".login"], { timeout: 30_000 });
+				if (userResult.code !== 0) throw new Error(userResult.stderr.trim() || "GitHub authentication failed");
+				const login = userResult.stdout.trim();
+				const commentsResult = await pi.exec(
+					"gh",
+					[
+						"api",
+						"--paginate",
+						"--slurp",
+						`repos/${provenance.repository}/issues/${pr.number}/comments?per_page=100`,
+					],
+					{ timeout: 30_000 },
+				);
+				if (commentsResult.code !== 0) {
+					throw new Error(commentsResult.stderr.trim() || "could not list pull-request comments");
+				}
+				const commentPages = JSON.parse(commentsResult.stdout) as Array<
+					Array<{
+						id: number;
+						html_url: string;
+						body: string;
+						user?: { login?: string };
+					}>
+				>;
+				const comments = commentPages.flat();
+				const existing = comments.find((comment) => comment.user?.login === login && comment.body.includes(marker));
+				const tempDir = await mkdtemp(join(tmpdir(), "pi-audit-publish-"));
+				const bodyPath = join(tempDir, "comment.json");
+				try {
+					await writeFile(bodyPath, JSON.stringify({ body }), { encoding: "utf8", mode: 0o600 });
+					const endpoint = existing
+						? `repos/${provenance.repository}/issues/comments/${existing.id}`
+						: `repos/${provenance.repository}/issues/${pr.number}/comments`;
+					const publishResult = await pi.exec(
+						"gh",
+						["api", "--method", existing ? "PATCH" : "POST", endpoint, "--input", bodyPath],
+						{ timeout: 30_000 },
+					);
+					if (publishResult.code !== 0) {
+						throw new Error(publishResult.stderr.trim() || "could not publish audit summary");
+					}
+					const published = JSON.parse(publishResult.stdout) as { html_url?: string };
+					ctx.ui.notify(
+						`${existing ? "Updated" : "Posted"} audit summary on PR #${pr.number}: ${published.html_url ?? pr.url}`,
+						"info",
+					);
+				} finally {
+					await rm(tempDir, { recursive: true, force: true });
+				}
+			} catch (error: any) {
+				ctx.ui.notify(`Audit publish failed: ${error?.message ?? error}`, "error");
 			}
 		},
 	});

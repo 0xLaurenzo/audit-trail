@@ -1,6 +1,6 @@
 {
   "name": "pi-audit-trail",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "Append-only decision auditing and independent review for the pi coding agent",
   "keywords": [

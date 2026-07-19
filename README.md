@@ -27,6 +27,7 @@ pi -e /path/to/audit-trail
 - `/audit-start <task>` — start or resume `.audit/<task>.tsv`
 - `/audit-status` — show unresolved, low-confidence, and unsupported decisions
 - `/audit-review [provider/model]` — review the log and pi session with a model from a different provider
+- `/audit-publish [number-or-url]` — create or update the audit summary comment on the original branch's PR
 - `/audit-close` — close only after all active rows are resolved and the latest rows have been reviewed
 
 ## Agent tool
@@ -38,6 +39,7 @@ While an audit is active, pi exposes `audit_decision`. The extension injects ins
 Audit artifacts are local working files under `.audit/`:
 
 - `<task>.tsv` — canonical decision trail
+- `<task>.provenance.json` — original GitHub repository, branch, starting commit, worktree state, and Pi session ID
 - `<task>.review.<timestamp>.md` — independent review output
 
 Add `.audit/` to `.gitignore` or `.git/info/exclude` if trails should remain local. Commit selected artifacts when reviewers need them.
@@ -51,3 +53,24 @@ Add `.audit/` to `.gitignore` or `.git/info/exclude` if trails should remain loc
 ```
 
 The reviewer runs in a separate no-session pi process with read-only tools.
+
+## Publish to a pull request
+
+Start the audit from the branch that will open the pull request. The extension captures that branch and its starting commit once and reuses the metadata when an audit is resumed.
+
+After reviewing the latest decisions, publish to the pull request associated with the original branch:
+
+```text
+/audit-review openai/gpt-5.2
+/audit-publish
+```
+
+Pass a PR number or URL when automatic branch lookup is not appropriate:
+
+```text
+/audit-publish 123
+```
+
+Publishing requires the `gh` CLI to be installed and authenticated. The command refuses to post to a PR whose head branch differs from the audit's original branch. It posts a Markdown summary containing provenance, active and superseded decisions, attention flags, and independent-review findings.
+
+The summary uses a hidden marker, so running `/audit-publish` again updates the extension's existing PR comment instead of creating duplicates. Publish before `/audit-close`; closing removes the audit from active session state.
