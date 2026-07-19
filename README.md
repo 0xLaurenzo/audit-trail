@@ -2,9 +2,33 @@
 
 A pi extension for reviewing consequential agent choices instead of reconstructing them from a large diff.
 
-## Install
+## Install with Nix
 
-This repository is currently private. Install it over SSH after authenticating with GitHub:
+This repository is currently private, so GitHub SSH access must be configured first.
+
+```bash
+nix profile install 'git+ssh://git@github.com/0xLaurenzo/audit-trail.git'
+```
+
+Then register the immutable profile path in `~/.pi/agent/settings.json`:
+
+```json
+{
+  "extensions": [
+    "/Users/you/.nix-profile/share/pi-audit-trail/index.ts"
+  ]
+}
+```
+
+Run `/reload` in an existing pi session. Update the installed extension with:
+
+```bash
+nix profile upgrade pi-audit-trail
+```
+
+## Install with pi
+
+Alternatively, install it through pi over SSH:
 
 ```bash
 pi install git:git@github.com:0xLaurenzo/audit-trail
