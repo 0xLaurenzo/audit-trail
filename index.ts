@@ -46,21 +46,19 @@ const HEADER = [
 	"supersedes",
 ].join("\t");
 
-const Origin = StringEnum(
-	[
-		"user requirement",
-		"user correction",
-		"source invariant",
-		"failing test",
-		"code review",
-		"external specification",
-		"implementation discovery",
-	] as const,
-	{
-		description:
-			"What caused this decision to be considered: user requirement, user correction, source invariant, failing test, code review, external specification, or implementation discovery",
-	},
-);
+const ORIGIN_VALUES = [
+	"user requirement",
+	"user correction",
+	"source invariant",
+	"failing test",
+	"code review",
+	"external specification",
+	"implementation discovery",
+] as const;
+const Origin = StringEnum(ORIGIN_VALUES, {
+	description:
+		"What caused this decision to be considered: user requirement, user correction, source invariant, failing test, code review, external specification, or implementation discovery",
+});
 const Confidence = StringEnum(["high", "medium", "low"] as const);
 const Result = StringEnum(["open", "verified", "reverted", "inconclusive"] as const);
 
@@ -354,15 +352,27 @@ async function readRows(logPath: string): Promise<AuditRow[]> {
 
 	const lines = text.split(/\r?\n/).filter(Boolean);
 	if (lines.length === 0) return [];
-	const legacy = lines[0] === LEGACY_HEADER;
+	let legacy = lines[0] === LEGACY_HEADER;
 	if (!legacy && lines[0] !== HEADER) throw new Error(`Unexpected audit header in ${logPath}`);
 
-	return lines.slice(1).map((line, index) => {
+	const rows: AuditRow[] = [];
+	for (let index = 1; index < lines.length; index++) {
+		const line = lines[index];
+		if (line === HEADER && legacy) {
+			legacy = false;
+			continue;
+		}
+		if (line === HEADER || line === LEGACY_HEADER) {
+			throw new Error(`Unexpected audit header at line ${index + 1} in ${logPath}`);
+		}
 		const cells = line.split("\t");
 		const expectedCells = legacy ? 12 : 13;
-		if (cells.length !== expectedCells) throw new Error(`Malformed audit row ${index + 2} in ${logPath}`);
+		if (cells.length !== expectedCells) throw new Error(`Malformed audit row ${index + 1} in ${logPath}`);
 		const offset = legacy ? 0 : 1;
-		return {
+		if (!legacy && !ORIGIN_VALUES.includes(cells[5] as (typeof ORIGIN_VALUES)[number])) {
+			throw new Error(`Invalid decision origin at line ${index + 1} in ${logPath}`);
+		}
+		rows.push({
 			id: cells[0],
 			ts: cells[1],
 			session: cells[2],
@@ -376,8 +386,9 @@ async function readRows(logPath: string): Promise<AuditRow[]> {
 			evidence: cells[9 + offset],
 			result: cells[10 + offset] as ResultValue,
 			supersedes: cells[11 + offset],
-		};
-	});
+		});
+	}
+	return rows;
 }
 
 function activeRows(rows: AuditRow[]): AuditRow[] {
@@ -453,9 +464,11 @@ async function appendRow(logPath: string, row: Omit<AuditRow, "id" | "ts">): Pro
 			if (error?.code === "ENOENT") return "";
 			throw error;
 		});
-		const existing = current.startsWith(`${LEGACY_HEADER}\n`) || current === LEGACY_HEADER
-			? `${HEADER}\n${rows.map(serializeRow).join("\n")}${rows.length ? "\n" : ""}`
-			: current || `${HEADER}\n`;
+		const hasNewSchema = current.split(/\r?\n/).includes(HEADER);
+		let existing = current || `${HEADER}\n`;
+		if (current.startsWith(LEGACY_HEADER) && !hasNewSchema) {
+			existing = `${current.endsWith("\n") ? current : `${current}\n`}${HEADER}\n`;
+		}
 		await writeFile(logPath, `${existing.endsWith("\n") ? existing : `${existing}\n`}${line}\n`, {
 			encoding: "utf8",
 			mode: 0o600,
