@@ -58,11 +58,13 @@ pi -e /path/to/audit-trail
 
 While an audit is active, pi exposes `audit_decision`. The extension injects instructions to use it for consequential choices, assumptions, pivots, reverts, and verification checkpoints. Rows are append-only; revisions point to an earlier row with `supersedes`.
 
+Every new decision records its causal `origin` separately from its technical `why`. Origins use a constrained vocabulary: `user requirement`, `user correction`, `source invariant`, `failing test`, `code review`, `external specification`, or `implementation discovery`. This keeps user corrections and other triggers attributable after the session transcript is gone.
+
 ## Files
 
 Audit artifacts are local working files under `.audit/`:
 
-- `<task>.tsv` — canonical decision trail
+- `<task>.tsv` — canonical decision trail (legacy logs without `origin` remain readable and show it as unavailable; appending upgrades their schema while preserving existing decision data)
 - `<task>.provenance.json` — original GitHub repository, branch, starting commit, worktree state, and Pi session ID
 - `<task>.review.<timestamp>.md` — independent review output
 
@@ -95,6 +97,6 @@ Pass a PR number or URL when automatic branch lookup is not appropriate:
 /audit-publish 123
 ```
 
-Publishing requires the `gh` CLI to be installed and authenticated. The command refuses to post to a PR whose head branch differs from the audit's original branch. It posts a Markdown summary containing provenance, active and superseded decisions, attention flags, and independent-review findings.
+Publishing requires the `gh` CLI to be installed and authenticated. The command refuses to post to a PR whose head branch differs from the audit's original branch. The Markdown summary leads with a concise narrative of each active, non-superseded change, its origin, and the rationale or invariant it protects. Provenance and attention flags follow; superseded history and independent-review commentary are separate collapsed sections.
 
 The summary uses a hidden marker, so running `/audit-publish` again updates the extension's existing PR comment instead of creating duplicates. Publish before `/audit-close`; closing removes the audit from active session state.

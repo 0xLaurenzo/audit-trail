@@ -21,7 +21,7 @@
         {
           default = pkgs.stdenvNoCC.mkDerivation {
             pname = "pi-audit-trail";
-            version = "0.2.0";
+            version = "0.3.0";
             src = self;
 
             dontBuild = true;
