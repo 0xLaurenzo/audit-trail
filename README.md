@@ -56,7 +56,11 @@ pi -e /path/to/audit-trail
 
 ## Agent tool
 
-While an audit is active, pi exposes `audit_decision`. The extension injects instructions to use it for consequential choices, assumptions, pivots, reverts, and verification checkpoints. Rows are append-only; revisions point to an earlier row with `supersedes`.
+While an audit is active, pi exposes `audit_decision`. It is reserved for reviewer-relevant product and engineering choices where a reasonable alternative would materially change behavior or code: compatibility and migrations, public API or schema behavior, architecture and meaningful implementation trade-offs, correctness or security invariants, ambiguous requirements, user corrections, and consequential pivots or reverts.
+
+Delivery operations (branches, commits, pushes, pull requests, and audit publication), routine verification, commands, straightforward implementation steps, formatting, and non-compatibility documentation or version updates are intentionally excluded. Rows are append-only; revisions point to an earlier row with `supersedes`.
+
+Every new decision records its causal `origin` separately from its technical `why`. Origins use a constrained vocabulary: `user requirement`, `user correction`, `source invariant`, `failing test`, `code review`, `external specification`, or `implementation discovery`. This keeps user corrections and other triggers attributable after the session transcript is gone.
 
 ## Files
 
@@ -95,6 +99,6 @@ Pass a PR number or URL when automatic branch lookup is not appropriate:
 /audit-publish 123
 ```
 
-Publishing requires the `gh` CLI to be installed and authenticated. The command refuses to post to a PR whose head branch differs from the audit's original branch. It posts a Markdown summary containing provenance, active and superseded decisions, attention flags, and independent-review findings.
+Publishing requires the `gh` CLI to be installed and authenticated. The command refuses to post to a PR whose head branch differs from the audit's original branch. Before rendering, a model pass classifies each active decision and drops superseded rows and self-evident or process-only entries; the retained rows are then published verbatim—decision, origin, why, alternatives, evidence, and status—rather than re-summarized. Filtered rows appear in a collapsed section with the filter's reason, and superseded history and independent-review commentary stay in their own collapsed sections. If the filter model fails, all active rows are published unfiltered.
 
 The summary uses a hidden marker, so running `/audit-publish` again updates the extension's existing PR comment instead of creating duplicates. Publish before `/audit-close`; closing removes the audit from active session state.

@@ -22,6 +22,7 @@ const HEADER = [
 	"session",
 	"entry",
 	"phase",
+	"origin",
 	"decision",
 	"why",
 	"alternatives",
@@ -31,9 +32,23 @@ const HEADER = [
 	"supersedes",
 ].join("\t");
 
+const ORIGIN_VALUES = [
+	"user requirement",
+	"user correction",
+	"source invariant",
+	"failing test",
+	"code review",
+	"external specification",
+	"implementation discovery",
+] as const;
+const Origin = StringEnum(ORIGIN_VALUES, {
+	description:
+		"What caused this decision to be considered: user requirement, user correction, source invariant, failing test, code review, external specification, or implementation discovery",
+});
 const Confidence = StringEnum(["high", "medium", "low"] as const);
 const Result = StringEnum(["open", "verified", "reverted", "inconclusive"] as const);
 
+type OriginValue = (typeof ORIGIN_VALUES)[number];
 type ConfidenceValue = "high" | "medium" | "low";
 type ResultValue = "open" | "verified" | "reverted" | "inconclusive";
 
@@ -43,6 +58,7 @@ interface AuditRow {
 	session: string;
 	entry: string;
 	phase: string;
+	origin: OriginValue;
 	decision: string;
 	why: string;
 	alternatives: string;
@@ -86,8 +102,14 @@ type ControlData =
 
 const AuditDecisionParams = Type.Object({
 	phase: Type.String({ description: "Short workstream or phase name" }),
-	decision: Type.String({ description: "The concrete choice, action, assumption, pivot, or checkpoint" }),
-	why: Type.String({ description: "Plain-language reason for the choice" }),
+	origin: Origin,
+	decision: Type.String({
+		description:
+			"The reviewer-relevant product or engineering choice, assumption, pivot, or revert—not a workflow action or verification step",
+	}),
+	why: Type.String({
+		description: "Technical reason the option is correct, including the consequence or invariant it protects",
+	}),
 	alternatives: Type.Optional(
 		Type.String({ description: "Alternatives considered and why they were not selected; use 'none' if none" }),
 	),
@@ -212,6 +234,100 @@ function sanitizeReviewForGitHub(review: string, state: AuditState, ctx: Extensi
 	return sanitized.trim();
 }
 
+interface RelevanceFilter {
+	include: string[];
+	excluded: { id: string; reason: string }[];
+}
+
+function parseRelevanceFilter(output: string, activeIds: string[]): RelevanceFilter {
+	const match = output.match(/\{[\s\S]*\}/);
+	if (!match) throw new Error("filter model returned no JSON object");
+	const parsed = JSON.parse(match[0]) as {
+		include?: unknown;
+		excluded?: unknown;
+	};
+	if (!Array.isArray(parsed.include) || !Array.isArray(parsed.excluded)) {
+		throw new Error("filter output must contain include and excluded arrays");
+	}
+	const include = parsed.include.map((id) => String(id));
+	const excluded = parsed.excluded.map((entry: any) => ({
+		id: String(entry?.id ?? ""),
+		reason: String(entry?.reason ?? "").trim() || "not reviewer-relevant",
+	}));
+	const seen = new Set<string>();
+	for (const id of [...include, ...excluded.map((entry) => entry.id)]) {
+		if (!activeIds.includes(id)) throw new Error(`filter referenced unknown decision ${id}`);
+		if (seen.has(id)) throw new Error(`filter listed decision ${id} twice`);
+		seen.add(id);
+	}
+	for (const id of activeIds) {
+		if (!seen.has(id)) throw new Error(`filter omitted decision ${id}`);
+	}
+	return { include, excluded };
+}
+
+async function filterRelevantRows(
+	pi: ExtensionAPI,
+	ctx: ExtensionContext,
+	active: AuditRow[],
+): Promise<RelevanceFilter | undefined> {
+	if (active.length === 0) return { include: [], excluded: [] };
+	const model = ctx.model ?? (await ctx.modelRegistry.getAvailable())[0];
+	if (!model) return undefined;
+
+	const payload = active.map((row) => ({
+		id: row.id,
+		phase: row.phase,
+		origin: row.origin,
+		decision: row.decision,
+		why: row.why,
+		alternatives: row.alternatives,
+		evidence: row.evidence,
+		result: row.result,
+	}));
+	const tempDir = await mkdtemp(join(tmpdir(), "pi-audit-filter-"));
+	const promptPath = join(tempDir, "filter.md");
+	try {
+		const filterPrompt =
+			`You select which audit decisions belong in a pull-request decision summary. ` +
+			`Keep decisions a reviewer needs to understand why the change behaves as it does: compatibility and migration policy, public API or schema behavior, architecture and meaningful implementation trade-offs, correctness or security invariants, ambiguous-requirement interpretations, and user corrections. ` +
+			`Exclude self-evident choices with no plausible alternative and process records such as delivery operations, verification checkpoints, or audit tooling mechanics. ` +
+			`Do not rewrite or summarize any row. ` +
+			`Reply with only a JSON object of the shape {"include":["D0001"],"excluded":[{"id":"D0002","reason":"short reason"}]} in which every input ID appears exactly once.\n\n` +
+			`Decisions:\n${JSON.stringify(payload, null, 2)}`;
+		await writeFile(promptPath, filterPrompt, { encoding: "utf8", mode: 0o600 });
+		const invocation = await pi.exec(
+			"pi",
+			[
+				"--mode",
+				"json",
+				"-p",
+				"--no-session",
+				"--model",
+				`${model.provider}/${model.id}`,
+				"--tools",
+				"read",
+				"--append-system-prompt",
+				promptPath,
+				"Classify the audit decisions now.",
+			],
+			{ timeout: 5 * 60 * 1000 },
+		);
+		if (invocation.code !== 0) {
+			throw new Error(invocation.stderr.trim() || `filter model exited with code ${invocation.code}`);
+		}
+		const { output, error } = extractFinalAssistantOutput(invocation.stdout);
+		if (error) throw new Error(`filter model failed: ${error}`);
+		if (!output) throw new Error("filter model produced no output");
+		return parseRelevanceFilter(
+			output,
+			active.map((row) => row.id),
+		);
+	} finally {
+		await rm(tempDir, { recursive: true, force: true });
+	}
+}
+
 function truncateGitHubComment(body: string, maxBytes = 60_000): string {
 	if (Buffer.byteLength(body, "utf8") <= maxBytes) return body;
 	let truncated = body;
@@ -219,10 +335,25 @@ function truncateGitHubComment(body: string, maxBytes = 60_000): string {
 	return `${truncated.trimEnd()}\n\n> Summary truncated to fit GitHub's comment limit.\n`;
 }
 
+function renderDecisionRow(row: AuditRow): string[] {
+	return [
+		`#### \`${row.id}\` · ${markdownCell(row.phase)}`,
+		"",
+		`- **Decision:** ${markdownCell(row.decision)}`,
+		`- **Origin:** ${markdownCell(row.origin)}`,
+		`- **Why:** ${markdownCell(row.why)}`,
+		`- **Alternatives:** ${markdownCell(row.alternatives)}`,
+		`- **Evidence:** ${markdownCell(row.evidence)}`,
+		`- **Status:** ${row.confidence} confidence · ${row.result}`,
+		"",
+	];
+}
+
 async function buildGitHubSummary(
 	state: AuditState,
 	rows: AuditRow[],
 	ctx: ExtensionContext,
+	filter?: RelevanceFilter,
 ): Promise<string> {
 	if (!state.provenance) throw new Error("This audit has no Git provenance; start a new audit with this version.");
 	const provenance = state.provenance;
@@ -230,6 +361,12 @@ async function buildGitHubSummary(
 	const active = activeRows(rows);
 	const supersededIds = new Set(rows.map((row) => row.supersedes).filter(Boolean));
 	const superseded = rows.filter((row) => supersededIds.has(row.id));
+	const included = filter ? active.filter((row) => filter.include.includes(row.id)) : active;
+	const filteredOut = filter
+		? filter.excluded
+				.map((entry) => ({ row: active.find((row) => row.id === entry.id), reason: entry.reason }))
+				.filter((entry): entry is { row: AuditRow; reason: string } => Boolean(entry.row))
+		: [];
 	const marker = `<!-- pi-audit-trail:${provenance.repository}:${state.task} -->`;
 	const branchLink = githubRefUrl(provenance.repositoryUrl, "tree", provenance.branch);
 	const commitLink = githubRefUrl(provenance.repositoryUrl, "commit", provenance.startCommit);
@@ -237,6 +374,31 @@ async function buildGitHubSummary(
 		marker,
 		`## Decision audit: \`${state.task}\``,
 		"",
+		"### Why these changes exist",
+		"",
+		...included.flatMap(renderDecisionRow),
+	];
+
+	if (included.length === 0) {
+		lines.push(active.length === 0 ? "No active decisions." : "No reviewer-relevant decisions were retained by the relevance filter.", "");
+	}
+	if (filteredOut.length) {
+		lines.push(
+			"<details>",
+			`<summary>Filtered decisions (${filteredOut.length})</summary>`,
+			"",
+			"| ID | Phase | Decision | Filter reason |",
+			"|---|---|---|---|",
+			...filteredOut.map(
+				(entry) =>
+					`| \`${entry.row.id}\` | ${markdownCell(entry.row.phase)} | ${markdownCell(entry.row.decision)} | ${markdownCell(entry.reason)} |`,
+			),
+			"",
+			"</details>",
+			"",
+		);
+	}
+	lines.push(
 		"### Provenance",
 		"",
 		"| Repository | Original branch | Starting commit | Worktree at start | Pi session |",
@@ -244,18 +406,7 @@ async function buildGitHubSummary(
 		`| [${provenance.repository}](${provenance.repositoryUrl}) | [\`${markdownCell(provenance.branch)}\`](${branchLink}) | [\`${provenance.startCommit.slice(0, 12)}\`](${commitLink}) | ${provenance.worktreeDirty ? "dirty" : "clean"} | \`${provenance.sessionId}\` |`,
 		"",
 		`**Decisions:** ${stats.total} total · ${stats.active} active · ${superseded.length} superseded`,
-		"",
-		"### Active decisions",
-		"",
-		"| ID | Phase | Decision | Why | Confidence | Result | Evidence |",
-		"|---|---|---|---|---|---|---|",
-		...active.map(
-			(row) =>
-				`| \`${row.id}\` | ${markdownCell(row.phase)} | ${markdownCell(row.decision)} | ${markdownCell(row.why)} | ${row.confidence} | ${row.result} | ${markdownCell(row.evidence)} |`,
-		),
-	];
-
-	if (active.length === 0) lines.push("| — | — | No active decisions | — | — | — | — |");
+	);
 	if (superseded.length) {
 		lines.push(
 			"",
@@ -279,12 +430,19 @@ async function buildGitHubSummary(
 	];
 	lines.push("", "### Attention", "", flags.length ? flags.map((flag) => `- ${flag}`).join("\n") : "No decision-state flags.");
 
-	if (state.reviewPath) {
-		const review = sanitizeReviewForGitHub(await readFile(state.reviewPath, "utf8"), state, ctx);
-		lines.push("", "### Independent review", "", review || "Review completed with no textual findings.");
-	} else {
-		lines.push("", "### Independent review", "", "Not run.");
-	}
+	const review = state.reviewPath
+		? sanitizeReviewForGitHub(await readFile(state.reviewPath, "utf8"), state, ctx) ||
+			"Review completed with no textual findings."
+		: "Not run.";
+	lines.push(
+		"",
+		"<details>",
+		"<summary>Independent review</summary>",
+		"",
+		review,
+		"",
+		"</details>",
+	);
 	lines.push("", "---", "_Generated by [pi-audit-trail](https://github.com/0xLaurenzo/audit-trail)._", "");
 	return truncateGitHubComment(lines.join("\n"));
 }
@@ -304,20 +462,24 @@ async function readRows(logPath: string): Promise<AuditRow[]> {
 
 	return lines.slice(1).map((line, index) => {
 		const cells = line.split("\t");
-		if (cells.length !== 12) throw new Error(`Malformed audit row ${index + 2} in ${logPath}`);
+		if (cells.length !== 13) throw new Error(`Malformed audit row ${index + 2} in ${logPath}`);
+		if (!ORIGIN_VALUES.includes(cells[5] as OriginValue)) {
+			throw new Error(`Invalid decision origin at line ${index + 2} in ${logPath}`);
+		}
 		return {
 			id: cells[0],
 			ts: cells[1],
 			session: cells[2],
 			entry: cells[3],
 			phase: cells[4],
-			decision: cells[5],
-			why: cells[6],
-			alternatives: cells[7],
-			confidence: cells[8] as ConfidenceValue,
-			evidence: cells[9],
-			result: cells[10] as ResultValue,
-			supersedes: cells[11],
+			origin: cells[5] as OriginValue,
+			decision: cells[6],
+			why: cells[7],
+			alternatives: cells[8],
+			confidence: cells[9] as ConfidenceValue,
+			evidence: cells[10],
+			result: cells[11] as ResultValue,
+			supersedes: cells[12],
 		};
 	});
 }
@@ -369,23 +531,30 @@ async function appendRow(logPath: string, row: Omit<AuditRow, "id" | "ts">): Pro
 			ts: new Date().toISOString(),
 			...row,
 		};
-		const line = [
-			complete.id,
-			complete.ts,
-			complete.session,
-			complete.entry,
-			complete.phase,
-			complete.decision,
-			complete.why,
-			complete.alternatives,
-			complete.confidence,
-			complete.evidence,
-			complete.result,
-			complete.supersedes,
-		]
-			.map(cleanCell)
-			.join("\t");
-		const existing = rows.length === 0 ? `${HEADER}\n` : await readFile(logPath, "utf8");
+		const serializeRow = (candidate: AuditRow) =>
+			[
+				candidate.id,
+				candidate.ts,
+				candidate.session,
+				candidate.entry,
+				candidate.phase,
+				candidate.origin,
+				candidate.decision,
+				candidate.why,
+				candidate.alternatives,
+				candidate.confidence,
+				candidate.evidence,
+				candidate.result,
+				candidate.supersedes,
+			]
+				.map(cleanCell)
+				.join("\t");
+		const line = serializeRow(complete);
+		const current = await readFile(logPath, "utf8").catch((error: any) => {
+			if (error?.code === "ENOENT") return "";
+			throw error;
+		});
+		const existing = current || `${HEADER}\n`;
 		await writeFile(logPath, `${existing.endsWith("\n") ? existing : `${existing}\n`}${line}\n`, {
 			encoding: "utf8",
 			mode: 0o600,
@@ -469,9 +638,12 @@ export default function auditTrailExtension(pi: ExtensionAPI) {
 				event.systemPrompt +
 				`\n\n## Active decision audit\n` +
 				`An append-only decision audit is active at ${state.logPath}. ` +
-				`Use audit_decision contemporaneously for consequential choices, assumptions, pivots, reverts, and verification checkpoints—not routine tool calls. ` +
-				`Log choices introduced by underspecified requirements before implementing them. ` +
-				`Mark narrowly tailored fixes, untested assumptions, and uncertainty honestly with medium/low confidence or an open/inconclusive result. ` +
+				`Use audit_decision only for reviewer-relevant product or engineering choices where a reasonable alternative would materially change behavior or code. ` +
+				`Log compatibility and migration policy, public API or schema behavior, architecture and meaningful implementation trade-offs, security or correctness invariants, ambiguous requirement interpretations, user corrections, and consequential pivots or reverts. ` +
+				`Do not log branches, commits, pushes, pull requests, audit publication, routine verification, commands or tool usage, straightforward implementation steps, formatting, or documentation/version updates that do not change compatibility. ` +
+				`Record what caused each choice in origin separately from the technical rationale in why; use user correction when a user changes or clarifies prior direction. ` +
+				`Log choices introduced by underspecified requirements before implementing them, and state the plausible alternative and the behavior, compatibility guarantee, or invariant protected. ` +
+				`Mark narrowly tailored choices, untested assumptions, and uncertainty honestly with medium/low confidence or an open/inconclusive result. ` +
 				`When correcting a prior choice, append a row using supersedes; never rewrite history. ` +
 				`Do not declare the audited task complete while active decisions remain open, inconclusive, low-confidence, or unsupported by evidence.`,
 		};
@@ -494,11 +666,14 @@ export default function auditTrailExtension(pi: ExtensionAPI) {
 		name: "audit_decision",
 		label: "Audit decision",
 		description:
-			"Append one consequential decision, assumption, pivot, revert, or verification checkpoint to the active audit trail. Do not use for routine tool calls.",
-		promptSnippet: "Append a consequential choice or checkpoint to the active decision audit",
+			"Append one reviewer-relevant product or engineering decision whose alternative would materially change behavior or code. Excludes delivery operations and routine verification.",
+		promptSnippet: "Append a reviewer-relevant product or engineering choice to the active decision audit",
 		promptGuidelines: [
-			"Use audit_decision contemporaneously whenever an active audit requires a consequential choice, assumption, pivot, revert, or verification checkpoint.",
-			"Do not use audit_decision for routine file reads, edits, or shell commands.",
+			"Use audit_decision for compatibility or migration policy, public API or schema behavior, architecture or meaningful implementation trade-offs, correctness or security invariants, ambiguous requirement interpretations, user corrections, and consequential pivots or reverts.",
+			"Use it only when a reasonable alternative would materially change the resulting behavior or code; state that alternative and the guarantee or invariant protected.",
+			"Do not log branches, commits, pushes, pull requests, audit publication, routine verification, commands or tool usage, straightforward implementation steps, formatting, or non-compatibility documentation/version updates.",
+			"Choose origin for what triggered consideration of the decision; reserve why for its technical rationale and protected consequence or invariant.",
+			"Use user correction when a user changes or clarifies prior direction so attribution survives beyond the session transcript.",
 		],
 		parameters: AuditDecisionParams,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
@@ -509,6 +684,7 @@ export default function auditTrailExtension(pi: ExtensionAPI) {
 				session,
 				entry,
 				phase: params.phase,
+				origin: params.origin,
 				decision: params.decision,
 				why: params.why,
 				alternatives: params.alternatives ?? "none",
@@ -744,7 +920,17 @@ export default function auditTrailExtension(pi: ExtensionAPI) {
 					);
 				}
 
-				const body = await buildGitHubSummary(state, rows, ctx);
+				ctx.ui.notify("Filtering decisions for reviewer relevance...", "info");
+				let filter: RelevanceFilter | undefined;
+				try {
+					filter = await filterRelevantRows(pi, ctx, activeRows(rows));
+				} catch (error: any) {
+					ctx.ui.notify(
+						`Relevance filter unavailable (${error?.message ?? error}); publishing all active decisions`,
+						"warning",
+					);
+				}
+				const body = await buildGitHubSummary(state, rows, ctx, filter);
 				const marker = `<!-- pi-audit-trail:${provenance.repository}:${state.task} -->`;
 				const userResult = await pi.exec("gh", ["api", "user", "--jq", ".login"], { timeout: 30_000 });
 				if (userResult.code !== 0) throw new Error(userResult.stderr.trim() || "GitHub authentication failed");
