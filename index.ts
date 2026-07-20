@@ -16,20 +16,6 @@ const ENTRY_TYPE = "audit-trail-control";
 /// covers Anthropic working models, where the alphabetically-first eligible
 /// model may be unusable on the configured account.
 const REVIEW_MODEL_PREFERENCE = [/fable/i, /opus-4-8/i, /gpt-5\.6-sol/i];
-const LEGACY_HEADER = [
-	"id",
-	"ts",
-	"session",
-	"entry",
-	"phase",
-	"decision",
-	"why",
-	"alternatives",
-	"confidence",
-	"evidence",
-	"result",
-	"supersedes",
-].join("\t");
 const HEADER = [
 	"id",
 	"ts",
@@ -62,15 +48,7 @@ const Origin = StringEnum(ORIGIN_VALUES, {
 const Confidence = StringEnum(["high", "medium", "low"] as const);
 const Result = StringEnum(["open", "verified", "reverted", "inconclusive"] as const);
 
-type OriginValue =
-	| "user requirement"
-	| "user correction"
-	| "source invariant"
-	| "failing test"
-	| "code review"
-	| "external specification"
-	| "implementation discovery"
-	| "unavailable";
+type OriginValue = (typeof ORIGIN_VALUES)[number];
 type ConfidenceValue = "high" | "medium" | "low";
 type ResultValue = "open" | "verified" | "reverted" | "inconclusive";
 
@@ -362,7 +340,7 @@ function renderDecisionRow(row: AuditRow): string[] {
 		`#### \`${row.id}\` · ${markdownCell(row.phase)}`,
 		"",
 		`- **Decision:** ${markdownCell(row.decision)}`,
-		`- **Origin:** ${row.origin === "unavailable" ? "Unavailable (legacy decision)" : markdownCell(row.origin)}`,
+		`- **Origin:** ${markdownCell(row.origin)}`,
 		`- **Why:** ${markdownCell(row.why)}`,
 		`- **Alternatives:** ${markdownCell(row.alternatives)}`,
 		`- **Evidence:** ${markdownCell(row.evidence)}`,
@@ -480,43 +458,30 @@ async function readRows(logPath: string): Promise<AuditRow[]> {
 
 	const lines = text.split(/\r?\n/).filter(Boolean);
 	if (lines.length === 0) return [];
-	let legacy = lines[0] === LEGACY_HEADER;
-	if (!legacy && lines[0] !== HEADER) throw new Error(`Unexpected audit header in ${logPath}`);
+	if (lines[0] !== HEADER) throw new Error(`Unexpected audit header in ${logPath}`);
 
-	const rows: AuditRow[] = [];
-	for (let index = 1; index < lines.length; index++) {
-		const line = lines[index];
-		if (line === HEADER && legacy) {
-			legacy = false;
-			continue;
-		}
-		if (line === HEADER || line === LEGACY_HEADER) {
-			throw new Error(`Unexpected audit header at line ${index + 1} in ${logPath}`);
-		}
+	return lines.slice(1).map((line, index) => {
 		const cells = line.split("\t");
-		const expectedCells = legacy ? 12 : 13;
-		if (cells.length !== expectedCells) throw new Error(`Malformed audit row ${index + 1} in ${logPath}`);
-		const offset = legacy ? 0 : 1;
-		if (!legacy && !ORIGIN_VALUES.includes(cells[5] as (typeof ORIGIN_VALUES)[number])) {
-			throw new Error(`Invalid decision origin at line ${index + 1} in ${logPath}`);
+		if (cells.length !== 13) throw new Error(`Malformed audit row ${index + 2} in ${logPath}`);
+		if (!ORIGIN_VALUES.includes(cells[5] as OriginValue)) {
+			throw new Error(`Invalid decision origin at line ${index + 2} in ${logPath}`);
 		}
-		rows.push({
+		return {
 			id: cells[0],
 			ts: cells[1],
 			session: cells[2],
 			entry: cells[3],
 			phase: cells[4],
-			origin: legacy ? "unavailable" : (cells[5] as OriginValue),
-			decision: cells[5 + offset],
-			why: cells[6 + offset],
-			alternatives: cells[7 + offset],
-			confidence: cells[8 + offset] as ConfidenceValue,
-			evidence: cells[9 + offset],
-			result: cells[10 + offset] as ResultValue,
-			supersedes: cells[11 + offset],
-		});
-	}
-	return rows;
+			origin: cells[5] as OriginValue,
+			decision: cells[6],
+			why: cells[7],
+			alternatives: cells[8],
+			confidence: cells[9] as ConfidenceValue,
+			evidence: cells[10],
+			result: cells[11] as ResultValue,
+			supersedes: cells[12],
+		};
+	});
 }
 
 function activeRows(rows: AuditRow[]): AuditRow[] {
@@ -545,10 +510,7 @@ async function ensureLog(logPath: string): Promise<void> {
 			if (error?.code !== "ENOENT") throw error;
 		}
 		if (!existing) await writeFile(logPath, `${HEADER}\n`, { encoding: "utf8", mode: 0o600 });
-		else {
-			const header = existing.split(/\r?\n/, 1)[0];
-			if (header !== HEADER && header !== LEGACY_HEADER) throw new Error(`Unexpected audit header in ${logPath}`);
-		}
+		else if (existing.split(/\r?\n/, 1)[0] !== HEADER) throw new Error(`Unexpected audit header in ${logPath}`);
 	});
 }
 
@@ -592,11 +554,7 @@ async function appendRow(logPath: string, row: Omit<AuditRow, "id" | "ts">): Pro
 			if (error?.code === "ENOENT") return "";
 			throw error;
 		});
-		const hasNewSchema = current.split(/\r?\n/).includes(HEADER);
-		let existing = current || `${HEADER}\n`;
-		if (current.startsWith(LEGACY_HEADER) && !hasNewSchema) {
-			existing = `${current.endsWith("\n") ? current : `${current}\n`}${HEADER}\n`;
-		}
+		const existing = current || `${HEADER}\n`;
 		await writeFile(logPath, `${existing.endsWith("\n") ? existing : `${existing}\n`}${line}\n`, {
 			encoding: "utf8",
 			mode: 0o600,

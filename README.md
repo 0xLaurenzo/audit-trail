@@ -66,7 +66,7 @@ Every new decision records its causal `origin` separately from its technical `wh
 
 Audit artifacts are local working files under `.audit/`:
 
-- `<task>.tsv` — canonical decision trail (legacy logs without `origin` remain readable and show it as unavailable; the first new append adds a versioned header segment without rewriting existing bytes)
+- `<task>.tsv` — canonical decision trail
 - `<task>.provenance.json` — original GitHub repository, branch, starting commit, worktree state, and Pi session ID
 - `<task>.review.<timestamp>.md` — independent review output
 
