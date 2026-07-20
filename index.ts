@@ -125,7 +125,10 @@ type ControlData =
 const AuditDecisionParams = Type.Object({
 	phase: Type.String({ description: "Short workstream or phase name" }),
 	origin: Origin,
-	decision: Type.String({ description: "The concrete choice, action, assumption, pivot, or checkpoint" }),
+	decision: Type.String({
+		description:
+			"The reviewer-relevant product or engineering choice, assumption, pivot, or revert—not a workflow action or verification step",
+	}),
 	why: Type.String({
 		description: "Technical reason the option is correct, including the consequence or invariant it protects",
 	}),
@@ -552,10 +555,12 @@ export default function auditTrailExtension(pi: ExtensionAPI) {
 				event.systemPrompt +
 				`\n\n## Active decision audit\n` +
 				`An append-only decision audit is active at ${state.logPath}. ` +
-				`Use audit_decision contemporaneously for consequential choices, assumptions, pivots, reverts, and verification checkpoints—not routine tool calls. ` +
+				`Use audit_decision only for reviewer-relevant product or engineering choices where a reasonable alternative would materially change behavior or code. ` +
+				`Log compatibility and migration policy, public API or schema behavior, architecture and meaningful implementation trade-offs, security or correctness invariants, ambiguous requirement interpretations, user corrections, and consequential pivots or reverts. ` +
+				`Do not log branches, commits, pushes, pull requests, audit publication, routine verification, commands or tool usage, straightforward implementation steps, formatting, or documentation/version updates that do not change compatibility. ` +
 				`Record what caused each choice in origin separately from the technical rationale in why; use user correction when a user changes or clarifies prior direction. ` +
-				`Log choices introduced by underspecified requirements before implementing them. ` +
-				`Mark narrowly tailored fixes, untested assumptions, and uncertainty honestly with medium/low confidence or an open/inconclusive result. ` +
+				`Log choices introduced by underspecified requirements before implementing them, and state the plausible alternative and the behavior, compatibility guarantee, or invariant protected. ` +
+				`Mark narrowly tailored choices, untested assumptions, and uncertainty honestly with medium/low confidence or an open/inconclusive result. ` +
 				`When correcting a prior choice, append a row using supersedes; never rewrite history. ` +
 				`Do not declare the audited task complete while active decisions remain open, inconclusive, low-confidence, or unsupported by evidence.`,
 		};
@@ -578,13 +583,14 @@ export default function auditTrailExtension(pi: ExtensionAPI) {
 		name: "audit_decision",
 		label: "Audit decision",
 		description:
-			"Append one consequential decision, assumption, pivot, revert, or verification checkpoint to the active audit trail. Do not use for routine tool calls.",
-		promptSnippet: "Append a consequential choice or checkpoint to the active decision audit",
+			"Append one reviewer-relevant product or engineering decision whose alternative would materially change behavior or code. Excludes delivery operations and routine verification.",
+		promptSnippet: "Append a reviewer-relevant product or engineering choice to the active decision audit",
 		promptGuidelines: [
-			"Use audit_decision contemporaneously whenever an active audit requires a consequential choice, assumption, pivot, revert, or verification checkpoint.",
+			"Use audit_decision for compatibility or migration policy, public API or schema behavior, architecture or meaningful implementation trade-offs, correctness or security invariants, ambiguous requirement interpretations, user corrections, and consequential pivots or reverts.",
+			"Use it only when a reasonable alternative would materially change the resulting behavior or code; state that alternative and the guarantee or invariant protected.",
+			"Do not log branches, commits, pushes, pull requests, audit publication, routine verification, commands or tool usage, straightforward implementation steps, formatting, or non-compatibility documentation/version updates.",
 			"Choose origin for what triggered consideration of the decision; reserve why for its technical rationale and protected consequence or invariant.",
 			"Use user correction when a user changes or clarifies prior direction so attribution survives beyond the session transcript.",
-			"Do not use audit_decision for routine file reads, edits, or shell commands.",
 		],
 		parameters: AuditDecisionParams,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
