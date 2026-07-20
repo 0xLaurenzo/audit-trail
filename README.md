@@ -99,6 +99,6 @@ Pass a PR number or URL when automatic branch lookup is not appropriate:
 /audit-publish 123
 ```
 
-Publishing requires the `gh` CLI to be installed and authenticated. The command refuses to post to a PR whose head branch differs from the audit's original branch. The Markdown summary leads with a concise narrative of each active, non-superseded change, its origin, and the rationale or invariant it protects. Provenance and attention flags follow; superseded history and independent-review commentary are separate collapsed sections.
+Publishing requires the `gh` CLI to be installed and authenticated. The command refuses to post to a PR whose head branch differs from the audit's original branch. Before rendering, a model pass classifies each active decision and drops superseded rows and self-evident or process-only entries; the retained rows are then published verbatim—decision, origin, why, alternatives, evidence, and status—rather than re-summarized. Filtered rows appear in a collapsed section with the filter's reason, and superseded history and independent-review commentary stay in their own collapsed sections. If the filter model fails, all active rows are published unfiltered.
 
 The summary uses a hidden marker, so running `/audit-publish` again updates the extension's existing PR comment instead of creating duplicates. Publish before `/audit-close`; closing removes the audit from active session state.
