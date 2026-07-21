@@ -51,7 +51,7 @@ pi -e /path/to/audit-trail
 - `/audit-start <task>` — start or resume `.audit/<task>.tsv`
 - `/audit-status` — show unresolved, low-confidence, and unsupported decisions
 - `/audit-review [provider/model]` — review the log and pi session with a model from a different provider
-- `/audit-publish [number-or-url]` — create or update the audit summary comment on the original branch's PR
+- `/audit-publish [number-or-url]` — create or update raw audit TSV comments on the original branch's PR
 - `/audit-close` — close only after all active rows are resolved and the latest rows have been reviewed
 
 ## Agent tool
@@ -99,6 +99,6 @@ Pass a PR number or URL when automatic branch lookup is not appropriate:
 /audit-publish 123
 ```
 
-Publishing requires the `gh` CLI to be installed and authenticated. The command refuses to post to a PR whose head branch differs from the audit's original branch. Before rendering, a model pass classifies each active decision and drops superseded rows and self-evident or process-only entries; the retained rows are then published verbatim—decision, origin, why, alternatives, evidence, and status—rather than re-summarized. Filtered rows appear in a collapsed section with the filter's reason, and superseded history and independent-review commentary stay in their own collapsed sections. If the filter model fails, all active rows are published unfiltered.
+Publishing requires the `gh` CLI to be installed and authenticated. The command refuses to post to a PR whose head branch differs from the audit's original branch. It publishes the exact canonical TSV inside a collapsed code block, preceded by concise format, history, state, and Git provenance context. No model filters or rewrites the source before publication, allowing reviewers and their own tooling to process every audit row.
 
-The summary uses a hidden marker, so running `/audit-publish` again updates the extension's existing PR comment instead of creating duplicates. Publish before `/audit-close`; closing removes the audit from active session state.
+GitHub comments have a size limit, so large TSV files are split at row boundaries into deterministic numbered comments. Concatenating their fenced TSV blocks in part order recovers the original file exactly. Hidden markers make publication idempotent: subsequent runs update each existing part and remove stale extra parts instead of creating duplicates. Publish before `/audit-close`; closing removes the audit from active session state.
