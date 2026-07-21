@@ -2,36 +2,27 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { StringEnum } from "@earendil-works/pi-ai";
-import {
-	type ExtensionAPI,
-	type ExtensionContext,
-	withFileMutationQueue,
-} from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import {
-	AuditStore,
+	AuditWorkflow,
 	ORIGIN_VALUES,
+	activeStatePath,
 	buildReviewDocument,
 	buildReviewPrompt,
-	closeBlockers,
 	displayPath,
-	ensureProvenance,
 	publishRawAudit,
-	safeSlug,
 	summarize,
 	writeReviewArtifact,
 	type AuditRow,
 	type AuditState,
 	type CommandRunner,
-	type GitProvenance,
+	type ReviewMode,
+	type SessionIdentity,
 } from "../core/index.ts";
 
-const ENTRY_TYPE = "audit-trail-control";
-/// Reviewer preference, most advanced first. The Anthropic entries only apply
-/// when the working model is from another provider (e.g. OpenAI); the
-/// different-provider constraint filters them out otherwise. The Codex entry
-/// covers Anthropic working models, where the alphabetically-first eligible
-/// model may be unusable on the configured account.
+/// Reviewer preference, most advanced first. Applied within each review tier
+/// (cross-provider, then cross-model, then the working model itself).
 const REVIEW_MODEL_PREFERENCE = [/fable/i, /opus-4-8/i, /gpt-5\.6-sol/i];
 
 const Origin = StringEnum(ORIGIN_VALUES, {
@@ -62,17 +53,6 @@ const AuditDecisionParams = Type.Object({
 	supersedes: Type.Optional(Type.String({ description: "Prior decision ID replaced by this row, such as D0003" })),
 });
 
-type ControlData =
-	| {
-			action: "start";
-			task: string;
-			logPath: string;
-			provenancePath?: string;
-			provenance?: GitProvenance;
-	  }
-	| { action: "review"; task: string; logPath: string; reviewPath: string; reviewedCount: number }
-	| { action: "close"; task: string; logPath: string };
-
 function updateStatus(ctx: ExtensionContext, state: AuditState | undefined, rows: AuditRow[] = []): void {
 	if (!state) {
 		ctx.ui.setStatus("audit-trail", undefined);
@@ -81,29 +61,6 @@ function updateStatus(ctx: ExtensionContext, state: AuditState | undefined, rows
 	const stats = summarize(rows);
 	const flags = stats.unresolved.length + stats.lowConfidence.length;
 	ctx.ui.setStatus("audit-trail", `audit: ${stats.total} decisions${flags ? ` · ${flags} flags` : ""}`);
-}
-
-function reconstructState(ctx: ExtensionContext): AuditState | undefined {
-	let state: AuditState | undefined;
-	for (const entry of ctx.sessionManager.getBranch()) {
-		if (entry.type !== "custom" || entry.customType !== ENTRY_TYPE) continue;
-		const data = entry.data as ControlData | undefined;
-		if (!data) continue;
-		if (data.action === "start") {
-			state = {
-				task: data.task,
-				logPath: data.logPath,
-				provenancePath: data.provenancePath,
-				provenance: data.provenance,
-			};
-		}
-		if (data.action === "review" && state?.logPath === data.logPath) {
-			state.reviewPath = data.reviewPath;
-			state.reviewedCount = data.reviewedCount;
-		}
-		if (data.action === "close" && state?.logPath === data.logPath) state = undefined;
-	}
-	return state;
 }
 
 function extractFinalAssistantOutput(stdout: string): { output: string; error?: string } {
@@ -130,22 +87,39 @@ function extractFinalAssistantOutput(stdout: string): { output: string; error?: 
 }
 
 export default function auditTrailExtension(pi: ExtensionAPI) {
-	let state: AuditState | undefined;
-	const store = new AuditStore(withFileMutationQueue);
 	const runner: CommandRunner = {
 		exec: (command, args, options) => pi.exec(command, args, options),
 	};
+	const workflows = new Map<string, AuditWorkflow>();
+	const workflow = (ctx: ExtensionContext): AuditWorkflow => {
+		let instance = workflows.get(ctx.cwd);
+		if (!instance) {
+			instance = new AuditWorkflow(ctx.cwd, runner);
+			workflows.set(ctx.cwd, instance);
+		}
+		return instance;
+	};
+	const sessionIdentity = (ctx: ExtensionContext): SessionIdentity => ({
+		harness: "pi",
+		id: ctx.sessionManager.getSessionId(),
+		entryId: ctx.sessionManager.getLeafId() ?? undefined,
+	});
+	const activeState = (ctx: ExtensionContext): Promise<AuditState | undefined> =>
+		workflow(ctx)
+			.active()
+			.catch(() => undefined);
 
 	const refresh = async (ctx: ExtensionContext) => {
-		state = reconstructState(ctx);
-		const rows = state ? await store.readRows(state.logPath).catch(() => []) : [];
+		const state = await activeState(ctx);
+		const rows = state ? await workflow(ctx).rows(state).catch(() => []) : [];
 		updateStatus(ctx, state, rows);
 	};
 
 	pi.on("session_start", async (_event, ctx) => refresh(ctx));
 	pi.on("session_tree", async (_event, ctx) => refresh(ctx));
 
-	pi.on("before_agent_start", async (event) => {
+	pi.on("before_agent_start", async (event, ctx) => {
+		const state = await activeState(ctx);
 		if (!state) return;
 		return {
 			systemPrompt:
@@ -164,14 +138,18 @@ export default function auditTrailExtension(pi: ExtensionAPI) {
 	});
 
 	pi.on("tool_call", async (event, ctx) => {
-		if (!state || (event.toolName !== "write" && event.toolName !== "edit")) return;
+		if (event.toolName !== "write" && event.toolName !== "edit") return;
+		const state = await activeState(ctx);
+		if (!state) return;
 		const input = event.input as { path?: unknown };
 		const inputPath = typeof input.path === "string" ? resolve(ctx.cwd, input.path) : undefined;
-		const protectedPaths = [state.logPath, state.provenancePath].filter((path): path is string => Boolean(path));
+		const protectedPaths = [state.logPath, state.provenancePath, activeStatePath(ctx.cwd)].filter(
+			(path): path is string => Boolean(path),
+		);
 		if (inputPath && protectedPaths.some((path) => inputPath === resolve(path))) {
 			return {
 				block: true,
-				reason: "Audit logs and Git provenance are extension-managed; use audit_decision for corrections.",
+				reason: "Audit state and Git provenance are extension-managed; use audit_decision for corrections.",
 			};
 		}
 	});
@@ -191,10 +169,7 @@ export default function auditTrailExtension(pi: ExtensionAPI) {
 		],
 		parameters: AuditDecisionParams,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-			if (!state) throw new Error("No audit is active. Ask the user to run /audit-start <task>.");
-			const row = await store.appendRow(state.logPath, {
-				session: ctx.sessionManager.getSessionId(),
-				entry: ctx.sessionManager.getLeafId() ?? "none",
+			const { row, state, rows } = await workflow(ctx).append(sessionIdentity(ctx), {
 				phase: params.phase,
 				origin: params.origin,
 				decision: params.decision,
@@ -205,7 +180,6 @@ export default function auditTrailExtension(pi: ExtensionAPI) {
 				result: params.result,
 				supersedes: params.supersedes ?? "",
 			});
-			const rows = await store.readRows(state.logPath);
 			updateStatus(ctx, state, rows);
 			return {
 				content: [{ type: "text", text: `Logged ${row.id}: ${row.decision}` }],
@@ -215,66 +189,52 @@ export default function auditTrailExtension(pi: ExtensionAPI) {
 	});
 
 	pi.registerCommand("audit-start", {
-		description: "Start or resume an append-only decision audit: /audit-start <task>",
+		description: "Start or resume the worktree's decision audit: /audit-start <task>",
 		handler: async (args, ctx) => {
 			const requested = args.trim();
 			if (!requested) {
 				ctx.ui.notify("Usage: /audit-start <task>", "error");
 				return;
 			}
-			if (state) {
-				ctx.ui.notify(`Audit already active: ${state.task} (${displayPath(state.logPath, ctx.cwd)})`, "warning");
-				return;
-			}
-			const task = safeSlug(requested);
-			const logPath = resolve(ctx.cwd, ".audit", `${task}.tsv`);
-			const provenancePath = resolve(ctx.cwd, ".audit", `${task}.provenance.json`);
-			let provenance: GitProvenance | undefined;
 			try {
-				provenance = await ensureProvenance(
-					runner,
-					task,
-					ctx.sessionManager.getSessionId(),
-					provenancePath,
-					withFileMutationQueue,
+				const result = await workflow(ctx).start(requested, sessionIdentity(ctx));
+				if (result.provenanceError) {
+					ctx.ui.notify(
+						`Audit will remain local because GitHub provenance could not be captured: ${result.provenanceError}`,
+						"warning",
+					);
+				}
+				const rows = await workflow(ctx).rows(result.state);
+				updateStatus(ctx, result.state, rows);
+				const provenance = result.state.provenance;
+				ctx.ui.notify(
+					`${result.resumed ? "Resumed" : "Started"} decision audit: ${displayPath(result.state.logPath, ctx.cwd)}${provenance ? `\nGitHub: ${provenance.repository}@${provenance.branch}` : ""}`,
+					"info",
 				);
 			} catch (error: any) {
-				ctx.ui.notify(
-					`Audit will remain local because GitHub provenance could not be captured: ${error?.message ?? error}`,
-					"warning",
-				);
+				ctx.ui.notify(`Audit start failed: ${error?.message ?? error}`, "error");
 			}
-			await store.ensureLog(logPath);
-			state = { task, logPath, provenancePath: provenance ? provenancePath : undefined, provenance };
-			pi.appendEntry(ENTRY_TYPE, {
-				action: "start",
-				task,
-				logPath,
-				provenancePath: provenance ? provenancePath : undefined,
-				provenance,
-			} satisfies ControlData);
-			const rows = await store.readRows(logPath);
-			updateStatus(ctx, state, rows);
-			ctx.ui.notify(
-				`Decision audit active: ${displayPath(logPath, ctx.cwd)}${provenance ? `\nGitHub: ${provenance.repository}@${provenance.branch}` : ""}`,
-				"info",
-			);
 		},
 	});
 
 	pi.registerCommand("audit-status", {
 		description: "Show active decision-audit status and unresolved decision IDs",
 		handler: async (_args, ctx) => {
+			const state = await activeState(ctx);
 			if (!state) {
-				ctx.ui.notify("No decision audit is active", "info");
+				ctx.ui.notify("No decision audit is active in this worktree", "info");
 				return;
 			}
-			const rows = await store.readRows(state.logPath);
+			const rows = await workflow(ctx).rows(state);
 			const stats = summarize(rows);
 			updateStatus(ctx, state, rows);
 			const unresolved = stats.unresolved.map((row) => row.id).join(", ") || "none";
 			const low = stats.lowConfidence.map((row) => row.id).join(", ") || "none";
 			const missing = stats.missingEvidence.map((row) => row.id).join(", ") || "none";
+			const currentSha = await workflow(ctx).currentSha(state);
+			const reviewLine = state.review
+				? `review: ${state.review.path} (${state.review.mode}${state.review.sha256 === currentSha ? "" : ", stale"})`
+				: "review: not run";
 			ctx.ui.notify(
 				[
 					`${state.task}: ${stats.total} rows (${stats.active} active)`,
@@ -284,8 +244,8 @@ export default function auditTrailExtension(pi: ExtensionAPI) {
 					`log: ${displayPath(state.logPath, ctx.cwd)}`,
 					state.provenance
 						? `origin: ${state.provenance.repository}@${state.provenance.branch} (${state.provenance.startCommit.slice(0, 12)})`
-						: "origin: unavailable (legacy audit)",
-					state.reviewPath ? `review: ${displayPath(state.reviewPath, ctx.cwd)}` : "review: not run",
+						: "origin: unavailable (local audit)",
+					reviewLine,
 				].join("\n"),
 				stats.unresolved.length || stats.lowConfidence.length || stats.missingEvidence.length ? "warning" : "info",
 			);
@@ -293,10 +253,11 @@ export default function auditTrailExtension(pi: ExtensionAPI) {
 	});
 
 	pi.registerCommand("audit-review", {
-		description: "Review the active trail with a different model: /audit-review [provider/model]",
+		description: "Review the active trail, preferring a cross-provider model: /audit-review [provider/model]",
 		handler: async (args, ctx) => {
+			const state = await activeState(ctx);
 			if (!state) {
-				ctx.ui.notify("No decision audit is active", "error");
+				ctx.ui.notify("No decision audit is active in this worktree", "error");
 				return;
 			}
 			const sessionPath = ctx.sessionManager.getSessionFile();
@@ -306,27 +267,36 @@ export default function auditTrailExtension(pi: ExtensionAPI) {
 			}
 			const requested = args.trim();
 			const available = await ctx.modelRegistry.getAvailable();
-			const currentProvider = ctx.model?.provider;
-			const eligible = available.filter((model) => model.provider !== currentProvider);
-			const reviewModel = requested
-				? available.find((model) => `${model.provider}/${model.id}` === requested)
-				: (REVIEW_MODEL_PREFERENCE.map((pattern) => eligible.find((model) => pattern.test(model.id))).find(Boolean) ??
-					eligible[0]);
-			if (!reviewModel) {
-				ctx.ui.notify(
-					requested
-						? `Review model unavailable: ${requested}`
-						: "No model from a different provider is available; pass /audit-review provider/model after configuring one",
-					"error",
-				);
-				return;
-			}
-			if (reviewModel.provider === currentProvider) {
-				ctx.ui.notify("The reviewer must use a different model provider from the working model", "error");
-				return;
-			}
+			const current = ctx.model;
+			const prefer = (models: typeof available) =>
+				REVIEW_MODEL_PREFERENCE.map((pattern) => models.find((model) => pattern.test(model.id))).find(Boolean) ??
+				models[0];
 
-			const rows = await store.readRows(state.logPath);
+			let reviewModel: (typeof available)[number] | undefined;
+			if (requested) {
+				reviewModel = available.find((model) => `${model.provider}/${model.id}` === requested);
+				if (!reviewModel) {
+					ctx.ui.notify(`Review model unavailable: ${requested}`, "error");
+					return;
+				}
+			} else {
+				reviewModel =
+					prefer(available.filter((model) => model.provider !== current?.provider)) ??
+					prefer(available.filter((model) => model.provider === current?.provider && model.id !== current?.id)) ??
+					(current ? available.find((model) => model.provider === current.provider && model.id === current.id) : undefined);
+				if (!reviewModel) {
+					ctx.ui.notify("No model is available for review; pass /audit-review provider/model", "error");
+					return;
+				}
+			}
+			const mode: ReviewMode =
+				reviewModel.provider !== current?.provider
+					? "cross-provider"
+					: reviewModel.id !== current?.id
+						? "cross-model"
+						: "same-model";
+
+			const rows = await workflow(ctx).rows(state);
 			const tempDir = await mkdtemp(join(tmpdir(), "pi-audit-review-"));
 			const promptPath = join(tempDir, "reviewer.md");
 			const reviewerPrompt = buildReviewPrompt({
@@ -336,7 +306,7 @@ export default function auditTrailExtension(pi: ExtensionAPI) {
 				harnessName: "pi",
 			});
 			await writeFile(promptPath, reviewerPrompt, { encoding: "utf8", mode: 0o600 });
-			ctx.ui.notify(`Reviewing with ${reviewModel.provider}/${reviewModel.id}...`, "info");
+			ctx.ui.notify(`Reviewing with ${reviewModel.provider}/${reviewModel.id} (${mode})...`, "info");
 			try {
 				const invocation = await pi.exec(
 					"pi",
@@ -365,6 +335,7 @@ export default function auditTrailExtension(pi: ExtensionAPI) {
 				const reviewPath = resolve(ctx.cwd, ".audit", `${state.task}.review.${stamp}.md`);
 				const reviewDocument = buildReviewDocument({
 					model: `${reviewModel.provider}/${reviewModel.id}`,
+					reviewMode: mode,
 					logPath: state.logPath,
 					transcriptPath: sessionPath,
 					workingDirectory: ctx.cwd,
@@ -372,16 +343,12 @@ export default function auditTrailExtension(pi: ExtensionAPI) {
 					output,
 					harnessName: "pi",
 				});
-				await writeReviewArtifact(reviewPath, reviewDocument, withFileMutationQueue);
-				state.reviewPath = reviewPath;
-				state.reviewedCount = rows.length;
-				pi.appendEntry(ENTRY_TYPE, {
-					action: "review",
-					task: state.task,
-					logPath: state.logPath,
-					reviewPath,
-					reviewedCount: rows.length,
-				} satisfies ControlData);
+				await writeReviewArtifact(reviewPath, reviewDocument);
+				await workflow(ctx).recordReview({
+					path: reviewPath,
+					mode,
+					model: `${reviewModel.provider}/${reviewModel.id}`,
+				});
 				ctx.ui.notify(`Review saved: ${displayPath(reviewPath, ctx.cwd)}`, "info");
 			} catch (error: any) {
 				ctx.ui.notify(`Audit review failed: ${error?.message ?? error}`, "error");
@@ -394,16 +361,18 @@ export default function auditTrailExtension(pi: ExtensionAPI) {
 	pi.registerCommand("audit-publish", {
 		description: "Create or update raw audit TSV comments on the branch PR: /audit-publish [number-or-url]",
 		handler: async (args, ctx) => {
+			const state = await activeState(ctx);
 			if (!state) {
-				ctx.ui.notify("No decision audit is active", "error");
+				ctx.ui.notify("No decision audit is active in this worktree", "error");
 				return;
 			}
 			if (!state.provenance) {
-				ctx.ui.notify("This legacy audit has no Git provenance; start a new audit before publishing", "error");
+				ctx.ui.notify("This audit has no Git provenance; publishing requires a GitHub origin", "error");
 				return;
 			}
-			const rows = await store.readRows(state.logPath);
-			if (!state.reviewPath || state.reviewedCount !== rows.length) {
+			const rows = await workflow(ctx).rows(state);
+			const currentSha = await workflow(ctx).currentSha(state);
+			if (!state.review || currentSha === undefined || state.review.sha256 !== currentSha) {
 				ctx.ui.notify("Run /audit-review after the latest decision before publishing", "error");
 				return;
 			}
@@ -435,25 +404,17 @@ export default function auditTrailExtension(pi: ExtensionAPI) {
 	pi.registerCommand("audit-close", {
 		description: "Close the active audit after all choices are resolved and independently reviewed",
 		handler: async (_args, ctx) => {
-			if (!state) {
-				ctx.ui.notify("No decision audit is active", "info");
-				return;
+			try {
+				const result = await workflow(ctx).close();
+				if (!result.closed) {
+					ctx.ui.notify(`Cannot close audit:\n${result.blockers.map((item) => `- ${item}`).join("\n")}`, "error");
+					return;
+				}
+				updateStatus(ctx, undefined);
+				ctx.ui.notify(`Audit closed: ${displayPath(result.state.logPath, ctx.cwd)}`, "info");
+			} catch (error: any) {
+				ctx.ui.notify(`Audit close failed: ${error?.message ?? error}`, "error");
 			}
-			const rows = await store.readRows(state.logPath);
-			const blockers = closeBlockers(state, rows);
-			if (blockers.length) {
-				ctx.ui.notify(`Cannot close audit:\n${blockers.map((item) => `- ${item}`).join("\n")}`, "error");
-				return;
-			}
-			const closing = state;
-			pi.appendEntry(ENTRY_TYPE, {
-				action: "close",
-				task: closing.task,
-				logPath: closing.logPath,
-			} satisfies ControlData);
-			state = undefined;
-			updateStatus(ctx, undefined);
-			ctx.ui.notify(`Audit closed: ${displayPath(closing.logPath, ctx.cwd)}`, "info");
 		},
 	});
 }

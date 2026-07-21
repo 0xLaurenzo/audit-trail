@@ -2,6 +2,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { displayPath } from "./paths.ts";
 import { directMutationQueue, type MutationQueue } from "./ports.ts";
+import type { ReviewMode } from "./types.ts";
 
 export interface ReviewPromptInput {
 	logPath: string;
@@ -17,6 +18,7 @@ export function buildReviewPrompt(input: ReviewPromptInput): string {
 
 export interface ReviewDocumentInput {
 	model: string;
+	reviewMode?: ReviewMode;
 	logPath: string;
 	transcriptPath: string;
 	workingDirectory: string;
@@ -27,7 +29,8 @@ export interface ReviewDocumentInput {
 
 export function buildReviewDocument(input: ReviewDocumentInput): string {
 	const sessionLabel = input.harnessName === undefined || input.harnessName === "pi" ? "Pi session" : `${input.harnessName} session`;
-	return `# Decision audit review\n\n- Reviewed by: ${input.model}\n- Audit log: ${displayPath(input.logPath, input.workingDirectory)}\n- ${sessionLabel}: ${input.transcriptPath}\n- Decision rows reviewed: ${input.rowCount}\n\n${input.output.trim()}\n`;
+	const modeLine = input.reviewMode ? `\n- Review mode: ${input.reviewMode}` : "";
+	return `# Decision audit review\n\n- Reviewed by: ${input.model}${modeLine}\n- Audit log: ${displayPath(input.logPath, input.workingDirectory)}\n- ${sessionLabel}: ${input.transcriptPath}\n- Decision rows reviewed: ${input.rowCount}\n\n${input.output.trim()}\n`;
 }
 
 export function writeReviewArtifact(
