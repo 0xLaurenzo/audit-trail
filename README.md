@@ -1,6 +1,6 @@
 # Audit trail extension
 
-A pi extension for reviewing consequential agent choices instead of reconstructing them from a large diff. Harness-neutral audit behavior lives under `src/core/`; the Pi lifecycle, commands, tools, and UI are isolated in `src/adapters/pi.ts`, with `index.ts` retained as the package entry point.
+A pi extension for reviewing consequential agent choices instead of reconstructing them from a large diff. Harness-neutral audit behavior lives under `src/core/`; the Pi lifecycle, commands, tools, and UI are isolated in `src/adapters/pi.ts`, which is the package entry point.
 
 ## Install with Nix
 
@@ -15,7 +15,7 @@ Then register the immutable profile path in `~/.pi/agent/settings.json`:
 ```json
 {
   "extensions": [
-    "/Users/you/.nix-profile/share/pi-audit-trail/index.ts"
+    "/Users/you/.nix-profile/share/pi-audit-trail/src/adapters/pi.ts"
   ]
 }
 ```
@@ -56,13 +56,19 @@ npm test
 
 The core modules depend only on Node.js and explicit ports from `src/core/ports.ts`; they do not import Pi packages. Adapter-specific behavior belongs under `src/adapters/`.
 
+## Shared worktree state
+
+Exactly one audit may be active per Git worktree. The authoritative state lives in `.audit/active.json`, so any session in the same worktree — including concurrent ones — sees and contributes to the same audit; the audit survives session restarts and branch switches. Every mutation (start/resume, append, review checkpoint, close) runs under an atomic cross-process lock at `.audit/.lock`, so concurrent appends cannot lose rows or allocate duplicate decision IDs. Abandoned locks from crashed processes are reclaimed automatically.
+
+The TSV `session` cell is harness-qualified (for example `pi/<session-id>`), keeping contributions attributable when multiple harnesses share one audit.
+
 ## Commands
 
-- `/audit-start <task>` — start or resume `.audit/<task>.tsv`
-- `/audit-status` — show unresolved, low-confidence, and unsupported decisions
-- `/audit-review [provider/model]` — review the log and pi session with a model from a different provider
+- `/audit-start <task>` — start or resume the worktree audit at `.audit/<task>.tsv`; starting a different task while one is active fails
+- `/audit-status` — show unresolved, low-confidence, and unsupported decisions, plus review freshness
+- `/audit-review [provider/model]` — review the log and pi session, preferring a cross-provider model
 - `/audit-publish [number-or-url]` — create or update raw audit TSV comments on the original branch's PR
-- `/audit-close` — close only after all active rows are resolved and the latest rows have been reviewed
+- `/audit-close` — close only after all active rows are resolved and the latest audit bytes have been reviewed
 
 ## Agent tool
 
@@ -76,15 +82,17 @@ Every new decision records its causal `origin` separately from its technical `wh
 
 Audit artifacts are local working files under `.audit/`:
 
+- `active.json` — authoritative active-audit state shared by all sessions in the worktree
+- `.lock/` — transient cross-process mutation lock
 - `<task>.tsv` — canonical decision trail
-- `<task>.provenance.json` — original GitHub repository, branch, starting commit, worktree state, and Pi session ID
+- `<task>.provenance.json` — original GitHub repository, branch, starting commit, worktree state, and harness-qualified session ID
 - `<task>.review.<timestamp>.md` — independent review output
 
 Add `.audit/` to `.gitignore` or `.git/info/exclude` if trails should remain local. Commit selected artifacts when reviewers need them.
 
 ## Review model
 
-`/audit-review` automatically selects an available model whose provider differs from the active working model. You can choose one explicitly:
+`/audit-review` selects a reviewer in preference order: a model from a different provider (`cross-provider`), then a different model from the same provider (`cross-model`), then the working model itself (`same-model`). The chosen mode is recorded in the review artifact and the review checkpoint. You can choose a model explicitly:
 
 ```text
 /audit-review openai/gpt-5.2
@@ -109,6 +117,6 @@ Pass a PR number or URL when automatic branch lookup is not appropriate:
 /audit-publish 123
 ```
 
-Publishing requires the `gh` CLI to be installed and authenticated. The command refuses to post to a PR whose head branch differs from the audit's original branch. It publishes the exact canonical TSV inside a collapsed code block, preceded by concise format, history, state, and Git provenance context. No model filters or rewrites the source before publication, allowing reviewers and their own tooling to process every audit row.
+Publishing requires a review checkpoint matching the current audit bytes: after any new decision, run `/audit-review` again. The `gh` CLI must be installed and authenticated. The command refuses to post to a PR whose head branch differs from the audit's original branch. It publishes the exact canonical TSV inside a collapsed code block, preceded by concise format, history, state, and Git provenance context. No model filters or rewrites the source before publication, allowing reviewers and their own tooling to process every audit row.
 
-GitHub comments have a size limit, so large TSV files are split at row boundaries into deterministic numbered comments. Concatenating their fenced TSV blocks in part order recovers the original file exactly. Hidden markers make publication idempotent: subsequent runs update each existing part and remove stale extra parts instead of creating duplicates. Publish before `/audit-close`; closing removes the audit from active session state.
+GitHub comments have a size limit, so large TSV files are split at row boundaries into deterministic numbered comments. Concatenating their fenced TSV blocks in part order recovers the original file exactly. Hidden markers make publication idempotent: subsequent runs update each existing part and remove stale extra parts instead of creating duplicates. Publish before `/audit-close`; closing removes `.audit/active.json` for the worktree.
