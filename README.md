@@ -78,6 +78,22 @@ audit-trail close
 
 CLI rows are attributed as `cli/<user>@<host>` in the TSV `session` cell. `audit-trail review` runs the reviewer through a no-session `pi` subprocess against the TSV, Git diff, and repository (no transcript). Use `-C <dir>` to operate on another worktree.
 
+## MCP server
+
+`audit-trail mcp` serves the same six operations as deterministic MCP tools over stdio — `audit_start`, `audit_decision`, `audit_status`, `audit_review`, `audit_publish`, `audit_close` — for harnesses that integrate via MCP rather than a native extension. Rows are attributed as `mcp/<user>@<host>`. Example client registration:
+
+```json
+{
+  "mcpServers": {
+    "audit-trail": { "command": "audit-trail", "args": ["mcp"] }
+  }
+}
+```
+
+## Installer
+
+`audit-trail install <pi|claude|codex|opencode|all>` configures harnesses idempotently from a registry. Today `pi` registers the extension entry point in `~/.pi/agent/settings.json` (existing audit-trail entries are detected, unrelated settings preserved); `claude`, `codex`, and `opencode` are registry placeholders until their adapter issues land. Declaratively managed settings (for example home-manager) fail with a clear error — add the extension path in your Nix configuration instead.
+
 ## Commands
 
 - `/audit-start <task>` — start or resume the worktree audit at `.audit/<task>.tsv`; starting a different task while one is active fails

@@ -1,21 +1,18 @@
 import { execFile } from "node:child_process";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { hostname, tmpdir, userInfo } from "node:os";
-import { join, resolve } from "node:path";
+import { readFile } from "node:fs/promises";
+import { homedir, hostname, userInfo } from "node:os";
+import { resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { sha256Hex } from "../core/active-state.ts";
 import { publishRawAudit } from "../core/github-publisher.ts";
+import { runIndependentReview } from "../core/independent-review.ts";
 import { displayPath } from "../core/paths.ts";
 import type { CommandRunner, SessionIdentity } from "../core/ports.ts";
-import {
-	buildReviewDocument,
-	buildReviewPrompt,
-	extractFinalAssistantOutput,
-	writeReviewArtifact,
-} from "../core/review.ts";
+import { formatStatusLines } from "../core/status.ts";
 import { ORIGIN_VALUES, type AuditState, type NewAuditRow, type ReviewMode } from "../core/types.ts";
-import { summarize } from "../core/validation.ts";
 import { AuditWorkflow, resolveWorktreeRoot } from "../core/workflow.ts";
+import { packageRootFromModule, selectInstallers } from "../install/installers.ts";
+import { McpAuditServer, serveStdio } from "../mcp/server.ts";
 
 const CONFIDENCE_VALUES = ["high", "medium", "low"] as const;
 const RESULT_VALUES = ["open", "verified", "reverted", "inconclusive"] as const;
@@ -32,6 +29,8 @@ Commands:
   review <model>     Run an independent review with <provider/model>
   publish [pr]       Create or update raw audit TSV comments on the PR
   close              Close the audit once resolved and reviewed
+  mcp                Serve the audit tools as a local MCP server on stdio
+  install <target>   Configure a harness: pi | claude | codex | opencode | all
   help               Show this help
 
 Decision options:
@@ -155,24 +154,8 @@ async function commandDecision(workflow: AuditWorkflow, args: string[], io: CliI
 async function commandStatus(workflow: AuditWorkflow, io: CliIo): Promise<number> {
 	const state = await requireActive(workflow);
 	const rows = await workflow.rows(state);
-	const stats = summarize(rows);
 	const currentSha = await workflow.currentSha(state);
-	const list = (items: { id: string }[]) => items.map((item) => item.id).join(", ") || "none";
-	io.out(`${state.task}: ${stats.total} rows (${stats.active} active)`);
-	io.out(`unresolved: ${list(stats.unresolved)}`);
-	io.out(`low confidence: ${list(stats.lowConfidence)}`);
-	io.out(`missing evidence: ${list(stats.missingEvidence)}`);
-	io.out(`log: ${displayPath(state.logPath, workflow.root)}`);
-	io.out(
-		state.provenance
-			? `origin: ${state.provenance.repository}@${state.provenance.branch} (${state.provenance.startCommit.slice(0, 12)})`
-			: "origin: unavailable (local audit)",
-	);
-	io.out(
-		state.review
-			? `review: ${state.review.path} (${state.review.mode}${state.review.sha256 === currentSha ? "" : ", stale"})`
-			: "review: not run",
-	);
+	for (const line of formatStatusLines(state, rows, currentSha, workflow.root)) io.out(line);
 	return 0;
 }
 
@@ -189,56 +172,47 @@ async function commandReview(workflow: AuditWorkflow, args: string[], io: CliIo)
 		return 1;
 	}
 	const mode = oneOf(REVIEW_MODES, values.mode!, "mode") as ReviewMode;
-	const state = await requireActive(workflow);
-	const rows = await workflow.rows(state);
-	const prompt = buildReviewPrompt({ logPath: state.logPath, workingDirectory: workflow.root, harnessName: "cli" });
-	const tempDir = await mkdtemp(join(tmpdir(), "audit-trail-review-"));
-	try {
-		const promptPath = join(tempDir, "reviewer.md");
-		await writeFile(promptPath, prompt, { encoding: "utf8", mode: 0o600 });
-		io.out(`Reviewing with ${model} (${mode})...`);
-		const runner = processRunner(workflow.root);
-		const invocation = await runner.exec(
-			"pi",
-			[
-				"--mode",
-				"json",
-				"-p",
-				"--no-session",
-				"--model",
-				model,
-				"--tools",
-				"read,grep,find,ls",
-				"--append-system-prompt",
-				promptPath,
-				"Perform the independent audit review now.",
-			],
-			{ timeout: 10 * 60 * 1000 },
-		);
-		if (invocation.code !== 0) {
-			throw new Error(invocation.stderr.trim() || `reviewer exited with code ${invocation.code}`);
-		}
-		const { output, error } = extractFinalAssistantOutput(invocation.stdout);
-		if (error) throw new Error(`reviewer model failed: ${error}`);
-		if (!output) throw new Error("reviewer produced no final assistant output");
-		const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-		const reviewPath = resolve(workflow.root, ".audit", `${state.task}.review.${stamp}.md`);
-		const document = buildReviewDocument({
-			model,
-			reviewMode: mode,
-			logPath: state.logPath,
-			workingDirectory: workflow.root,
-			rowCount: rows.length,
-			output,
-			harnessName: "cli",
-		});
-		await writeReviewArtifact(reviewPath, document);
-		await workflow.recordReview({ path: reviewPath, mode, model });
-		io.out(`Review saved: ${displayPath(reviewPath, workflow.root)}`);
-		return 0;
-	} finally {
-		await rm(tempDir, { recursive: true, force: true });
+	await requireActive(workflow);
+	io.out(`Reviewing with ${model} (${mode})...`);
+	const review = await runIndependentReview({
+		workflow,
+		runner: processRunner(workflow.root),
+		model,
+		mode,
+		harnessName: "cli",
+	});
+	io.out(`Review saved: ${displayPath(review.reviewPath, workflow.root)}`);
+	return 0;
+}
+
+async function commandMcp(workflow: AuditWorkflow, io: CliIo): Promise<number> {
+	const server = new McpAuditServer({
+		workflow,
+		runner: processRunner(workflow.root),
+		session: { harness: "mcp", id: cliSession().id },
+	});
+	io.err(`audit-trail MCP server on stdio for ${workflow.root}`);
+	await serveStdio(server);
+	return 0;
+}
+
+async function commandInstall(target: string, io: CliIo): Promise<number> {
+	if (!target) {
+		io.err("Usage: audit-trail install <pi|claude|codex|opencode|all>");
+		return 1;
 	}
+	const ctx = { home: homedir(), packageRoot: packageRootFromModule(import.meta.url) };
+	let failed = false;
+	for (const installer of selectInstallers(target)) {
+		try {
+			const result = await installer.install(ctx);
+			io.out(`${result.harness}: ${result.message}`);
+		} catch (error: any) {
+			failed = true;
+			io.err(`${installer.harness}: install failed: ${error?.message ?? error}`);
+		}
+	}
+	return failed ? 1 : 0;
 }
 
 async function commandPublish(workflow: AuditWorkflow, selectorArg: string, io: CliIo): Promise<number> {
@@ -311,6 +285,10 @@ export async function runCli(argv: string[], io: CliIo = { out: console.log, err
 				return await commandPublish(workflow, (args[0] ?? "").trim(), io);
 			case "close":
 				return await commandClose(workflow, io);
+			case "mcp":
+				return await commandMcp(workflow, io);
+			case "install":
+				return await commandInstall((args[0] ?? "").trim(), io);
 			default:
 				io.err(`Unknown command: ${command}\n\n${HELP}`);
 				return 1;
