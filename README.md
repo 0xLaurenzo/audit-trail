@@ -1,6 +1,6 @@
 # Audit trail extension
 
-A pi extension for reviewing consequential agent choices instead of reconstructing them from a large diff.
+A pi extension for reviewing consequential agent choices instead of reconstructing them from a large diff. Harness-neutral audit behavior lives under `src/core/`; the Pi lifecycle, commands, tools, and UI are isolated in `src/adapters/pi.ts`, with `index.ts` retained as the package entry point.
 
 ## Install with Nix
 
@@ -45,6 +45,16 @@ During local development, load the checkout directly:
 ```bash
 pi -e /path/to/audit-trail
 ```
+
+## Development
+
+Run the dependency-free core test suite with Node.js 22 or newer:
+
+```bash
+npm test
+```
+
+The core modules depend only on Node.js and explicit ports from `src/core/ports.ts`; they do not import Pi packages. Adapter-specific behavior belongs under `src/adapters/`.
 
 ## Commands
 
