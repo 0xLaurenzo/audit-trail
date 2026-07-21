@@ -2,6 +2,7 @@
   "name": "pi-audit-trail",
   "version": "0.3.0",
   "private": true,
+  "type": "module",
   "description": "Append-only decision auditing and independent review for the pi coding agent",
   "keywords": [
     "pi-package",
@@ -12,6 +13,10 @@
   "repository": {
     "type": "git",
     "url": "git+https://github.com/0xLaurenzo/audit-trail.git"
+  },
+  "scripts": {
+    "test": "node --experimental-strip-types --test test/*.test.ts",
+    "check": "node --experimental-strip-types --check index.ts && node --experimental-strip-types --check src/adapters/pi.ts && npm test"
   },
   "peerDependencies": {
     "@earendil-works/pi-ai": "*",

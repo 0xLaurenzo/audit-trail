@@ -29,6 +29,8 @@
             installPhase = ''
               runHook preInstall
               install -Dm444 index.ts "$out/share/pi-audit-trail/index.ts"
+              cp -R src "$out/share/pi-audit-trail/src"
+              find "$out/share/pi-audit-trail/src" -type f -exec chmod 444 {} +
               install -Dm444 README.md "$out/share/pi-audit-trail/README.md"
               install -Dm444 package.json "$out/share/pi-audit-trail/package.json"
               runHook postInstall
