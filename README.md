@@ -1,6 +1,6 @@
 # Audit trail extension
 
-A pi extension for reviewing consequential agent choices instead of reconstructing them from a large diff. Harness-neutral audit behavior lives under `src/core/`; the Pi lifecycle, commands, tools, and UI are isolated in `src/adapters/pi.ts`, with `index.ts` retained as the package entry point.
+A pi extension for reviewing consequential agent choices instead of reconstructing them from a large diff. Harness-neutral audit behavior lives under `src/core/`; the Pi lifecycle, commands, tools, and UI are isolated in `src/adapters/pi.ts`, which is the package entry point.
 
 ## Install with Nix
 
@@ -15,7 +15,7 @@ Then register the immutable profile path in `~/.pi/agent/settings.json`:
 ```json
 {
   "extensions": [
-    "/Users/you/.nix-profile/share/pi-audit-trail/index.ts"
+    "/Users/you/.nix-profile/share/pi-audit-trail/src/adapters/pi.ts"
   ]
 }
 ```
