@@ -453,10 +453,6 @@ function rawAuditMarker(provenance: GitProvenance, task: string, part: number): 
 	return `<!-- pi-audit-trail:${provenance.repository}:${task}:part:${part} -->`;
 }
 
-function legacyAuditMarker(provenance: GitProvenance, task: string): string {
-	return `<!-- pi-audit-trail:${provenance.repository}:${task} -->`;
-}
-
 function splitRawTsv(rawTsv: string, maxBytes = RAW_TSV_CHUNK_BYTES): string[] {
 	if (!rawTsv.endsWith("\n")) {
 		throw new Error("Canonical audit TSV must end with a newline before it can be published exactly");
@@ -1014,7 +1010,6 @@ export default function auditTrailExtension(pi: ExtensionAPI) {
 
 				const rawTsv = await readFile(state.logPath, "utf8");
 				const bodies = buildRawGitHubComments(state, rows, rawTsv);
-				const legacyMarker = legacyAuditMarker(provenance, state.task);
 				const markerPrefix = `<!-- pi-audit-trail:${provenance.repository}:${state.task}:part:`;
 				const userResult = await pi.exec("gh", ["api", "user", "--jq", ".login"], { timeout: 30_000 });
 				if (userResult.code !== 0) throw new Error(userResult.stderr.trim() || "GitHub authentication failed");
@@ -1042,9 +1037,7 @@ export default function auditTrailExtension(pi: ExtensionAPI) {
 				>;
 				const comments = commentPages.flat();
 				const managed = comments.filter(
-					(comment) =>
-						comment.user?.login === login &&
-						(comment.body.includes(legacyMarker) || comment.body.includes(markerPrefix)),
+					(comment) => comment.user?.login === login && comment.body.includes(markerPrefix),
 				);
 				const unused = new Map(managed.map((comment) => [comment.id, comment]));
 				const tempDir = await mkdtemp(join(tmpdir(), "pi-audit-publish-"));
@@ -1053,8 +1046,7 @@ export default function auditTrailExtension(pi: ExtensionAPI) {
 				try {
 					for (const [index, body] of bodies.entries()) {
 						const marker = rawAuditMarker(provenance, state.task, index + 1);
-						const existing = managed.find((comment) => comment.body.includes(marker)) ??
-							(index === 0 ? managed.find((comment) => comment.body.includes(legacyMarker)) : undefined);
+						const existing = managed.find((comment) => comment.body.includes(marker));
 						if (existing) unused.delete(existing.id);
 						await writeFile(bodyPath, JSON.stringify({ body }), { encoding: "utf8", mode: 0o600 });
 						const endpoint = existing
