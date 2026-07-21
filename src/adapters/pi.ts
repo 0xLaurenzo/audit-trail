@@ -12,6 +12,7 @@ import {
 	buildReviewDocument,
 	buildReviewPrompt,
 	displayPath,
+	extractFinalAssistantOutput,
 	publishRawAudit,
 	summarize,
 	writeReviewArtifact,
@@ -62,29 +63,6 @@ function updateStatus(ctx: ExtensionContext, state: AuditState | undefined, rows
 	const stats = summarize(rows);
 	const flags = stats.unresolved.length + stats.lowConfidence.length;
 	ctx.ui.setStatus("audit-trail", `audit: ${stats.total} decisions${flags ? ` · ${flags} flags` : ""}`);
-}
-
-function extractFinalAssistantOutput(stdout: string): { output: string; error?: string } {
-	let output = "";
-	let error: string | undefined;
-	for (const line of stdout.split(/\r?\n/)) {
-		if (!line.trim()) continue;
-		try {
-			const event = JSON.parse(line);
-			if (event.type !== "message_end" || event.message?.role !== "assistant") continue;
-			if (event.message.stopReason === "error") {
-				error = event.message.errorMessage || "assistant message ended with an error";
-			}
-			const text = (event.message.content ?? [])
-				.filter((part: any) => part?.type === "text")
-				.map((part: any) => part.text)
-				.join("\n");
-			if (text) output = text;
-		} catch {
-			// Ignore non-JSON diagnostics.
-		}
-	}
-	return { output, error };
 }
 
 export default function auditTrailExtension(pi: ExtensionAPI) {
