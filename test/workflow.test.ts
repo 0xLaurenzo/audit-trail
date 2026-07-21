@@ -9,7 +9,7 @@ import test from "node:test";
 import { activeStatePath, readActiveAudit, sha256Hex } from "../src/core/active-state.ts";
 import type { CommandRunner } from "../src/core/ports.ts";
 import type { NewAuditRow } from "../src/core/types.ts";
-import { AuditWorkflow } from "../src/core/workflow.ts";
+import { AuditWorkflow, resolveWorktreeRoot } from "../src/core/workflow.ts";
 
 const run = promisify(execFile);
 const noGit: CommandRunner = {
@@ -144,6 +144,54 @@ for (let index = 0; index < Number(count); index++) {
 	} finally {
 		await rm(root, { recursive: true, force: true });
 	}
+});
+
+test("resume retries provenance capture once Git becomes available", async () => {
+	const root = await mkdtemp(join(tmpdir(), "audit-workflow-test-"));
+	try {
+		const session = { harness: "pi", id: "session-1" };
+		const offline = new AuditWorkflow(root, noGit);
+		const started = await offline.start("task", session);
+		assert.ok(started.provenanceError);
+		assert.equal(started.state.provenance, undefined);
+
+		const git: CommandRunner = {
+			async exec(_command, args) {
+				const outputs: Record<string, string> = {
+					"rev-parse --show-toplevel": root,
+					"remote get-url origin": "git@github.com:owner/repo.git",
+					"branch --show-current": "feature/task",
+					"rev-parse HEAD": "abcdef1234567890",
+					"status --porcelain": "",
+				};
+				const key = args.join(" ");
+				return { code: key in outputs ? 0 : 1, stdout: outputs[key] ?? "", stderr: "" };
+			},
+		};
+		const online = new AuditWorkflow(root, git);
+		const resumed = await online.start("task", session);
+		assert.equal(resumed.resumed, true);
+		assert.equal(resumed.provenanceError, undefined);
+		assert.equal(resumed.state.provenance?.repository, "owner/repo");
+		assert.equal(resumed.state.provenance?.sessionId, "pi/session-1");
+		assert.ok((await readActiveAudit(root))?.provenancePath, "active.json records provenance after retry");
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+test("worktree root resolves to the Git toplevel with a cwd fallback", async () => {
+	const git: CommandRunner = {
+		exec: async () => ({ code: 0, stdout: "/repo/toplevel\n", stderr: "" }),
+	};
+	assert.equal(await resolveWorktreeRoot(git, "/repo/toplevel/packages/foo"), "/repo/toplevel");
+	assert.equal(await resolveWorktreeRoot(noGit, "/somewhere"), "/somewhere");
+	const throwing: CommandRunner = {
+		exec: async () => {
+			throw new Error("exec unavailable");
+		},
+	};
+	assert.equal(await resolveWorktreeRoot(throwing, "/somewhere"), "/somewhere");
 });
 
 test("append fails cleanly when no audit is active", async () => {

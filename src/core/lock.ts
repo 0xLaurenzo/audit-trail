@@ -5,7 +5,11 @@ import { join } from "node:path";
 export interface WorktreeLockOptions {
 	/** Give up acquiring after this long. */
 	timeoutMs?: number;
-	/** A held lock older than this is considered abandoned. */
+	/**
+	 * A held lock older than this is considered abandoned. Keep this well above
+	 * the longest expected hold: a live same-host owner is detected via its PID,
+	 * but cross-host expiry relies on age alone.
+	 */
 	staleMs?: number;
 	/** Poll interval while waiting. */
 	pollMs?: number;
@@ -32,6 +36,21 @@ function pidAlive(pid: number): boolean {
 
 export function worktreeLockPath(root: string): string {
 	return join(root, ".audit", ".lock");
+}
+
+async function releaseOwnLock(lockDir: string): Promise<void> {
+	let owner: LockOwner | undefined;
+	try {
+		owner = JSON.parse(await readFile(join(lockDir, "owner.json"), "utf8")) as LockOwner;
+	} catch {
+		// Unreadable owner: do not risk deleting a lock another process may have
+		// reclaimed and re-acquired. A leaked own lock is recovered via dead-PID
+		// or age-based reclamation.
+		return;
+	}
+	if (owner.pid === process.pid && owner.hostname === hostname()) {
+		await rm(lockDir, { recursive: true, force: true });
+	}
 }
 
 async function reclaimIfStale(lockDir: string, staleMs: number): Promise<boolean> {
@@ -76,7 +95,7 @@ export async function withWorktreeLock<T>(
 	operation: () => Promise<T>,
 	options: WorktreeLockOptions = {},
 ): Promise<T> {
-	const { timeoutMs = 10_000, staleMs = 30_000, pollMs = 50 } = options;
+	const { timeoutMs = 10_000, staleMs = 300_000, pollMs = 50 } = options;
 	const lockDir = worktreeLockPath(root);
 	await mkdir(join(root, ".audit"), { recursive: true });
 	const deadline = Date.now() + timeoutMs;
@@ -98,6 +117,9 @@ export async function withWorktreeLock<T>(
 		await writeFile(join(lockDir, "owner.json"), JSON.stringify(owner), { encoding: "utf8", mode: 0o600 });
 		return await operation();
 	} finally {
-		await rm(lockDir, { recursive: true, force: true });
+		// Only remove the lock if we still own it; if this hold outlived staleMs
+		// and another process reclaimed it, deleting the directory would let a
+		// third process acquire alongside the current owner.
+		await releaseOwnLock(lockDir);
 	}
 }

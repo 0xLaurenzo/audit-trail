@@ -8,6 +8,7 @@ import {
 	AuditWorkflow,
 	ORIGIN_VALUES,
 	activeStatePath,
+	resolveWorktreeRoot,
 	buildReviewDocument,
 	buildReviewPrompt,
 	displayPath,
@@ -90,11 +91,11 @@ export default function auditTrailExtension(pi: ExtensionAPI) {
 	const runner: CommandRunner = {
 		exec: (command, args, options) => pi.exec(command, args, options),
 	};
-	const workflows = new Map<string, AuditWorkflow>();
-	const workflow = (ctx: ExtensionContext): AuditWorkflow => {
+	const workflows = new Map<string, Promise<AuditWorkflow>>();
+	const workflow = (ctx: ExtensionContext): Promise<AuditWorkflow> => {
 		let instance = workflows.get(ctx.cwd);
 		if (!instance) {
-			instance = new AuditWorkflow(ctx.cwd, runner);
+			instance = resolveWorktreeRoot(runner, ctx.cwd).then((root) => new AuditWorkflow(root, runner));
 			workflows.set(ctx.cwd, instance);
 		}
 		return instance;
@@ -104,14 +105,28 @@ export default function auditTrailExtension(pi: ExtensionAPI) {
 		id: ctx.sessionManager.getSessionId(),
 		entryId: ctx.sessionManager.getLeafId() ?? undefined,
 	});
-	const activeState = (ctx: ExtensionContext): Promise<AuditState | undefined> =>
-		workflow(ctx)
-			.active()
-			.catch(() => undefined);
+	interface ActiveLookup {
+		wf: AuditWorkflow;
+		state?: AuditState;
+		/** Set when active-audit state exists but cannot be read. */
+		error?: string;
+	}
+	const activeState = async (ctx: ExtensionContext): Promise<ActiveLookup> => {
+		const wf = await workflow(ctx);
+		try {
+			return { wf, state: await wf.active() };
+		} catch (error: any) {
+			return { wf, error: String(error?.message ?? error) };
+		}
+	};
 
 	const refresh = async (ctx: ExtensionContext) => {
-		const state = await activeState(ctx);
-		const rows = state ? await workflow(ctx).rows(state).catch(() => []) : [];
+		const { wf, state, error } = await activeState(ctx);
+		if (error) {
+			ctx.ui.setStatus("audit-trail", "audit: state unreadable");
+			return;
+		}
+		const rows = state ? await wf.rows(state).catch(() => []) : [];
 		updateStatus(ctx, state, rows);
 	};
 
@@ -119,7 +134,7 @@ export default function auditTrailExtension(pi: ExtensionAPI) {
 	pi.on("session_tree", async (_event, ctx) => refresh(ctx));
 
 	pi.on("before_agent_start", async (event, ctx) => {
-		const state = await activeState(ctx);
+		const { state } = await activeState(ctx);
 		if (!state) return;
 		return {
 			systemPrompt:
@@ -139,14 +154,23 @@ export default function auditTrailExtension(pi: ExtensionAPI) {
 
 	pi.on("tool_call", async (event, ctx) => {
 		if (event.toolName !== "write" && event.toolName !== "edit") return;
-		const state = await activeState(ctx);
-		if (!state) return;
+		const { wf, state, error } = await activeState(ctx);
 		const input = event.input as { path?: unknown };
 		const inputPath = typeof input.path === "string" ? resolve(ctx.cwd, input.path) : undefined;
-		const protectedPaths = [state.logPath, state.provenancePath, activeStatePath(ctx.cwd)].filter(
+		if (!inputPath) return;
+		if (error) {
+			// Fail closed: with unreadable active-audit state, protect the whole
+			// .audit directory instead of silently disabling the guard.
+			if (inputPath.startsWith(`${resolve(wf.root, ".audit")}/`)) {
+				return { block: true, reason: `Audit state is unreadable (${error}); refusing writes under .audit/.` };
+			}
+			return;
+		}
+		if (!state) return;
+		const protectedPaths = [state.logPath, state.provenancePath, activeStatePath(wf.root)].filter(
 			(path): path is string => Boolean(path),
 		);
-		if (inputPath && protectedPaths.some((path) => inputPath === resolve(path))) {
+		if (protectedPaths.some((path) => inputPath === resolve(path))) {
 			return {
 				block: true,
 				reason: "Audit state and Git provenance are extension-managed; use audit_decision for corrections.",
@@ -169,7 +193,8 @@ export default function auditTrailExtension(pi: ExtensionAPI) {
 		],
 		parameters: AuditDecisionParams,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-			const { row, state, rows } = await workflow(ctx).append(sessionIdentity(ctx), {
+			const wf = await workflow(ctx);
+			const { row, state, rows } = await wf.append(sessionIdentity(ctx), {
 				phase: params.phase,
 				origin: params.origin,
 				decision: params.decision,
@@ -197,14 +222,15 @@ export default function auditTrailExtension(pi: ExtensionAPI) {
 				return;
 			}
 			try {
-				const result = await workflow(ctx).start(requested, sessionIdentity(ctx));
+				const wf = await workflow(ctx);
+				const result = await wf.start(requested, sessionIdentity(ctx));
 				if (result.provenanceError) {
 					ctx.ui.notify(
 						`Audit will remain local because GitHub provenance could not be captured: ${result.provenanceError}`,
 						"warning",
 					);
 				}
-				const rows = await workflow(ctx).rows(result.state);
+				const rows = await wf.rows(result.state);
 				updateStatus(ctx, result.state, rows);
 				const provenance = result.state.provenance;
 				ctx.ui.notify(
@@ -220,18 +246,22 @@ export default function auditTrailExtension(pi: ExtensionAPI) {
 	pi.registerCommand("audit-status", {
 		description: "Show active decision-audit status and unresolved decision IDs",
 		handler: async (_args, ctx) => {
-			const state = await activeState(ctx);
+			const { wf, state, error } = await activeState(ctx);
+			if (error) {
+				ctx.ui.notify(`Audit state is unreadable: ${error}`, "error");
+				return;
+			}
 			if (!state) {
 				ctx.ui.notify("No decision audit is active in this worktree", "info");
 				return;
 			}
-			const rows = await workflow(ctx).rows(state);
+			const rows = await wf.rows(state);
 			const stats = summarize(rows);
 			updateStatus(ctx, state, rows);
 			const unresolved = stats.unresolved.map((row) => row.id).join(", ") || "none";
 			const low = stats.lowConfidence.map((row) => row.id).join(", ") || "none";
 			const missing = stats.missingEvidence.map((row) => row.id).join(", ") || "none";
-			const currentSha = await workflow(ctx).currentSha(state);
+			const currentSha = await wf.currentSha(state);
 			const reviewLine = state.review
 				? `review: ${state.review.path} (${state.review.mode}${state.review.sha256 === currentSha ? "" : ", stale"})`
 				: "review: not run";
@@ -255,7 +285,11 @@ export default function auditTrailExtension(pi: ExtensionAPI) {
 	pi.registerCommand("audit-review", {
 		description: "Review the active trail, preferring a cross-provider model: /audit-review [provider/model]",
 		handler: async (args, ctx) => {
-			const state = await activeState(ctx);
+			const { wf, state, error } = await activeState(ctx);
+			if (error) {
+				ctx.ui.notify(`Audit state is unreadable: ${error}`, "error");
+				return;
+			}
 			if (!state) {
 				ctx.ui.notify("No decision audit is active in this worktree", "error");
 				return;
@@ -296,7 +330,7 @@ export default function auditTrailExtension(pi: ExtensionAPI) {
 						? "cross-model"
 						: "same-model";
 
-			const rows = await workflow(ctx).rows(state);
+			const rows = await wf.rows(state);
 			const tempDir = await mkdtemp(join(tmpdir(), "pi-audit-review-"));
 			const promptPath = join(tempDir, "reviewer.md");
 			const reviewerPrompt = buildReviewPrompt({
@@ -344,7 +378,7 @@ export default function auditTrailExtension(pi: ExtensionAPI) {
 					harnessName: "pi",
 				});
 				await writeReviewArtifact(reviewPath, reviewDocument);
-				await workflow(ctx).recordReview({
+				await wf.recordReview({
 					path: reviewPath,
 					mode,
 					model: `${reviewModel.provider}/${reviewModel.id}`,
@@ -361,7 +395,11 @@ export default function auditTrailExtension(pi: ExtensionAPI) {
 	pi.registerCommand("audit-publish", {
 		description: "Create or update raw audit TSV comments on the branch PR: /audit-publish [number-or-url]",
 		handler: async (args, ctx) => {
-			const state = await activeState(ctx);
+			const { wf, state, error } = await activeState(ctx);
+			if (error) {
+				ctx.ui.notify(`Audit state is unreadable: ${error}`, "error");
+				return;
+			}
 			if (!state) {
 				ctx.ui.notify("No decision audit is active in this worktree", "error");
 				return;
@@ -370,8 +408,8 @@ export default function auditTrailExtension(pi: ExtensionAPI) {
 				ctx.ui.notify("This audit has no Git provenance; publishing requires a GitHub origin", "error");
 				return;
 			}
-			const rows = await workflow(ctx).rows(state);
-			const currentSha = await workflow(ctx).currentSha(state);
+			const rows = await wf.rows(state);
+			const currentSha = await wf.currentSha(state);
 			if (!state.review || currentSha === undefined || state.review.sha256 !== currentSha) {
 				ctx.ui.notify("Run /audit-review after the latest decision before publishing", "error");
 				return;
@@ -405,7 +443,8 @@ export default function auditTrailExtension(pi: ExtensionAPI) {
 		description: "Close the active audit after all choices are resolved and independently reviewed",
 		handler: async (_args, ctx) => {
 			try {
-				const result = await workflow(ctx).close();
+				const wf = await workflow(ctx);
+				const result = await wf.close();
 				if (!result.closed) {
 					ctx.ui.notify(`Cannot close audit:\n${result.blockers.map((item) => `- ${item}`).join("\n")}`, "error");
 					return;

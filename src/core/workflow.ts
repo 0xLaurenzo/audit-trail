@@ -26,6 +26,22 @@ export function qualifiedSession(session: SessionIdentity): string {
 	return `${session.harness}/${session.id}`;
 }
 
+/**
+ * Resolve the Git worktree root so "one audit per worktree" holds regardless
+ * of the directory a session was started in. Falls back to the given
+ * directory outside a Git repository.
+ */
+export async function resolveWorktreeRoot(runner: CommandRunner, fallback: string): Promise<string> {
+	try {
+		const result = await runner.exec("git", ["rev-parse", "--show-toplevel"], { timeout: 10_000 });
+		const top = result.stdout.trim();
+		if (result.code === 0 && top) return top;
+	} catch {
+		// Git unavailable: treat the fallback directory as the worktree root.
+	}
+	return fallback;
+}
+
 export interface StartAuditResult {
 	state: AuditState;
 	resumed: boolean;
@@ -114,13 +130,28 @@ export class AuditWorkflow {
 	async start(taskInput: string, session: SessionIdentity): Promise<StartAuditResult> {
 		const task = safeSlug(taskInput, this.now());
 		return this.lock(async () => {
-			const existing = await readActiveAudit(this.root);
+			let existing = await readActiveAudit(this.root);
 			if (existing && existing.task !== task) {
 				throw new Error(
 					`Another audit is already active in this worktree: ${existing.task}. Close it before starting ${task}.`,
 				);
 			}
-			if (existing) return { state: await this.stateFrom(existing), resumed: true };
+			if (existing) {
+				// Retry provenance capture on resume so an audit started while Git or
+				// the network was unavailable does not stay local forever.
+				let provenanceError: string | undefined;
+				if (!existing.provenancePath) {
+					const provenanceRel = join(".audit", `${existing.task}.provenance.json`);
+					try {
+						await ensureProvenance(this.runner, existing.task, qualifiedSession(session), this.absolute(provenanceRel));
+						existing = { ...existing, provenancePath: provenanceRel };
+						await writeActiveAudit(this.root, existing);
+					} catch (error: any) {
+						provenanceError = String(error?.message ?? error);
+					}
+				}
+				return { state: await this.stateFrom(existing), resumed: true, provenanceError };
+			}
 
 			const logRel = join(".audit", `${task}.tsv`);
 			const provenanceRel = join(".audit", `${task}.provenance.json`);

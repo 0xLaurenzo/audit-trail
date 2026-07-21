@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { hostname } from "node:os";
 import { tmpdir } from "node:os";
@@ -18,6 +19,24 @@ test("a lock held by a dead same-host process is reclaimed", async () => {
 		await plantLock(root, { pid: 999_999_999, hostname: hostname(), acquiredAt: new Date().toISOString() });
 		const result = await withWorktreeLock(root, async () => "ran", { timeoutMs: 2_000 });
 		assert.equal(result, "ran");
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+test("release leaves a lock reclaimed by another owner intact", async () => {
+	const root = await mkdtemp(join(tmpdir(), "audit-lock-test-"));
+	try {
+		const lockDir = worktreeLockPath(root);
+		await withWorktreeLock(root, async () => {
+			// Simulate another process reclaiming a stale hold mid-operation.
+			await writeFile(
+				join(lockDir, "owner.json"),
+				JSON.stringify({ pid: 999_999_999, hostname: "another-host", acquiredAt: new Date().toISOString() }),
+				"utf8",
+			);
+		});
+		assert.ok(existsSync(lockDir), "foreign-owned lock survives our release");
 	} finally {
 		await rm(root, { recursive: true, force: true });
 	}
