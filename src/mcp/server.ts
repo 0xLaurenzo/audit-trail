@@ -1,17 +1,23 @@
 import { createInterface } from "node:readline";
+import type { Readable, Writable } from "node:stream";
 import { sha256Hex } from "../core/active-state.ts";
 import { publishRawAudit } from "../core/github-publisher.ts";
 import { runIndependentReview } from "../core/independent-review.ts";
 import type { CommandRunner, SessionIdentity } from "../core/ports.ts";
 import { formatStatusLines } from "../core/status.ts";
-import { ORIGIN_VALUES, type NewAuditRow, type ReviewMode } from "../core/types.ts";
+import {
+	CONFIDENCE_VALUES,
+	ORIGIN_VALUES,
+	RESULT_VALUES,
+	REVIEW_MODES,
+	type NewAuditRow,
+	type ReviewMode,
+} from "../core/types.ts";
 import type { AuditWorkflow } from "../core/workflow.ts";
 import { readFile } from "node:fs/promises";
 
-const PROTOCOL_VERSION = "2024-11-05";
-const CONFIDENCE_VALUES = ["high", "medium", "low"] as const;
-const RESULT_VALUES = ["open", "verified", "reverted", "inconclusive"] as const;
-const REVIEW_MODES = ["cross-provider", "cross-model", "same-model"] as const;
+/** Newest first; initialize echoes the client's version when supported. */
+const SUPPORTED_PROTOCOL_VERSIONS = ["2025-06-18", "2025-03-26", "2024-11-05"];
 
 interface JsonRpcMessage {
 	jsonrpc?: string;
@@ -63,14 +69,20 @@ const TOOLS: ToolDefinition[] = [
 	},
 	{
 		name: "audit_review",
-		description: "Run an independent transcript-less review with the given provider/model and record the checkpoint.",
+		description:
+			"Run an independent transcript-less review with the given provider/model and record the checkpoint. May take several minutes; this server handles requests sequentially, so other tool calls queue behind it.",
 		inputSchema: {
 			type: "object",
 			properties: {
 				model: { type: "string", description: "Reviewer as provider/model" },
-				mode: { type: "string", enum: [...REVIEW_MODES], description: "Relation to the working model" },
+				mode: {
+					type: "string",
+					enum: [...REVIEW_MODES],
+					description:
+						"How the reviewer relates to the working model; state it truthfully, it is recorded in the checkpoint",
+				},
 			},
-			required: ["model"],
+			required: ["model", "mode"],
 		},
 	},
 	{
@@ -166,7 +178,10 @@ export class McpAuditServer {
 			case "audit_review": {
 				const model = requireString(args, "model");
 				if (!model.includes("/")) throw new Error("model must be provider/model");
-				const mode = oneOf(REVIEW_MODES, optionalString(args, "mode") ?? "cross-provider", "mode") as ReviewMode;
+				// No default: the server cannot verify the reviewer's relation to the
+				// working model, and a guessed mode would record false independence
+				// claims in the checkpoint (mirrors the CLI's required --mode).
+				const mode = oneOf(REVIEW_MODES, requireString(args, "mode"), "mode") as ReviewMode;
 				const review = await runIndependentReview({
 					workflow: this.workflow,
 					runner: this.runner,
@@ -212,16 +227,21 @@ export class McpAuditServer {
 		if (isNotification) return undefined;
 		try {
 			switch (method) {
-				case "initialize":
+				case "initialize": {
+					const requested = typeof params?.protocolVersion === "string" ? params.protocolVersion : undefined;
 					return {
 						jsonrpc: "2.0",
 						id,
 						result: {
-							protocolVersion: PROTOCOL_VERSION,
+							protocolVersion:
+								requested && SUPPORTED_PROTOCOL_VERSIONS.includes(requested)
+									? requested
+									: SUPPORTED_PROTOCOL_VERSIONS[0],
 							capabilities: { tools: {} },
 							serverInfo: { name: "audit-trail", version: this.version },
 						},
 					};
+				}
 				case "ping":
 					return { jsonrpc: "2.0", id, result: {} };
 				case "tools/list":
@@ -252,8 +272,12 @@ export class McpAuditServer {
 }
 
 /** Newline-delimited JSON-RPC over stdio, per the MCP stdio transport. */
-export async function serveStdio(server: McpAuditServer): Promise<void> {
-	const reader = createInterface({ input: process.stdin, crlfDelay: Number.POSITIVE_INFINITY });
+export async function serveStdio(
+	server: McpAuditServer,
+	input: Readable = process.stdin,
+	output: Writable = process.stdout,
+): Promise<void> {
+	const reader = createInterface({ input, crlfDelay: Number.POSITIVE_INFINITY });
 	for await (const line of reader) {
 		if (!line.trim()) continue;
 		let message: JsonRpcMessage;
@@ -263,6 +287,6 @@ export async function serveStdio(server: McpAuditServer): Promise<void> {
 			continue;
 		}
 		const response = await server.handle(message);
-		if (response) process.stdout.write(`${JSON.stringify(response)}\n`);
+		if (response) output.write(`${JSON.stringify(response)}\n`);
 	}
 }

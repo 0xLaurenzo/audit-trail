@@ -39,17 +39,26 @@ export const piInstaller: HarnessInstaller = {
 			if (error?.code !== "ENOENT") throw error;
 		}
 		const extensions = Array.isArray(settings.extensions) ? (settings.extensions as unknown[]) : [];
-		const existing = extensions.find(
-			(item) =>
-				typeof item === "string" && (item === entry || /(pi-)?audit-trail.*\/src\/adapters\/pi\.ts$/.test(item)),
-		);
-		if (existing) {
-			return { harness: "pi", changed: false, message: `already registered in ${settingsPath}: ${existing}` };
+		// Any audit-trail entry counts, including stale pre-0.4 index.ts paths;
+		// appending alongside one would register the extension twice and leave a
+		// dangling path for Pi to fail on at startup.
+		const isAuditTrailEntry = (item: unknown): item is string =>
+			typeof item === "string" && /(pi-)?audit-trail.*\/(index\.ts|src\/adapters\/pi\.ts)$/.test(item);
+		const current = extensions.filter(isAuditTrailEntry);
+		if (current.length === 1 && current[0] === entry) {
+			return { harness: "pi", changed: false, message: `already registered in ${settingsPath}: ${entry}` };
 		}
-		settings.extensions = [...extensions, entry];
+		settings.extensions = [...extensions.filter((item) => !isAuditTrailEntry(item)), entry];
 		await mkdir(dirname(settingsPath), { recursive: true });
 		await writeFile(settingsPath, `${JSON.stringify(settings, null, 1)}\n`, "utf8");
-		return { harness: "pi", changed: true, message: `registered ${entry} in ${settingsPath}` };
+		const replaced = current.filter((item) => item !== entry);
+		return {
+			harness: "pi",
+			changed: true,
+			message: replaced.length
+				? `registered ${entry} in ${settingsPath}, replacing stale ${replaced.join(", ")}`
+				: `registered ${entry} in ${settingsPath}`,
+		};
 	},
 };
 

@@ -2,11 +2,12 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { PassThrough } from "node:stream";
 import test from "node:test";
 import { readRows } from "../src/core/audit-store.ts";
 import type { CommandRunner } from "../src/core/ports.ts";
 import { AuditWorkflow } from "../src/core/workflow.ts";
-import { McpAuditServer } from "../src/mcp/server.ts";
+import { McpAuditServer, serveStdio } from "../src/mcp/server.ts";
 
 const noGit: CommandRunner = {
 	exec: async () => ({ code: 1, stdout: "", stderr: "git unavailable" }),
@@ -42,7 +43,7 @@ test("mcp server initializes, lists tools, and drives the audit workflow", async
 		const server = makeServer(root);
 
 		const init = resultOf(await server.handle(request(1, "initialize", { protocolVersion: "2024-11-05" })));
-		assert.equal(init.protocolVersion, "2024-11-05");
+		assert.equal(init.protocolVersion, "2024-11-05", "supported client version is echoed");
 		assert.equal(init.serverInfo.name, "audit-trail");
 		assert.equal(await server.handle({ jsonrpc: "2.0", method: "notifications/initialized" }), undefined);
 
@@ -89,6 +90,50 @@ test("mcp server initializes, lists tools, and drives the audit workflow", async
 	}
 });
 
+test("initialize negotiates the protocol version", async () => {
+	const root = await mkdtemp(join(tmpdir(), "audit-mcp-test-"));
+	try {
+		const server = makeServer(root);
+		const echoed = resultOf(await server.handle(request(1, "initialize", { protocolVersion: "2025-06-18" })));
+		assert.equal(echoed.protocolVersion, "2025-06-18");
+		const unsupported = resultOf(await server.handle(request(2, "initialize", { protocolVersion: "1999-01-01" })));
+		assert.equal(unsupported.protocolVersion, "2025-06-18", "falls back to the newest supported version");
+		const missing = resultOf(await server.handle(request(3, "initialize")));
+		assert.equal(missing.protocolVersion, "2025-06-18");
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+test("stdio transport frames responses and tolerates garbage lines", async () => {
+	const root = await mkdtemp(join(tmpdir(), "audit-mcp-test-"));
+	try {
+		const server = makeServer(root);
+		const input = new PassThrough();
+		const output = new PassThrough();
+		const served = serveStdio(server, input, output);
+		input.write("not json at all\n");
+		input.write("\n");
+		input.write('{"jsonrpc":"2.0","method":"notifications/initialized"}\n');
+		input.write('{"jsonrpc":"2.0","id":1,"method":"ping"}\n');
+		input.write('{"jsonrpc":"2.0","id":2,"method":"tools/list"}\n');
+		input.end();
+		await served;
+		const lines = output
+			.read()
+			.toString()
+			.split("\n")
+			.filter(Boolean)
+			.map((line: string) => JSON.parse(line));
+		assert.equal(lines.length, 2, "garbage, blank, and notification lines produce no responses");
+		assert.deepEqual(lines[0], { jsonrpc: "2.0", id: 1, result: {} });
+		assert.equal(lines[1].id, 2);
+		assert.equal(lines[1].result.tools.length, 6);
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
 test("mcp server reports tool errors in-band and protocol errors as JSON-RPC errors", async () => {
 	const root = await mkdtemp(join(tmpdir(), "audit-mcp-test-"));
 	try {
@@ -107,6 +152,14 @@ test("mcp server reports tool errors in-band and protocol errors as JSON-RPC err
 
 		const publish = resultOf(await server.handle(request(2, "tools/call", { name: "audit_publish", arguments: {} })));
 		assert.equal(publish.isError, true);
+
+		const modelessReview = resultOf(
+			await server.handle(
+				request(7, "tools/call", { name: "audit_review", arguments: { model: "openai/gpt-5.2" } }),
+			),
+		);
+		assert.equal(modelessReview.isError, true);
+		assert.match(textOf(modelessReview), /Missing required argument: mode/);
 
 		const unknownTool = resultOf(await server.handle(request(3, "tools/call", { name: "nope", arguments: {} })));
 		assert.equal(unknownTool.isError, true);

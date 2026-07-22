@@ -71,7 +71,7 @@ audit-trail start <task>
 audit-trail decision --phase core --origin "implementation discovery" \
   --decision "..." --why "..." --confidence high --evidence "file:1" --result verified
 audit-trail status
-audit-trail review <provider/model> [--mode cross-provider|cross-model|same-model]
+audit-trail review <provider/model> --mode cross-provider|cross-model|same-model
 audit-trail publish [pr-number-or-url]
 audit-trail close
 ```
@@ -92,7 +92,7 @@ CLI rows are attributed as `cli/<user>@<host>` in the TSV `session` cell. `audit
 
 ## Installer
 
-`audit-trail install <pi|claude|codex|opencode|all>` configures harnesses idempotently from a registry. Today `pi` registers the extension entry point in `~/.pi/agent/settings.json` (existing audit-trail entries are detected, unrelated settings preserved); `claude`, `codex`, and `opencode` are registry placeholders until their adapter issues land. Declaratively managed settings (for example home-manager) fail with a clear error — add the extension path in your Nix configuration instead.
+`audit-trail install <pi|claude|codex|opencode|all>` configures harnesses idempotently from a registry. Today `pi` registers the extension entry point in `~/.pi/agent/settings.json` (stale audit-trail entries — including pre-0.4 `index.ts` paths — are replaced rather than duplicated, and unrelated settings are preserved); `claude`, `codex`, and `opencode` are registry placeholders until their adapter issues land. Declaratively managed settings (for example home-manager) fail with a clear error — add the extension path in your Nix configuration instead.
 
 ## Commands
 

@@ -28,19 +28,31 @@ test("pi installer registers the extension idempotently and preserves settings",
 	}
 });
 
-test("pi installer detects existing audit-trail entries at other paths", async () => {
+test("pi installer replaces stale audit-trail entries instead of duplicating them", async () => {
 	const home = await mkdtemp(join(tmpdir(), "audit-install-test-"));
 	try {
 		const settingsPath = join(home, ".pi", "agent", "settings.json");
 		await mkdir(join(home, ".pi", "agent"), { recursive: true });
 		await writeFile(
 			settingsPath,
-			JSON.stringify({ extensions: ["/nix/store/abc-pi-audit-trail-0.3.0/share/pi-audit-trail/src/adapters/pi.ts"] }),
+			JSON.stringify({
+				extensions: [
+					"/other/ext.ts",
+					"/nix/store/abc-pi-audit-trail-0.3.0/share/pi-audit-trail/index.ts",
+					"/nix/store/def-pi-audit-trail-0.3.0/share/pi-audit-trail/src/adapters/pi.ts",
+				],
+			}),
 			"utf8",
 		);
 		const result = await piInstaller.install({ home, packageRoot: "/opt/audit-trail" });
-		assert.equal(result.changed, false);
-		assert.match(result.message, /already registered/);
+		assert.equal(result.changed, true);
+		assert.match(result.message, /replacing stale/);
+		const settings = JSON.parse(await readFile(settingsPath, "utf8"));
+		assert.deepEqual(settings.extensions, ["/other/ext.ts", join("/opt/audit-trail", "src", "adapters", "pi.ts")]);
+
+		const again = await piInstaller.install({ home, packageRoot: "/opt/audit-trail" });
+		assert.equal(again.changed, false);
+		assert.match(again.message, /already registered/);
 	} finally {
 		await rm(home, { recursive: true, force: true });
 	}
