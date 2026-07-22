@@ -68,6 +68,30 @@ test("ensureProvenance reads an existing version 1 file without invoking Git", a
 	}
 });
 
+test("transcript-less review prompt and document target the TSV, diff, and repository", () => {
+	const prompt = buildReviewPrompt({
+		logPath: "/repo/.audit/core.tsv",
+		workingDirectory: "/repo",
+		harnessName: "cli",
+	});
+	assert.match(prompt, /append-only TSV decision log, the Git diff against the audit's starting commit, and the repository/);
+	assert.match(prompt, /decision IDs and repository evidence/);
+	assert.doesNotMatch(prompt, /session transcript|session: /);
+	const document = buildReviewDocument({
+		model: "openai/reviewer",
+		reviewMode: "cross-model",
+		logPath: "/repo/.audit/core.tsv",
+		workingDirectory: "/repo",
+		rowCount: 2,
+		output: "No flags\n",
+		harnessName: "cli",
+	});
+	assert.equal(
+		document,
+		"# Decision audit review\n\n- Reviewed by: openai/reviewer\n- Review mode: cross-model\n- Audit log: .audit/core.tsv\n- Decision rows reviewed: 2\n\nNo flags\n",
+	);
+});
+
 test("review prompt and document preserve the Pi review contract", () => {
 	const prompt = buildReviewPrompt({
 		logPath: "/repo/.audit/core.tsv",

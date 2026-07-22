@@ -13,13 +13,17 @@ import {
 	extractFinalAssistantOutput,
 	writeReviewArtifact,
 } from "../core/review.ts";
-import { ORIGIN_VALUES, type AuditState, type NewAuditRow, type ReviewMode } from "../core/types.ts";
+import {
+	CONFIDENCE_VALUES,
+	ORIGIN_VALUES,
+	RESULT_VALUES,
+	REVIEW_MODES,
+	type AuditState,
+	type NewAuditRow,
+	type ReviewMode,
+} from "../core/types.ts";
 import { summarize } from "../core/validation.ts";
 import { AuditWorkflow, resolveWorktreeRoot } from "../core/workflow.ts";
-
-const CONFIDENCE_VALUES = ["high", "medium", "low"] as const;
-const RESULT_VALUES = ["open", "verified", "reverted", "inconclusive"] as const;
-const REVIEW_MODES = ["cross-provider", "cross-model", "same-model"] as const;
 
 const HELP = `audit-trail — append-only decision auditing for one Git worktree
 
@@ -46,7 +50,8 @@ Decision options:
   --supersedes <id>       Prior decision ID replaced by this row
 
 Review options:
-  --mode <value>          ${REVIEW_MODES.join(" | ")} (default: cross-provider)`;
+  --mode <value>          ${REVIEW_MODES.join(" | ")} (required: how the reviewer
+                          relates to the working model; the CLI cannot infer this)`;
 
 export interface CliIo {
 	out(line: string): void;
@@ -62,9 +67,12 @@ export function processRunner(cwd?: string): CommandRunner {
 					args,
 					{ cwd, timeout: options?.timeout, signal: options?.signal, maxBuffer: 64 * 1024 * 1024 },
 					(error: any, stdout, stderr) => {
+						const stderrText = String(stderr ?? "");
 						resolveExec({
 							stdout: String(stdout ?? ""),
-							stderr: String(stderr ?? ""),
+							// Spawn failures (for example ENOENT for a missing binary) carry
+							// no stderr; surface the error message instead of losing it.
+							stderr: stderrText || (error ? String(error?.message ?? error) : ""),
 							code: error ? (typeof error.code === "number" ? error.code : 1) : 0,
 							killed: Boolean(error?.killed),
 						});
@@ -179,16 +187,23 @@ async function commandStatus(workflow: AuditWorkflow, io: CliIo): Promise<number
 async function commandReview(workflow: AuditWorkflow, args: string[], io: CliIo): Promise<number> {
 	const { values, positionals } = parseArgs({
 		args,
-		options: { mode: { type: "string", default: "cross-provider" } },
+		options: { mode: { type: "string" } },
 		allowPositionals: true,
 		strict: true,
 	});
 	const model = positionals[0];
 	if (!model || !model.includes("/")) {
-		io.err("Usage: audit-trail review <provider/model> [--mode cross-provider|cross-model|same-model]");
+		io.err("Usage: audit-trail review <provider/model> --mode cross-provider|cross-model|same-model");
 		return 1;
 	}
-	const mode = oneOf(REVIEW_MODES, values.mode!, "mode") as ReviewMode;
+	if (!values.mode) {
+		// The CLI has no working model to compare against, so it must not guess:
+		// a defaulted mode would record unverifiable independence claims in the
+		// review checkpoint. The invoker states the relation explicitly.
+		io.err("Specify --mode: how the reviewer relates to the working model (cross-provider|cross-model|same-model)");
+		return 1;
+	}
+	const mode = oneOf(REVIEW_MODES, values.mode, "mode") as ReviewMode;
 	const state = await requireActive(workflow);
 	const rows = await workflow.rows(state);
 	const prompt = buildReviewPrompt({ logPath: state.logPath, workingDirectory: workflow.root, harnessName: "cli" });
@@ -281,13 +296,15 @@ async function commandClose(workflow: AuditWorkflow, io: CliIo): Promise<number>
 export async function runCli(argv: string[], io: CliIo = { out: console.log, err: console.error }): Promise<number> {
 	const args = [...argv];
 	let directory = process.cwd();
-	if (args[0] === "-C") {
-		if (!args[1]) {
+	const dirFlag = args.indexOf("-C");
+	if (dirFlag !== -1) {
+		const target = args[dirFlag + 1];
+		if (!target) {
 			io.err("-C requires a directory");
 			return 1;
 		}
-		directory = resolve(args[1]);
-		args.splice(0, 2);
+		directory = resolve(target);
+		args.splice(dirFlag, 2);
 	}
 	const command = args.shift() ?? "help";
 	if (command === "help" || command === "--help" || command === "-h") {
