@@ -62,6 +62,22 @@ Exactly one audit may be active per Git worktree. The authoritative state lives 
 
 The TSV `session` cell is harness-qualified (for example `pi/<session-id>`), keeping contributions attributable when multiple harnesses share one audit.
 
+## Standalone CLI
+
+The same workflow is available outside any harness via `audit-trail` (installed to `bin/` by both npm-style and Nix installs). Because state is shared per worktree, CLI invocations and harness sessions interoperate on one audit:
+
+```bash
+audit-trail start <task>
+audit-trail decision --phase core --origin "implementation discovery" \
+  --decision "..." --why "..." --confidence high --evidence "file:1" --result verified
+audit-trail status
+audit-trail review <provider/model> [--mode cross-provider|cross-model|same-model]
+audit-trail publish [pr-number-or-url]
+audit-trail close
+```
+
+CLI rows are attributed as `cli/<user>@<host>` in the TSV `session` cell. `audit-trail review` runs the reviewer through a no-session `pi` subprocess against the TSV, Git diff, and repository (no transcript). Use `-C <dir>` to operate on another worktree.
+
 ## Commands
 
 - `/audit-start <task>` — start or resume the worktree audit at `.audit/<task>.tsv`; starting a different task while one is active fails
