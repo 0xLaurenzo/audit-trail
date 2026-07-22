@@ -13,7 +13,9 @@ import {
 	buildReviewPrompt,
 	displayPath,
 	extractFinalAssistantOutput,
+	formatStatusLines,
 	publishRawAudit,
+	sha256Hex,
 	summarize,
 	writeReviewArtifact,
 	type AuditRow,
@@ -236,25 +238,9 @@ export default function auditTrailExtension(pi: ExtensionAPI) {
 			const rows = await wf.rows(state);
 			const stats = summarize(rows);
 			updateStatus(ctx, state, rows);
-			const unresolved = stats.unresolved.map((row) => row.id).join(", ") || "none";
-			const low = stats.lowConfidence.map((row) => row.id).join(", ") || "none";
-			const missing = stats.missingEvidence.map((row) => row.id).join(", ") || "none";
 			const currentSha = await wf.currentSha(state);
-			const reviewLine = state.review
-				? `review: ${state.review.path} (${state.review.mode}${state.review.sha256 === currentSha ? "" : ", stale"})`
-				: "review: not run";
 			ctx.ui.notify(
-				[
-					`${state.task}: ${stats.total} rows (${stats.active} active)`,
-					`unresolved: ${unresolved}`,
-					`low confidence: ${low}`,
-					`missing evidence: ${missing}`,
-					`log: ${displayPath(state.logPath, ctx.cwd)}`,
-					state.provenance
-						? `origin: ${state.provenance.repository}@${state.provenance.branch} (${state.provenance.startCommit.slice(0, 12)})`
-						: "origin: unavailable (local audit)",
-					reviewLine,
-				].join("\n"),
+				formatStatusLines(state, rows, currentSha, wf.root).join("\n"),
 				stats.unresolved.length || stats.lowConfidence.length || stats.missingEvidence.length ? "warning" : "info",
 			);
 		},
@@ -387,8 +373,10 @@ export default function auditTrailExtension(pi: ExtensionAPI) {
 				return;
 			}
 			const rows = await wf.rows(state);
-			const currentSha = await wf.currentSha(state);
-			if (!state.review || currentSha === undefined || state.review.sha256 !== currentSha) {
+			// Read once and gate on these exact bytes so a concurrent append between
+			// check and publication cannot slip unreviewed rows into the PR comment.
+			const rawTsv = await readFile(state.logPath, "utf8");
+			if (!state.review || state.review.sha256 !== sha256Hex(rawTsv)) {
 				ctx.ui.notify("Run /audit-review after the latest decision before publishing", "error");
 				return;
 			}
@@ -400,13 +388,7 @@ export default function auditTrailExtension(pi: ExtensionAPI) {
 			}
 			ctx.ui.notify(`Resolving PR for ${provenance.repository}@${provenance.branch}...`, "info");
 			try {
-				const result = await publishRawAudit({
-					runner,
-					state,
-					rows,
-					rawTsv: await readFile(state.logPath, "utf8"),
-					selector,
-				});
+				const result = await publishRawAudit({ runner, state, rows, rawTsv, selector });
 				ctx.ui.notify(
 					`Published raw audit TSV in ${result.commentCount} comment${result.commentCount === 1 ? "" : "s"} on PR #${result.prNumber}: ${result.commentUrl}`,
 					"info",
