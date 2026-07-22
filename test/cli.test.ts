@@ -91,11 +91,29 @@ test("cli rejects invalid input with clear errors", async () => {
 		assert.equal(await runCli(["-C", root, "review", "not-a-model"], io), 1);
 		assert.match(io.stderr.join("\n"), /Usage: audit-trail review/);
 
+		assert.equal(await runCli(["-C", root, "review", "openai/gpt-5.2"], io), 1);
+		assert.match(io.stderr.join("\n"), /Specify --mode/);
+
+		assert.equal(await runCli(["-C", root, "review", "openai/gpt-5.2", "--mode", "sideways"], io), 1);
+		assert.match(io.stderr.join("\n"), /Invalid mode: sideways/);
+
 		assert.equal(await runCli(["-C", root, "publish"], io), 1);
 		assert.match(io.stderr.join("\n"), /no Git provenance/);
 
 		assert.equal(await runCli(["-C", root, "unknown-command"], io), 1);
 		assert.match(io.stderr.join("\n"), /Unknown command: unknown-command/);
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+test("-C is accepted after the command as well", async () => {
+	const root = await mkdtemp(join(tmpdir(), "audit-cli-test-"));
+	try {
+		const io = capture();
+		assert.equal(await runCli(["start", "-C", root, "late-flag-task"], io), 0);
+		assert.ok(await readActiveAudit(root), "audit landed in the -C directory");
+		assert.match(io.stdout.join("\n"), /late-flag-task\.tsv/);
 	} finally {
 		await rm(root, { recursive: true, force: true });
 	}
