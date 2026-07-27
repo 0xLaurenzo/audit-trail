@@ -1,4 +1,5 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { randomBytes } from "node:crypto";
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { cleanCell } from "./paths.ts";
 import { directMutationQueue, type MutationQueue } from "./ports.ts";
@@ -11,6 +12,18 @@ import {
 	type OriginValue,
 	type ResultValue,
 } from "./types.ts";
+
+/**
+ * Atomic replacement write (temp file + rename in the same directory). The
+ * audit log must never be truncated in place: a crash mid-write would destroy
+ * previously committed rows, and lock-free readers (status, publish) must
+ * always observe a complete file, never a torn write.
+ */
+async function writeFileAtomic(path: string, data: string): Promise<void> {
+	const temp = `${path}.tmp-${process.pid}-${randomBytes(6).toString("hex")}`;
+	await writeFile(temp, data, { encoding: "utf8", mode: 0o600 });
+	await rename(temp, path);
+}
 
 export function parseRows(text: string, source = "audit TSV"): AuditRow[] {
 	const lines = text.split(/\r?\n/).filter(Boolean);
@@ -92,7 +105,7 @@ export class AuditStore {
 			} catch (error: any) {
 				if (error?.code !== "ENOENT") throw error;
 			}
-			if (!existing) await writeFile(logPath, `${AUDIT_HEADER}\n`, { encoding: "utf8", mode: 0o600 });
+			if (!existing) await writeFileAtomic(logPath, `${AUDIT_HEADER}\n`);
 			else if (existing.split(/\r?\n/, 1)[0] !== AUDIT_HEADER) {
 				throw new Error(`Unexpected audit header in ${logPath}`);
 			}
@@ -121,10 +134,9 @@ export class AuditStore {
 				throw error;
 			});
 			const existing = current || `${AUDIT_HEADER}\n`;
-			await writeFile(
+			await writeFileAtomic(
 				logPath,
 				`${existing.endsWith("\n") ? existing : `${existing}\n`}${serializeRow(complete)}\n`,
-				{ encoding: "utf8", mode: 0o600 },
 			);
 			return complete;
 		});
