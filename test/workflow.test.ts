@@ -52,23 +52,39 @@ test("workflow start/resume/append/review/close over shared worktree state", asy
 		assert.equal(closed.closed, false);
 		assert.deepEqual(closed.blockers, ["independent review not run"]);
 
+		const reviewedSha = sha256Hex(await readFile(join(root, ".audit", "portable-state.tsv"), "utf8"));
 		const snapshot = await workflow.recordReview({
 			path: join(root, ".audit", "portable-state.review.md"),
 			mode: "cross-model",
 			model: "provider/reviewer",
+			expectedSha256: reviewedSha,
 		});
 		assert.equal(snapshot.path, join(".audit", "portable-state.review.md"));
-		assert.equal(snapshot.sha256, sha256Hex(await readFile(join(root, ".audit", "portable-state.tsv"), "utf8")));
+		assert.equal(snapshot.sha256, reviewedSha);
 
 		await workflow.append(session, { ...decisionInput, decision: "Added after review" });
 		closed = await workflow.close();
 		assert.equal(closed.closed, false);
 		assert.deepEqual(closed.blockers, ["the audit changed after the last review"]);
 
+		// A checkpoint may only bless the bytes the reviewer actually read: a
+		// hash captured before the newest append must be rejected.
+		await assert.rejects(
+			() =>
+				workflow.recordReview({
+					path: join(root, ".audit", "portable-state.review.md"),
+					mode: "cross-model",
+					model: "provider/reviewer",
+					expectedSha256: reviewedSha,
+				}),
+			/gained new decisions while the review was running/,
+		);
+
 		await workflow.recordReview({
 			path: join(root, ".audit", "portable-state.review.md"),
 			mode: "cross-model",
 			model: "provider/reviewer",
+			expectedSha256: sha256Hex(await readFile(join(root, ".audit", "portable-state.tsv"), "utf8")),
 		});
 		closed = await workflow.close();
 		assert.equal(closed.closed, true);

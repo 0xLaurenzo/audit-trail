@@ -190,14 +190,26 @@ export class AuditWorkflow {
 		});
 	}
 
-	async recordReview(input: { path: string; mode: ReviewMode; model: string }): Promise<ReviewSnapshot> {
+	async recordReview(input: {
+		path: string;
+		mode: ReviewMode;
+		model: string;
+		/** SHA-256 of the exact TSV bytes the reviewer was given. */
+		expectedSha256: string;
+	}): Promise<ReviewSnapshot> {
 		return this.lock(async () => {
 			const file = await readActiveAudit(this.root);
 			if (!file) throw new Error("No audit is active.");
 			const raw = await readFile(this.absolute(file.logPath), "utf8");
+			// Compare-and-swap: the checkpoint may only bless the bytes the
+			// reviewer actually read. A concurrent append while the reviewer was
+			// running must invalidate this review, not be blessed by it.
+			if (sha256Hex(raw) !== input.expectedSha256) {
+				throw new Error("The audit gained new decisions while the review was running. Re-run the review.");
+			}
 			const snapshot: ReviewSnapshot = {
 				path: this.relativePath(input.path),
-				sha256: sha256Hex(raw),
+				sha256: input.expectedSha256,
 				mode: input.mode,
 				model: input.model,
 				at: this.now().toISOString(),
