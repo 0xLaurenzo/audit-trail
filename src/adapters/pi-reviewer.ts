@@ -11,22 +11,31 @@ import type { CommandRunner, ReviewerPort, ReviewerRequest } from "../core/ports
 export function extractFinalAssistantOutput(stdout: string): { output: string; error?: string } {
 	let output = "";
 	let error: string | undefined;
+	let settled = false;
 	for (const line of stdout.split(/\r?\n/)) {
 		if (!line.trim()) continue;
 		try {
 			const event = JSON.parse(line);
+			if (event.type === "agent_settled") {
+				settled = true;
+				continue;
+			}
 			if (event.type !== "message_end" || event.message?.role !== "assistant") continue;
 			if (event.message.stopReason === "error") {
+				output = "";
 				error = event.message.errorMessage || "assistant message ended with an error";
 				continue;
 			}
+			// `toolUse` and unknown stop reasons are intermediate/non-certifying;
+			// only Pi's successful terminal `stop` may supply the final report.
+			if (event.message.stopReason !== "stop") continue;
 			const text = (event.message.content ?? [])
 				.filter((part: any) => part?.type === "text")
 				.map((part: any) => part.text)
 				.join("\n");
 			if (text) {
 				// Pi may emit an error assistant event and retry in the same stream.
-				// A later successful final message supersedes that transient error.
+				// A later successful terminal message supersedes that transient error.
 				output = text;
 				error = undefined;
 			}
@@ -34,6 +43,8 @@ export function extractFinalAssistantOutput(stdout: string): { output: string; e
 			// Ignore non-JSON diagnostics.
 		}
 	}
+	if (error) return { output: "", error };
+	if (output && !settled) return { output: "", error: "reviewer stream ended before agent_settled" };
 	return { output, error };
 }
 

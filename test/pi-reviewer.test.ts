@@ -64,7 +64,25 @@ test("Pi JSON parser accepts a successful retry after a transient assistant erro
 	const parsed = extractFinalAssistantOutput([
 		JSON.stringify({ type: "message_end", message: { role: "assistant", stopReason: "error", errorMessage: "WebSocket error", content: [] } }),
 		JSON.stringify({ type: "message_end", message: { role: "assistant", stopReason: "stop", content: [{ type: "text", text: "No flags\nVERDICT: approve" }] } }),
+		JSON.stringify({ type: "agent_settled" }),
 	].join("\n"));
 	assert.equal(parsed.output, "No flags\nVERDICT: approve");
+	assert.equal(parsed.error, undefined);
+});
+
+test("Pi JSON parser rejects a truncated successful message without agent_settled", () => {
+	const parsed = extractFinalAssistantOutput(
+		JSON.stringify({ type: "message_end", message: { role: "assistant", stopReason: "stop", content: [{ type: "text", text: "VERDICT: approve" }] } }),
+	);
+	assert.equal(parsed.output, "");
+	assert.match(parsed.error ?? "", /before agent_settled/);
+});
+
+test("Pi JSON parser does not certify tool-use or unknown terminal states", () => {
+	const parsed = extractFinalAssistantOutput([
+		JSON.stringify({ type: "message_end", message: { role: "assistant", stopReason: "toolUse", content: [{ type: "text", text: "VERDICT: approve" }] } }),
+		JSON.stringify({ type: "agent_settled" }),
+	].join("\n"));
+	assert.equal(parsed.output, "");
 	assert.equal(parsed.error, undefined);
 });
