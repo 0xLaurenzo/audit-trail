@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import test from "node:test";
 import { readRows } from "../src/core/audit-store.ts";
-import type { CommandRunner } from "../src/core/ports.ts";
+import type { CommandRunner, ReviewerPort } from "../src/core/ports.ts";
 import { AuditWorkflow } from "../src/core/workflow.ts";
 import { McpAuditServer, serveStdio } from "../src/mcp/server.ts";
 
@@ -13,10 +13,17 @@ const noGit: CommandRunner = {
 	exec: async () => ({ code: 1, stdout: "", stderr: "git unavailable" }),
 };
 
-function makeServer(root: string): McpAuditServer {
+const unusedReviewer: ReviewerPort = {
+	review: async () => {
+		throw new Error("reviewer must not run in this test");
+	},
+};
+
+function makeServer(root: string, reviewer: ReviewerPort = unusedReviewer): McpAuditServer {
 	return new McpAuditServer({
 		workflow: new AuditWorkflow(root, noGit),
 		runner: noGit,
+		reviewer,
 		session: { harness: "mcp", id: "tester@host" },
 		version: "test",
 	});

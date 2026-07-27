@@ -2,7 +2,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { displayPath } from "./paths.ts";
 import { directMutationQueue, type MutationQueue } from "./ports.ts";
-import type { ReviewMode } from "./types.ts";
+import type { ReviewMode, ReviewVerdict } from "./types.ts";
 
 export interface ReviewPromptInput {
 	logPath: string;
@@ -21,7 +21,7 @@ export function buildReviewPrompt(input: ReviewPromptInput): string {
 	const sessionLine = input.transcriptPath
 		? `\n${harness === "pi" ? "Pi session" : `${harness} session`}: ${input.transcriptPath}`
 		: "";
-	return `You are an independent decision-trail reviewer. Do not redo a general line-by-line code review. Read ${sources}, then report only what a human should scrutinize. Check that logged rows map to real actions, evidence supports claims, consequential forks or pivots were not omitted, verification was not overstated, and choices are general rather than merely sufficient for the observed case. Flag weak evidence, skipped verification, symptom patches, unjustified assumptions, scope creep, and unresolved uncertainty. Point to exact decision IDs and ${evidenceAnchor}. A concise "No flags" is valid. Never modify files.\n\nAudit log: ${input.logPath}${sessionLine}\nWorking directory: ${input.workingDirectory}`;
+	return `You are an independent decision-trail reviewer. Do not redo a general line-by-line code review. Read ${sources}, then report only what a human should scrutinize. Check that logged rows map to real actions, evidence supports claims, consequential forks or pivots were not omitted, verification was not overstated, and choices are general rather than merely sufficient for the observed case. Flag weak evidence, skipped verification, symptom patches, unjustified assumptions, scope creep, and unresolved uncertainty. Point to exact decision IDs and ${evidenceAnchor}. A concise "No flags" is valid. Never modify files.\n\nEnd your report with a verdict on its own final line: "VERDICT: approve" if the audit is trustworthy enough to publish and close, or "VERDICT: block" if any finding must be addressed and re-reviewed first. A missing verdict is treated as block.\n\nAudit log: ${input.logPath}${sessionLine}\nWorking directory: ${input.workingDirectory}`;
 }
 
 export interface ReviewDocumentInput {
@@ -33,37 +33,28 @@ export interface ReviewDocumentInput {
 	rowCount: number;
 	output: string;
 	harnessName?: string;
+	verdict?: ReviewVerdict;
 }
 
 export function buildReviewDocument(input: ReviewDocumentInput): string {
 	const sessionLabel = input.harnessName === undefined || input.harnessName === "pi" ? "Pi session" : `${input.harnessName} session`;
 	const modeLine = input.reviewMode ? `\n- Review mode: ${input.reviewMode}` : "";
 	const sessionLine = input.transcriptPath ? `\n- ${sessionLabel}: ${input.transcriptPath}` : "";
-	return `# Decision audit review\n\n- Reviewed by: ${input.model}${modeLine}\n- Audit log: ${displayPath(input.logPath, input.workingDirectory)}${sessionLine}\n- Decision rows reviewed: ${input.rowCount}\n\n${input.output.trim()}\n`;
+	const verdictLine = input.verdict ? `\n- Verdict: ${input.verdict}` : "";
+	return `# Decision audit review\n\n- Reviewed by: ${input.model}${modeLine}${verdictLine}\n- Audit log: ${displayPath(input.logPath, input.workingDirectory)}${sessionLine}\n- Decision rows reviewed: ${input.rowCount}\n\n${input.output.trim()}\n`;
 }
 
-/** Extract the final assistant text from a `pi --mode json` stdout stream. */
-export function extractFinalAssistantOutput(stdout: string): { output: string; error?: string } {
-	let output = "";
-	let error: string | undefined;
-	for (const line of stdout.split(/\r?\n/)) {
-		if (!line.trim()) continue;
-		try {
-			const event = JSON.parse(line);
-			if (event.type !== "message_end" || event.message?.role !== "assistant") continue;
-			if (event.message.stopReason === "error") {
-				error = event.message.errorMessage || "assistant message ended with an error";
-			}
-			const text = (event.message.content ?? [])
-				.filter((part: any) => part?.type === "text")
-				.map((part: any) => part.text)
-				.join("\n");
-			if (text) output = text;
-		} catch {
-			// Ignore non-JSON diagnostics.
-		}
-	}
-	return { output, error };
+/**
+ * Extract the reviewer's explicit verdict: the last `VERDICT: approve|block`
+ * line wins. Returns undefined when no verdict is present; callers must fail
+ * closed (treat as block), because a review that certifies nothing cannot
+ * unblock publish or close.
+ */
+export function parseReviewVerdict(output: string): ReviewVerdict | undefined {
+	const matches = output.match(/^\s*VERDICT:\s*(approve|block)\b.*$/gim);
+	if (!matches?.length) return undefined;
+	const last = /(approve|block)/i.exec(matches[matches.length - 1]);
+	return last?.[1].toLowerCase() as ReviewVerdict;
 }
 
 export function writeReviewArtifact(

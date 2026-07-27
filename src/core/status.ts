@@ -20,7 +20,7 @@ export function formatStatusLines(
 			? `origin: ${state.provenance.repository}@${state.provenance.branch} (${state.provenance.startCommit.slice(0, 12)})`
 			: "origin: unavailable (local audit)",
 		state.review
-			? `review: ${state.review.path} (${state.review.mode}${state.review.sha256 === currentSha256 ? "" : ", stale"})`
+			? `review: ${state.review.path} (${state.review.mode}${state.review.verdict === "block" ? ", blocked" : ""}${state.review.sha256 === currentSha256 ? "" : ", stale"})`
 			: "review: not run",
 	];
 }

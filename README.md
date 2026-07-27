@@ -130,7 +130,9 @@ Add `.audit/` to `.gitignore` or `.git/info/exclude` if trails should remain loc
 /audit-review openai/gpt-5.2
 ```
 
-The reviewer runs in a separate no-session pi process with read-only tools.
+The reviewer runs through a `ReviewerPort`: harness adapters may supply a native reviewer runtime, and the default implementation spawns a separate no-session `pi` process with read-only tools (it fails fast when `pi` is not installed).
+
+Every review ends with an explicit verdict. The reviewer must finish its report with `VERDICT: approve` or `VERDICT: block`; a missing verdict fails closed to `block`. The verdict is recorded in the review artifact and the review checkpoint. A blocking verdict keeps publish and close gated until the findings are addressed and the audit is re-reviewed — a review certifies the audit, it is not an attendance stamp.
 
 ## Publish to a pull request
 
@@ -149,6 +151,6 @@ Pass a PR number or URL when automatic branch lookup is not appropriate:
 /audit-publish 123
 ```
 
-Publishing requires a review checkpoint matching the current audit bytes: after any new decision, run `/audit-review` again. The `gh` CLI must be installed and authenticated. The command refuses to post to a PR whose head branch differs from the audit's original branch. It publishes the exact canonical TSV inside a collapsed code block, preceded by concise format, history, state, and Git provenance context. No model filters or rewrites the source before publication, allowing reviewers and their own tooling to process every audit row.
+Publishing requires an approving review checkpoint matching the current audit bytes: after any new decision, run `/audit-review` again, and a `VERDICT: block` review must be resolved and re-reviewed first. The `gh` CLI must be installed and authenticated. The command refuses to post to a PR whose head branch differs from the audit's original branch. It publishes the exact canonical TSV inside a collapsed code block, preceded by concise format, history, state, and Git provenance context. No model filters or rewrites the source before publication, allowing reviewers and their own tooling to process every audit row.
 
 GitHub comments have a size limit, so large TSV files are split at row boundaries into deterministic numbered comments. Concatenating their fenced TSV blocks in part order recovers the original file exactly. Hidden markers make publication idempotent: subsequent runs update each existing part and remove stale extra parts instead of creating duplicates. Publish before `/audit-close`; closing removes `.audit/active.json` for the worktree.

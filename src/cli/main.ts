@@ -19,6 +19,7 @@ import {
 	type ReviewMode,
 } from "../core/types.ts";
 import { AuditWorkflow, resolveWorktreeRoot } from "../core/workflow.ts";
+import { createPiSubprocessReviewer } from "../adapters/pi-reviewer.ts";
 import { packageRootFromModule, selectInstallers } from "../install/installers.ts";
 import { McpAuditServer, serveStdio } from "../mcp/server.ts";
 
@@ -191,19 +192,25 @@ async function commandReview(workflow: AuditWorkflow, args: string[], io: CliIo)
 	io.out(`Reviewing with ${model} (${mode})...`);
 	const review = await runIndependentReview({
 		workflow,
-		runner: processRunner(workflow.root),
+		reviewer: createPiSubprocessReviewer(processRunner(workflow.root)),
 		model,
 		mode,
 		harnessName: "cli",
 	});
-	io.out(`Review saved: ${displayPath(review.reviewPath, workflow.root)}`);
+	io.out(`Review saved: ${displayPath(review.reviewPath, workflow.root)} (verdict: ${review.verdict})`);
+	if (review.verdict === "block") {
+		io.err("The reviewer blocked this audit; publish and close stay gated until findings are addressed and it is re-reviewed");
+		return 1;
+	}
 	return 0;
 }
 
 async function commandMcp(workflow: AuditWorkflow, io: CliIo): Promise<number> {
+	const runner = processRunner(workflow.root);
 	const server = new McpAuditServer({
 		workflow,
-		runner: processRunner(workflow.root),
+		runner,
+		reviewer: createPiSubprocessReviewer(runner),
 		session: { harness: "mcp", id: cliSession().id },
 	});
 	io.err(`audit-trail MCP server on stdio for ${workflow.root}`);
@@ -242,6 +249,10 @@ async function commandPublish(workflow: AuditWorkflow, selectorArg: string, io: 
 	const rawTsv = await readFile(state.logPath, "utf8");
 	if (!state.review || state.review.sha256 !== sha256Hex(rawTsv)) {
 		io.err("Run audit-trail review after the latest decision before publishing");
+		return 1;
+	}
+	if (state.review.verdict === "block") {
+		io.err(`The last review blocked this audit; address its findings (${state.review.path}) and re-review before publishing`);
 		return 1;
 	}
 	const selector = selectorArg || (state.provenance.branch !== "DETACHED" ? state.provenance.branch : "");

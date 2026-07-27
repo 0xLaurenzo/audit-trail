@@ -76,6 +76,9 @@ test("transcript-less review prompt and document target the TSV, diff, and repos
 	});
 	assert.match(prompt, /append-only TSV decision log, the Git diff against the audit's starting commit, and the repository/);
 	assert.match(prompt, /decision IDs and repository evidence/);
+	assert.match(prompt, /"VERDICT: approve"/);
+	assert.match(prompt, /"VERDICT: block"/);
+	assert.match(prompt, /A missing verdict is treated as block/);
 	assert.doesNotMatch(prompt, /session transcript|session: /);
 	const document = buildReviewDocument({
 		model: "openai/reviewer",
@@ -83,12 +86,13 @@ test("transcript-less review prompt and document target the TSV, diff, and repos
 		logPath: "/repo/.audit/core.tsv",
 		workingDirectory: "/repo",
 		rowCount: 2,
-		output: "No flags\n",
+		output: "No flags\nVERDICT: approve\n",
 		harnessName: "cli",
+		verdict: "approve",
 	});
 	assert.equal(
 		document,
-		"# Decision audit review\n\n- Reviewed by: openai/reviewer\n- Review mode: cross-model\n- Audit log: .audit/core.tsv\n- Decision rows reviewed: 2\n\nNo flags\n",
+		"# Decision audit review\n\n- Reviewed by: openai/reviewer\n- Review mode: cross-model\n- Verdict: approve\n- Audit log: .audit/core.tsv\n- Decision rows reviewed: 2\n\nNo flags\nVERDICT: approve\n",
 	);
 });
 
@@ -101,6 +105,7 @@ test("review prompt and document preserve the Pi review contract", () => {
 	});
 	assert.match(prompt, /append-only TSV decision log and the pi JSONL session transcript/);
 	assert.match(prompt, /Pi session: \/sessions\/pi.jsonl/);
+	assert.match(prompt, /"VERDICT: approve"/);
 	const document = buildReviewDocument({
 		model: "openai/reviewer",
 		logPath: "/repo/.audit/core.tsv",

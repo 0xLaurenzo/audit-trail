@@ -19,6 +19,7 @@ import type {
 	NewAuditRow,
 	ReviewMode,
 	ReviewSnapshot,
+	ReviewVerdict,
 } from "./types.ts";
 import { closeBlockers } from "./validation.ts";
 
@@ -196,6 +197,8 @@ export class AuditWorkflow {
 		model: string;
 		/** SHA-256 of the exact TSV bytes the reviewer was given. */
 		expectedSha256: string;
+		/** Reviewer's explicit conclusion; "block" keeps publish/close gated. */
+		verdict?: ReviewVerdict;
 	}): Promise<ReviewSnapshot> {
 		return this.lock(async () => {
 			const file = await readActiveAudit(this.root);
@@ -213,6 +216,7 @@ export class AuditWorkflow {
 				mode: input.mode,
 				model: input.model,
 				at: this.now().toISOString(),
+				verdict: input.verdict,
 			};
 			await writeActiveAudit(this.root, { ...file, review: snapshot });
 			return snapshot;

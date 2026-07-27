@@ -29,6 +29,11 @@ export function closeBlockers(state: AuditState, rows: AuditRow[], currentSha256
 	if (!state.review) blockers.push("independent review not run");
 	else if (currentSha256 === undefined || state.review.sha256 !== currentSha256) {
 		blockers.push("the audit changed after the last review");
+	} else if (state.review.verdict === "block") {
+		// A snapshot without a verdict predates the verdict contract and was
+		// recorded as attendance-only; it stays valid. New reviews fail closed
+		// to block before recording when no explicit verdict is given.
+		blockers.push(`the last review blocked this audit; address its findings (${state.review.path}) and re-review`);
 	}
 	return blockers;
 }
