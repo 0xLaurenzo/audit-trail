@@ -17,15 +17,22 @@ export function extractFinalAssistantOutput(stdout: string): { output: string; e
 		try {
 			const event = JSON.parse(line);
 			if (event.type === "agent_settled") {
-				settled = true;
+				// Settle only the current successful candidate. An earlier settled
+				// event cannot certify a later stop, and a later assistant outcome
+				// resets this flag below.
+				if (output && !error) settled = true;
 				continue;
 			}
 			if (event.type !== "message_end" || event.message?.role !== "assistant") continue;
+			// Every assistant outcome supersedes the previous candidate; this
+			// prevents `stop -> toolUse -> settled` from certifying stale output.
+			settled = false;
+			output = "";
 			if (event.message.stopReason === "error") {
-				output = "";
 				error = event.message.errorMessage || "assistant message ended with an error";
 				continue;
 			}
+			error = undefined;
 			// `toolUse` and unknown stop reasons are intermediate/non-certifying;
 			// only Pi's successful terminal `stop` may supply the final report.
 			if (event.message.stopReason !== "stop") continue;
@@ -37,7 +44,6 @@ export function extractFinalAssistantOutput(stdout: string): { output: string; e
 				// Pi may emit an error assistant event and retry in the same stream.
 				// A later successful terminal message supersedes that transient error.
 				output = text;
-				error = undefined;
 			}
 		} catch {
 			// Ignore non-JSON diagnostics.

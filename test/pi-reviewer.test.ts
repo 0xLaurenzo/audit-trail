@@ -86,3 +86,22 @@ test("Pi JSON parser does not certify tool-use or unknown terminal states", () =
 	assert.equal(parsed.output, "");
 	assert.equal(parsed.error, undefined);
 });
+
+test("a later tool-use outcome invalidates an earlier successful candidate", () => {
+	const parsed = extractFinalAssistantOutput([
+		JSON.stringify({ type: "message_end", message: { role: "assistant", stopReason: "stop", content: [{ type: "text", text: "VERDICT: approve" }] } }),
+		JSON.stringify({ type: "message_end", message: { role: "assistant", stopReason: "toolUse", content: [] } }),
+		JSON.stringify({ type: "agent_settled" }),
+	].join("\n"));
+	assert.equal(parsed.output, "");
+	assert.equal(parsed.error, undefined);
+});
+
+test("agent_settled cannot certify a later out-of-order stop", () => {
+	const parsed = extractFinalAssistantOutput([
+		JSON.stringify({ type: "agent_settled" }),
+		JSON.stringify({ type: "message_end", message: { role: "assistant", stopReason: "stop", content: [{ type: "text", text: "VERDICT: approve" }] } }),
+	].join("\n"));
+	assert.equal(parsed.output, "");
+	assert.match(parsed.error ?? "", /before agent_settled/);
+});
