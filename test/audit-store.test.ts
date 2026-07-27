@@ -77,6 +77,7 @@ test("summary and close blockers ignore superseded decisions", () => {
 		mode: "cross-provider" as const,
 		model: "other/reviewer",
 		at: "2026-01-01T00:02:00.000Z",
+		verdict: "approve" as const,
 	};
 	assert.deepEqual(closeBlockers({ task: "task", logPath: "/tmp/audit.tsv", review }, rows, "hash-1"), []);
 	assert.deepEqual(closeBlockers({ task: "task", logPath: "/tmp/audit.tsv" }, rows, "hash-1"), [

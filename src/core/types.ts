@@ -69,9 +69,8 @@ export interface ReviewSnapshot {
 	model: string;
 	at: string;
 	/**
-	 * Reviewer's conclusion. Absent on snapshots recorded before verdicts
-	 * existed; those are treated as approved (the contract they were recorded
-	 * under).
+	 * Reviewer's conclusion. Absent only on snapshots recorded before verdicts
+	 * existed; those fail closed and require re-review before publish/close.
 	 */
 	verdict?: ReviewVerdict;
 }

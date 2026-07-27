@@ -22,6 +22,7 @@ import {
 	type CommandRunner,
 	type ReviewMode,
 	parseReviewVerdict,
+	reviewBlocker,
 	type SessionIdentity,
 } from "../core/index.ts";
 import { createPiSubprocessReviewer } from "./pi-reviewer.ts";
@@ -373,15 +374,9 @@ export default function auditTrailExtension(pi: ExtensionAPI) {
 			// Read once and gate on these exact bytes so a concurrent append between
 			// check and publication cannot slip unreviewed rows into the PR comment.
 			const rawTsv = await readFile(state.logPath, "utf8");
-			if (state.review?.verdict === "block" && state.review.sha256 === sha256Hex(rawTsv)) {
-				ctx.ui.notify(
-					`The last review blocked this audit; address its findings (${state.review.path}) and re-review before publishing`,
-					"error",
-				);
-				return;
-			}
-			if (!state.review || state.review.sha256 !== sha256Hex(rawTsv)) {
-				ctx.ui.notify("Run /audit-review after the latest decision before publishing", "error");
+			const blocker = reviewBlocker(state, sha256Hex(rawTsv));
+			if (blocker) {
+				ctx.ui.notify(`${blocker}. Run /audit-review before publishing`, "error");
 				return;
 			}
 			const provenance = state.provenance;

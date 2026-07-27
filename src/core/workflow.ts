@@ -197,8 +197,8 @@ export class AuditWorkflow {
 		model: string;
 		/** SHA-256 of the exact TSV bytes the reviewer was given. */
 		expectedSha256: string;
-		/** Reviewer's explicit conclusion; "block" keeps publish/close gated. */
-		verdict?: ReviewVerdict;
+		/** Reviewer's explicit conclusion; only "approve" unblocks publish/close. */
+		verdict: ReviewVerdict;
 	}): Promise<ReviewSnapshot> {
 		return this.lock(async () => {
 			const file = await readActiveAudit(this.root);

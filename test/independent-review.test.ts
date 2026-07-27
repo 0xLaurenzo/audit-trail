@@ -3,6 +3,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { readActiveAudit, writeActiveAudit } from "../src/core/active-state.ts";
 import { runIndependentReview } from "../src/core/independent-review.ts";
 import type { CommandRunner, ReviewerPort } from "../src/core/ports.ts";
 import { parseReviewVerdict } from "../src/core/review.ts";
@@ -79,7 +80,7 @@ test("a blocking review keeps close gated and is visible in status", async () =>
 		assert.equal(result.verdict, "block");
 		const closed = await workflow.close();
 		assert.equal(closed.closed, false);
-		assert.match(closed.blockers.join("\n"), /the last review blocked this audit/);
+		assert.match(closed.blockers.join("\n"), /the last review did not approve this audit/);
 		const state = await workflow.active();
 		assert.ok(state);
 		const status = formatStatusLines(state, await workflow.rows(state), await workflow.currentSha(state), root);
@@ -103,6 +104,35 @@ test("a review without an explicit verdict fails closed to block", async () => {
 		assert.equal(result.verdict, "block");
 		const closed = await workflow.close();
 		assert.equal(closed.closed, false);
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+test("a legacy verdict-less snapshot fails closed and requires re-review", async () => {
+	const root = await mkdtemp(join(tmpdir(), "audit-review-test-"));
+	try {
+		const workflow = await startedWorkflow(root);
+		const file = await readActiveAudit(root);
+		assert.ok(file);
+		const state = await workflow.active();
+		assert.ok(state);
+		const sha256 = await workflow.currentSha(state);
+		assert.ok(sha256);
+		await writeActiveAudit(root, {
+			...file,
+			review: {
+				path: ".audit/legacy.review.md",
+				sha256,
+				mode: "cross-model",
+				model: "provider/reviewer",
+				at: new Date().toISOString(),
+				// Deliberately no verdict: pre-verdict snapshot.
+			},
+		});
+		const closed = await workflow.close();
+		assert.equal(closed.closed, false);
+		assert.match(closed.blockers.join("\n"), /did not approve this audit/);
 	} finally {
 		await rm(root, { recursive: true, force: true });
 	}

@@ -19,10 +19,10 @@ const unusedReviewer: ReviewerPort = {
 	},
 };
 
-function makeServer(root: string, reviewer: ReviewerPort = unusedReviewer): McpAuditServer {
+function makeServer(root: string, reviewer: ReviewerPort = unusedReviewer, runner: CommandRunner = noGit): McpAuditServer {
 	return new McpAuditServer({
-		workflow: new AuditWorkflow(root, noGit),
-		runner: noGit,
+		workflow: new AuditWorkflow(root, runner),
+		runner,
 		reviewer,
 		session: { harness: "mcp", id: "tester@host" },
 		version: "test",
@@ -92,6 +92,42 @@ test("mcp server initializes, lists tools, and drives the audit workflow", async
 		const close = resultOf(await server.handle(request(6, "tools/call", { name: "audit_close", arguments: {} })));
 		assert.equal(close.isError, true);
 		assert.match(textOf(close), /independent review not run/);
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+test("MCP publish rejects a blocking review before invoking GitHub", async () => {
+	const root = await mkdtemp(join(tmpdir(), "audit-mcp-test-"));
+	try {
+		let githubCalled = false;
+		const git: CommandRunner = {
+			exec: async (command, args) => {
+				if (command === "gh") {
+					githubCalled = true;
+					return { code: 1, stdout: "", stderr: "GitHub must not run" };
+				}
+				const outputs: Record<string, string> = {
+					"rev-parse --show-toplevel": root,
+					"remote get-url origin": "git@github.com:owner/repo.git",
+					"branch --show-current": "feature/task",
+					"rev-parse HEAD": "abcdef1234567890",
+					"status --porcelain": "",
+				};
+				const key = args.join(" ");
+				return { code: key in outputs ? 0 : 1, stdout: outputs[key] ?? "", stderr: "" };
+			},
+		};
+		const server = makeServer(root, { review: async () => "Finding.\nVERDICT: block\n" }, git);
+		await server.call("audit_start", { task: "task" });
+		await server.call("audit_decision", {
+			phase: "mcp", origin: "implementation discovery", decision: "decision", why: "because",
+			confidence: "high", evidence: "test", result: "verified",
+		});
+		const review = await server.call("audit_review", { model: "provider/model", mode: "cross-model" });
+		assert.match(review, /verdict: block/);
+		await assert.rejects(() => server.call("audit_publish", { selector: "22" }), /last review did not approve/);
+		assert.equal(githubCalled, false);
 	} finally {
 		await rm(root, { recursive: true, force: true });
 	}

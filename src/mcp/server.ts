@@ -5,6 +5,7 @@ import { publishRawAudit } from "../core/github-publisher.ts";
 import { runIndependentReview } from "../core/independent-review.ts";
 import type { CommandRunner, ReviewerPort, SessionIdentity } from "../core/ports.ts";
 import { formatStatusLines } from "../core/status.ts";
+import { reviewBlocker } from "../core/validation.ts";
 import {
 	CONFIDENCE_VALUES,
 	ORIGIN_VALUES,
@@ -206,12 +207,8 @@ export class McpAuditServer {
 				const rows = await this.workflow.rows(state);
 				// Gate on the exact bytes being published.
 				const rawTsv = await readFile(state.logPath, "utf8");
-				if (!state.review || state.review.sha256 !== sha256Hex(rawTsv)) {
-					throw new Error("Run audit_review after the latest decision before publishing.");
-				}
-				if (state.review.verdict === "block") {
-					throw new Error(`The last review blocked this audit; address its findings (${state.review.path}) and re-review before publishing.`);
-				}
+				const blocker = reviewBlocker(state, sha256Hex(rawTsv));
+				if (blocker) throw new Error(`${blocker}. Run audit_review before publishing.`);
 				const selector =
 					optionalString(args, "selector") ?? (state.provenance.branch !== "DETACHED" ? state.provenance.branch : "");
 				if (!selector) throw new Error("Detached audits require a PR number or URL selector.");

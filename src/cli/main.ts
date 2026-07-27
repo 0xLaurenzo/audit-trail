@@ -9,6 +9,7 @@ import { runIndependentReview } from "../core/independent-review.ts";
 import { displayPath } from "../core/paths.ts";
 import type { CommandRunner, SessionIdentity } from "../core/ports.ts";
 import { formatStatusLines } from "../core/status.ts";
+import { reviewBlocker } from "../core/validation.ts";
 import {
 	CONFIDENCE_VALUES,
 	ORIGIN_VALUES,
@@ -247,12 +248,9 @@ async function commandPublish(workflow: AuditWorkflow, selectorArg: string, io: 
 	// Read once and gate on these exact bytes so a concurrent append between
 	// check and publication cannot slip unreviewed rows into the PR comment.
 	const rawTsv = await readFile(state.logPath, "utf8");
-	if (!state.review || state.review.sha256 !== sha256Hex(rawTsv)) {
-		io.err("Run audit-trail review after the latest decision before publishing");
-		return 1;
-	}
-	if (state.review.verdict === "block") {
-		io.err(`The last review blocked this audit; address its findings (${state.review.path}) and re-review before publishing`);
+	const blocker = reviewBlocker(state, sha256Hex(rawTsv));
+	if (blocker) {
+		io.err(`${blocker}. Run audit-trail review before publishing`);
 		return 1;
 	}
 	const selector = selectorArg || (state.provenance.branch !== "DETACHED" ? state.provenance.branch : "");

@@ -58,6 +58,7 @@ test("workflow start/resume/append/review/close over shared worktree state", asy
 			mode: "cross-model",
 			model: "provider/reviewer",
 			expectedSha256: reviewedSha,
+			verdict: "approve",
 		});
 		assert.equal(snapshot.path, join(".audit", "portable-state.review.md"));
 		assert.equal(snapshot.sha256, reviewedSha);
@@ -76,6 +77,7 @@ test("workflow start/resume/append/review/close over shared worktree state", asy
 					mode: "cross-model",
 					model: "provider/reviewer",
 					expectedSha256: reviewedSha,
+					verdict: "approve",
 				}),
 			/gained new decisions while the review was running/,
 		);
@@ -85,6 +87,7 @@ test("workflow start/resume/append/review/close over shared worktree state", asy
 			mode: "cross-model",
 			model: "provider/reviewer",
 			expectedSha256: sha256Hex(await readFile(join(root, ".audit", "portable-state.tsv"), "utf8")),
+			verdict: "approve",
 		});
 		closed = await workflow.close();
 		assert.equal(closed.closed, true);
