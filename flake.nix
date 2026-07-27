@@ -28,11 +28,16 @@
 
             installPhase = ''
               runHook preInstall
-              mkdir -p "$out/share/pi-audit-trail"
+              mkdir -p "$out/share/pi-audit-trail" "$out/bin"
               cp -R src "$out/share/pi-audit-trail/src"
               find "$out/share/pi-audit-trail/src" -type f -exec chmod 444 {} +
               install -Dm444 README.md "$out/share/pi-audit-trail/README.md"
               install -Dm444 package.json "$out/share/pi-audit-trail/package.json"
+              cat > "$out/bin/audit-trail" <<WRAPPER
+              #!${pkgs.runtimeShell}
+              exec ${pkgs.nodejs_24}/bin/node --experimental-strip-types --disable-warning=ExperimentalWarning "$out/share/pi-audit-trail/src/cli/bin.ts" "\$@"
+              WRAPPER
+              chmod 755 "$out/bin/audit-trail"
               runHook postInstall
             '';
 
