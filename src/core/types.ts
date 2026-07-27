@@ -46,6 +46,20 @@ export interface AuditRow {
 
 export type NewAuditRow = Omit<AuditRow, "id" | "ts">;
 
+/** How the independent reviewer relates to the working model. */
+export type ReviewMode = "cross-provider" | "cross-model" | "same-model";
+
+/** Snapshot of the audit at the moment it was last independently reviewed. */
+export interface ReviewSnapshot {
+	/** Review artifact path, relative to the worktree root when inside it. */
+	path: string;
+	/** SHA-256 of the exact TSV bytes that were reviewed. */
+	sha256: string;
+	mode: ReviewMode;
+	model: string;
+	at: string;
+}
+
 /** Version 1 is kept intact so existing Pi provenance files remain readable. */
 export interface GitProvenance {
 	version: 1;
@@ -64,8 +78,7 @@ export interface AuditState {
 	logPath: string;
 	provenancePath?: string;
 	provenance?: GitProvenance;
-	reviewPath?: string;
-	reviewedCount?: number;
+	review?: ReviewSnapshot;
 }
 
 export interface AuditStats {

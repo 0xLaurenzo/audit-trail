@@ -77,7 +77,7 @@ export function buildRawGitHubComments(state: AuditState, rows: AuditRow[], rawT
 				"",
 				"### Provenance",
 				"",
-				`[${provenance.repository}](${provenance.repositoryUrl}) · original branch [\`${markdownCell(provenance.branch)}\`](${branchLink}) · starting commit [\`${provenance.startCommit.slice(0, 12)}\`](${commitLink}) · worktree ${provenance.worktreeDirty ? "dirty" : "clean"} · Pi session \`${markdownCell(provenance.sessionId)}\``,
+				`[${provenance.repository}](${provenance.repositoryUrl}) · original branch [\`${markdownCell(provenance.branch)}\`](${branchLink}) · starting commit [\`${provenance.startCommit.slice(0, 12)}\`](${commitLink}) · worktree ${provenance.worktreeDirty ? "dirty" : "clean"} · session \`${markdownCell(provenance.sessionId)}\``,
 				"",
 			);
 		} else {

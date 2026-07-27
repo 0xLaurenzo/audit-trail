@@ -16,7 +16,7 @@
   },
   "scripts": {
     "test": "node --experimental-strip-types --test test/*.test.ts",
-    "check": "node --experimental-strip-types --check index.ts && node --experimental-strip-types --check src/adapters/pi.ts && npm test"
+    "check": "node --experimental-strip-types --check src/adapters/pi.ts && npm test"
   },
   "peerDependencies": {
     "@earendil-works/pi-ai": "*",
@@ -25,7 +25,7 @@
   },
   "pi": {
     "extensions": [
-      "./index.ts"
+      "./src/adapters/pi.ts"
     ]
   }
 }

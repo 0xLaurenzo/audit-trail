@@ -16,7 +16,7 @@ export function summarize(rows: AuditRow[]): AuditStats {
 	};
 }
 
-export function closeBlockers(state: AuditState, rows: AuditRow[]): string[] {
+export function closeBlockers(state: AuditState, rows: AuditRow[], currentSha256?: string): string[] {
 	const stats = summarize(rows);
 	const blockers: string[] = [];
 	if (stats.unresolved.length) blockers.push(`unresolved: ${stats.unresolved.map((row) => row.id).join(", ")}`);
@@ -26,7 +26,9 @@ export function closeBlockers(state: AuditState, rows: AuditRow[]): string[] {
 	if (stats.missingEvidence.length) {
 		blockers.push(`missing evidence: ${stats.missingEvidence.map((row) => row.id).join(", ")}`);
 	}
-	if (!state.reviewPath || state.reviewedCount === undefined) blockers.push("independent review not run");
-	else if (state.reviewedCount < rows.length) blockers.push("new decisions were added after the last review");
+	if (!state.review) blockers.push("independent review not run");
+	else if (currentSha256 === undefined || state.review.sha256 !== currentSha256) {
+		blockers.push("the audit changed after the last review");
+	}
 	return blockers;
 }
