@@ -18,12 +18,18 @@ export function extractFinalAssistantOutput(stdout: string): { output: string; e
 			if (event.type !== "message_end" || event.message?.role !== "assistant") continue;
 			if (event.message.stopReason === "error") {
 				error = event.message.errorMessage || "assistant message ended with an error";
+				continue;
 			}
 			const text = (event.message.content ?? [])
 				.filter((part: any) => part?.type === "text")
 				.map((part: any) => part.text)
 				.join("\n");
-			if (text) output = text;
+			if (text) {
+				// Pi may emit an error assistant event and retry in the same stream.
+				// A later successful final message supersedes that transient error.
+				output = text;
+				error = undefined;
+			}
 		} catch {
 			// Ignore non-JSON diagnostics.
 		}

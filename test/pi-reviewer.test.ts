@@ -51,11 +51,20 @@ test("Pi reviewer preflights, invokes read-only no-session mode, and returns fin
 	assert.ok(calls[1].includes("provider/model"));
 });
 
-test("Pi JSON parser surfaces assistant errors and ignores diagnostics", () => {
+test("Pi JSON parser surfaces a final assistant error and ignores diagnostics", () => {
 	const parsed = extractFinalAssistantOutput([
 		"not json",
 		JSON.stringify({ type: "message_end", message: { role: "assistant", stopReason: "error", errorMessage: "provider failed", content: [] } }),
 	].join("\n"));
 	assert.equal(parsed.output, "");
 	assert.equal(parsed.error, "provider failed");
+});
+
+test("Pi JSON parser accepts a successful retry after a transient assistant error", () => {
+	const parsed = extractFinalAssistantOutput([
+		JSON.stringify({ type: "message_end", message: { role: "assistant", stopReason: "error", errorMessage: "WebSocket error", content: [] } }),
+		JSON.stringify({ type: "message_end", message: { role: "assistant", stopReason: "stop", content: [{ type: "text", text: "No flags\nVERDICT: approve" }] } }),
+	].join("\n"));
+	assert.equal(parsed.output, "No flags\nVERDICT: approve");
+	assert.equal(parsed.error, undefined);
 });
