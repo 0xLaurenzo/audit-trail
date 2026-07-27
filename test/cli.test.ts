@@ -5,7 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { readActiveAudit, sha256Hex } from "../src/core/active-state.ts";
 import { readRows } from "../src/core/audit-store.ts";
-import type { CommandRunner } from "../src/core/ports.ts";
+import type { CommandRunner, ReviewerPort } from "../src/core/ports.ts";
 import type { NewAuditRow } from "../src/core/types.ts";
 import { AuditWorkflow } from "../src/core/workflow.ts";
 import { runCli, type CliIo } from "../src/cli/main.ts";
@@ -105,6 +105,27 @@ test("cli rejects invalid input with clear errors", async () => {
 
 		assert.equal(await runCli(["-C", root, "unknown-command"], io), 1);
 		assert.match(io.stderr.join("\n"), /Unknown command: unknown-command/);
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+test("CLI review records a blocking verdict and exits 1", async () => {
+	const root = await mkdtemp(join(tmpdir(), "audit-cli-test-"));
+	try {
+		assert.equal(await runCli(["-C", root, "start", "task"], capture()), 0);
+		assert.equal(await runCli(["-C", root, ...decisionArgs], capture()), 0);
+		const reviewer: ReviewerPort = { review: async () => "Finding.\nVERDICT: block\n" };
+		const io = capture();
+		assert.equal(
+			await runCli(["-C", root, "review", "provider/model", "--mode", "cross-model"], io, {
+				createReviewer: () => reviewer,
+			}),
+			1,
+		);
+		assert.match(io.stdout.join("\n"), /verdict: block/);
+		assert.match(io.stderr.join("\n"), /reviewer blocked this audit/);
+		assert.equal((await readActiveAudit(root))?.review?.verdict, "block");
 	} finally {
 		await rm(root, { recursive: true, force: true });
 	}

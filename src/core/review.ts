@@ -45,16 +45,16 @@ export function buildReviewDocument(input: ReviewDocumentInput): string {
 }
 
 /**
- * Extract the reviewer's explicit verdict: the last `VERDICT: approve|block`
- * line wins. Returns undefined when no verdict is present; callers must fail
- * closed (treat as block), because a review that certifies nothing cannot
- * unblock publish or close.
+ * Extract the reviewer's explicit verdict only when it is the final non-empty
+ * line and contains nothing except `VERDICT: approve|block`. Callers fail
+ * closed when this returns undefined: embedded, ambiguous, or trailing-text
+ * verdicts do not satisfy the prompt's certification contract.
  */
 export function parseReviewVerdict(output: string): ReviewVerdict | undefined {
-	const matches = output.match(/^\s*VERDICT:\s*(approve|block)\b.*$/gim);
-	if (!matches?.length) return undefined;
-	const last = /(approve|block)/i.exec(matches[matches.length - 1]);
-	return last?.[1].toLowerCase() as ReviewVerdict;
+	const finalLine = output.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).at(-1);
+	if (!finalLine) return undefined;
+	const match = /^VERDICT:\s*(approve|block)$/i.exec(finalLine);
+	return match?.[1].toLowerCase() as ReviewVerdict | undefined;
 }
 
 export function writeReviewArtifact(

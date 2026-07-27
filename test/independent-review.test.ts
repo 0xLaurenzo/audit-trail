@@ -37,10 +37,11 @@ async function startedWorkflow(root: string): Promise<AuditWorkflow> {
 	return workflow;
 }
 
-test("parseReviewVerdict extracts the last explicit verdict, case-insensitively", () => {
+test("parseReviewVerdict accepts only an exact final-line verdict, case-insensitively", () => {
 	assert.equal(parseReviewVerdict("No flags\nVERDICT: approve\n"), "approve");
 	assert.equal(parseReviewVerdict("findings...\nverdict: BLOCK"), "block");
-	assert.equal(parseReviewVerdict("VERDICT: block\nreconsidered\nVERDICT: approve"), "approve", "last verdict wins");
+	assert.equal(parseReviewVerdict("VERDICT: block\nreconsidered"), undefined, "verdict is not the final line");
+	assert.equal(parseReviewVerdict("VERDICT: approve with caveats"), undefined, "trailing text is ambiguous");
 	assert.equal(parseReviewVerdict("I would approve this"), undefined, "prose is not a verdict");
 	assert.equal(parseReviewVerdict("no verdict at all"), undefined);
 });
