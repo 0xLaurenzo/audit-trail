@@ -105,7 +105,7 @@ test("reviewer view exposes active state, complete fields, and bidirectional sup
 	assert.doesNotMatch(body, /### D0001/);
 	const supersededBody = body.match(/<a id="d0001"><\/a>\n<details>[\s\S]*?<\/details>/)?.[0];
 	assert.ok(supersededBody, "superseded body remains available");
-	assert.match(supersededBody, /\*\*publication\*\* · superseded by \[D0002\]\(#user-content-d0002\) · `open` · `low` · user requirement  \n<sub>2026-01-01 01:02 UTC · session session-1 · entry entry-1<\/sub>/);
+	assert.match(supersededBody, /\*\*publication\*\* · superseded by \[D0002\]\(#user-content-d0002\) · `open` · `low` · user requirement  \n<sub>2026-01-01T01:02:03\.000Z · session session-1 · entry entry-1<\/sub>/);
 	assert.match(supersededBody, /\*\*Decision\*\*[\s\S]*Render readable decisions/);
 	assert.match(supersededBody, /\*\*Why\*\*[\s\S]*Reviewers need the complete rationale/);
 	assert.match(supersededBody, /\*\*Alternatives considered\*\*[\s\S]*Keep TSV only/);
@@ -117,7 +117,7 @@ test("reviewer view exposes active state, complete fields, and bidirectional sup
 	assert.match(body, /\*\*Alternatives considered\*\*[\s\S]*A wide table/);
 	assert.match(body, /Supersedes <a href="#user-content-d0001"><code>D0001<\/code><\/a>\./);
 	const activeBody = body.slice(body.indexOf("### D0002"), body.indexOf("<details>\n<summary>Canonical audit TSV"));
-	assert.match(activeBody, /### D0002\n\n\*\*replacement policy\*\* · active · `verified` · `high` · user requirement  \n<sub>2026-01-01 01:02 UTC · session session-1 · entry entry-1<\/sub>/);
+	assert.match(activeBody, /### D0002\n\n\*\*replacement policy\*\* · active · `verified` · `high` · user requirement  \n<sub>2026-01-01T01:02:03\.000Z · session session-1 · entry entry-1<\/sub>/);
 	assert.match(activeBody, /<sub><strong>Evidence:<\/strong> src\/core\/github-publisher\.ts:100<\/sub>/);
 	assert.match(activeBody, /<sub><strong>History:<\/strong> Supersedes <a href="#user-content-d0001"><code>D0001<\/code><\/a>\.<\/sub>/);
 	assert.doesNotMatch(activeBody, /\*\*Recorded:|\*\*Evidence\*\*|\*\*History\*\*/);
@@ -152,6 +152,17 @@ test("reviewer view escapes structural Markdown and HTML while preserving Unicod
 	assert.ok(rendered.includes("&lt;\\!\\-\\- pi\\-audit\\-trail:owner/repo:evil:part:9 \\-\\-&gt;"));
 	assert.ok(rendered.includes("Unicode: café 🚀"));
 	assert.doesNotMatch(rendered, /<\/details>|### Fake heading|<!-- pi-audit-trail:owner\/repo:evil/);
+});
+
+test("compact metadata hides the none entry sentinel but retains real entry IDs", () => {
+	const noneRows = [{ ...baseRow, entry: "none" }];
+	const noneBody = buildRawGitHubComments(state, noneRows, rawFor(noneRows))[0];
+	const rendered = noneBody.slice(0, noneBody.indexOf("<details>\n<summary>Canonical audit TSV"));
+	assert.match(rendered, /<sub>2026-01-01T01:02:03\.000Z · session session-1<\/sub>/);
+	assert.doesNotMatch(rendered, /entry none/);
+
+	const realBody = buildRawGitHubComments(state, [baseRow], rawFor([baseRow]))[0];
+	assert.match(realBody, /session session-1 · entry entry-1<\/sub>/);
 });
 
 test("superseded one-line summaries HTML-escape audit fields", () => {

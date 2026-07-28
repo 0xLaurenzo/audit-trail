@@ -55,17 +55,11 @@ function htmlDecisionLink(id: string, linkableIds: ReadonlySet<string>): string 
 		: label;
 }
 
-function compactTimestamp(value: string): string {
-	const parsed = new Date(value);
-	return Number.isNaN(parsed.getTime())
-		? value || "—"
-		: `${parsed.toISOString().slice(0, 16).replace("T", " ")} UTC`;
-}
-
 function renderCompactMetadata(row: AuditRow, lifecycle: string, warnings: string[] = []): string[] {
+	const showEntry = Boolean(row.entry.trim()) && row.entry.trim().toLowerCase() !== "none";
 	return [
 		`**${markdownText(row.phase)}** · ${lifecycle} · ${inlineCode(row.result)} · ${inlineCode(row.confidence)} · ${markdownText(row.origin)}${warnings.length ? ` · ${warnings.join(" · ")}` : ""}  `,
-		`<sub>${htmlText(compactTimestamp(row.ts))} · session ${htmlText(row.session)} · entry ${htmlText(row.entry)}</sub>`,
+		`<sub>${htmlText(row.ts)} · session ${htmlText(row.session)}${showEntry ? ` · entry ${htmlText(row.entry)}` : ""}</sub>`,
 	];
 }
 
