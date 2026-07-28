@@ -259,6 +259,23 @@ test("publisher requires an explicit selector when named provenance is published
 	assert.equal(githubCalled, false);
 });
 
+test("publisher fails closed when current branch detection fails and no selector is given", async () => {
+	let githubCalled = false;
+	const runner: CommandRunner = {
+		async exec(command, args) {
+			if (command === "git" && args[0] === "branch") return { code: 1, stdout: "", stderr: "git unavailable" };
+			if (command === "git" && args[0] === "rev-parse") return { code: 1, stdout: "", stderr: "git unavailable" };
+			githubCalled = true;
+			return { code: 1, stdout: "", stderr: "GitHub must not run" };
+		},
+	};
+	await assert.rejects(
+		() => publishRawAudit({ runner, state, rows: [], rawTsv: "header\n" }),
+		/current branch cannot be identified.*explicit PR/,
+	);
+	assert.equal(githubCalled, false);
+});
+
 test("a detached checkout must exactly match an explicit PR head even when its branch matches provenance", async () => {
 	let compareCalled = false;
 	const runner: CommandRunner = {
