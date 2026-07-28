@@ -7,8 +7,9 @@ import { sha256Hex } from "../core/active-state.ts";
 import { publishRawAudit } from "../core/github-publisher.ts";
 import { runIndependentReview } from "../core/independent-review.ts";
 import { displayPath } from "../core/paths.ts";
-import type { CommandRunner, SessionIdentity } from "../core/ports.ts";
+import type { CommandRunner, ReviewerPort, SessionIdentity } from "../core/ports.ts";
 import { formatStatusLines } from "../core/status.ts";
+import { reviewBlocker } from "../core/validation.ts";
 import {
 	CONFIDENCE_VALUES,
 	ORIGIN_VALUES,
@@ -19,6 +20,7 @@ import {
 	type ReviewMode,
 } from "../core/types.ts";
 import { AuditWorkflow, resolveWorktreeRoot } from "../core/workflow.ts";
+import { createPiSubprocessReviewer } from "../adapters/pi-reviewer.ts";
 import { packageRootFromModule, selectInstallers } from "../install/installers.ts";
 import { McpAuditServer, serveStdio } from "../mcp/server.ts";
 
@@ -56,6 +58,13 @@ export interface CliIo {
 	out(line: string): void;
 	err(line: string): void;
 }
+
+export interface CliDependencies {
+	/** Construct the reviewer runtime for review and MCP commands. */
+	createReviewer(runner: CommandRunner): ReviewerPort;
+}
+
+const defaultDependencies: CliDependencies = { createReviewer: createPiSubprocessReviewer };
 
 export function processRunner(cwd?: string): CommandRunner {
 	return {
@@ -167,7 +176,12 @@ async function commandStatus(workflow: AuditWorkflow, io: CliIo): Promise<number
 	return 0;
 }
 
-async function commandReview(workflow: AuditWorkflow, args: string[], io: CliIo): Promise<number> {
+async function commandReview(
+	workflow: AuditWorkflow,
+	args: string[],
+	io: CliIo,
+	dependencies: CliDependencies,
+): Promise<number> {
 	const { values, positionals } = parseArgs({
 		args,
 		options: { mode: { type: "string" } },
@@ -191,19 +205,25 @@ async function commandReview(workflow: AuditWorkflow, args: string[], io: CliIo)
 	io.out(`Reviewing with ${model} (${mode})...`);
 	const review = await runIndependentReview({
 		workflow,
-		runner: processRunner(workflow.root),
+		reviewer: dependencies.createReviewer(processRunner(workflow.root)),
 		model,
 		mode,
 		harnessName: "cli",
 	});
-	io.out(`Review saved: ${displayPath(review.reviewPath, workflow.root)}`);
+	io.out(`Review saved: ${displayPath(review.reviewPath, workflow.root)} (verdict: ${review.verdict})`);
+	if (review.verdict === "block") {
+		io.err("The reviewer blocked this audit; publish and close stay gated until findings are addressed and it is re-reviewed");
+		return 1;
+	}
 	return 0;
 }
 
-async function commandMcp(workflow: AuditWorkflow, io: CliIo): Promise<number> {
+async function commandMcp(workflow: AuditWorkflow, io: CliIo, dependencies: CliDependencies): Promise<number> {
+	const runner = processRunner(workflow.root);
 	const server = new McpAuditServer({
 		workflow,
-		runner: processRunner(workflow.root),
+		runner,
+		reviewer: dependencies.createReviewer(runner),
 		session: { harness: "mcp", id: cliSession().id },
 	});
 	io.err(`audit-trail MCP server on stdio for ${workflow.root}`);
@@ -240,8 +260,9 @@ async function commandPublish(workflow: AuditWorkflow, selectorArg: string, io: 
 	// Read once and gate on these exact bytes so a concurrent append between
 	// check and publication cannot slip unreviewed rows into the PR comment.
 	const rawTsv = await readFile(state.logPath, "utf8");
-	if (!state.review || state.review.sha256 !== sha256Hex(rawTsv)) {
-		io.err("Run audit-trail review after the latest decision before publishing");
+	const blocker = reviewBlocker(state, sha256Hex(rawTsv));
+	if (blocker) {
+		io.err(`${blocker}. Run audit-trail review before publishing`);
 		return 1;
 	}
 	const selector = selectorArg || (state.provenance.branch !== "DETACHED" ? state.provenance.branch : "");
@@ -267,7 +288,11 @@ async function commandClose(workflow: AuditWorkflow, io: CliIo): Promise<number>
 	return 0;
 }
 
-export async function runCli(argv: string[], io: CliIo = { out: console.log, err: console.error }): Promise<number> {
+export async function runCli(
+	argv: string[],
+	io: CliIo = { out: console.log, err: console.error },
+	dependencies: CliDependencies = defaultDependencies,
+): Promise<number> {
 	const args = [...argv];
 	let directory = process.cwd();
 	const dirFlag = args.indexOf("-C");
@@ -297,13 +322,13 @@ export async function runCli(argv: string[], io: CliIo = { out: console.log, err
 			case "status":
 				return await commandStatus(workflow, io);
 			case "review":
-				return await commandReview(workflow, args, io);
+				return await commandReview(workflow, args, io, dependencies);
 			case "publish":
 				return await commandPublish(workflow, (args[0] ?? "").trim(), io);
 			case "close":
 				return await commandClose(workflow, io);
 			case "mcp":
-				return await commandMcp(workflow, io);
+				return await commandMcp(workflow, io, dependencies);
 			case "install":
 				return await commandInstall((args[0] ?? "").trim(), io);
 			default:

@@ -1,6 +1,5 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { readFile } from "node:fs/promises";
+import { resolve } from "node:path";
 import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
@@ -12,7 +11,6 @@ import {
 	buildReviewDocument,
 	buildReviewPrompt,
 	displayPath,
-	extractFinalAssistantOutput,
 	formatStatusLines,
 	parseRows,
 	publishRawAudit,
@@ -23,8 +21,11 @@ import {
 	type AuditState,
 	type CommandRunner,
 	type ReviewMode,
+	parseReviewVerdict,
+	reviewBlocker,
 	type SessionIdentity,
 } from "../core/index.ts";
+import { createPiSubprocessReviewer } from "./pi-reviewer.ts";
 
 /// Reviewer preference, most advanced first. Applied within each review tier
 /// (cross-provider, then cross-model, then the working model itself).
@@ -302,40 +303,22 @@ export default function auditTrailExtension(pi: ExtensionAPI) {
 			const reviewedTsv = await readFile(state.logPath, "utf8");
 			const reviewedSha256 = sha256Hex(reviewedTsv);
 			const rows = parseRows(reviewedTsv, state.logPath);
-			const tempDir = await mkdtemp(join(tmpdir(), "pi-audit-review-"));
-			const promptPath = join(tempDir, "reviewer.md");
 			const reviewerPrompt = buildReviewPrompt({
 				logPath: state.logPath,
 				transcriptPath: sessionPath,
 				workingDirectory: ctx.cwd,
 				harnessName: "pi",
 			});
-			await writeFile(promptPath, reviewerPrompt, { encoding: "utf8", mode: 0o600 });
+			const reviewer = createPiSubprocessReviewer({ exec: (command, cmdArgs, options) => pi.exec(command, cmdArgs, options) });
 			ctx.ui.notify(`Reviewing with ${reviewModel.provider}/${reviewModel.id} (${mode})...`, "info");
 			try {
-				const invocation = await pi.exec(
-					"pi",
-					[
-						"--mode",
-						"json",
-						"-p",
-						"--no-session",
-						"--model",
-						`${reviewModel.provider}/${reviewModel.id}`,
-						"--tools",
-						"read,grep,find,ls",
-						"--append-system-prompt",
-						promptPath,
-						"Perform the independent audit review now.",
-					],
-					{ timeout: 10 * 60 * 1000 },
-				);
-				if (invocation.code !== 0) {
-					throw new Error(invocation.stderr.trim() || `reviewer exited with code ${invocation.code}`);
-				}
-				const { output, error } = extractFinalAssistantOutput(invocation.stdout);
-				if (error) throw new Error(`reviewer model failed: ${error}`);
-				if (!output) throw new Error("reviewer produced no final assistant output");
+				const output = await reviewer.review({
+					prompt: reviewerPrompt,
+					model: `${reviewModel.provider}/${reviewModel.id}`,
+					workingDirectory: ctx.cwd,
+				});
+				// Fail closed: a review without an explicit verdict certifies nothing.
+				const verdict = parseReviewVerdict(output) ?? "block";
 				const stamp = new Date().toISOString().replace(/[:.]/g, "-");
 				const reviewPath = resolve(ctx.cwd, ".audit", `${state.task}.review.${stamp}.md`);
 				const reviewDocument = buildReviewDocument({
@@ -347,6 +330,7 @@ export default function auditTrailExtension(pi: ExtensionAPI) {
 					rowCount: rows.length,
 					output,
 					harnessName: "pi",
+					verdict,
 				});
 				await writeReviewArtifact(reviewPath, reviewDocument);
 				await wf.recordReview({
@@ -354,12 +338,18 @@ export default function auditTrailExtension(pi: ExtensionAPI) {
 					mode,
 					model: `${reviewModel.provider}/${reviewModel.id}`,
 					expectedSha256: reviewedSha256,
+					verdict,
 				});
-				ctx.ui.notify(`Review saved: ${displayPath(reviewPath, ctx.cwd)}`, "info");
+				if (verdict === "block") {
+					ctx.ui.notify(
+						`Review blocked the audit: ${displayPath(reviewPath, ctx.cwd)} — address its findings and re-review`,
+						"warning",
+					);
+				} else {
+					ctx.ui.notify(`Review saved: ${displayPath(reviewPath, ctx.cwd)} (verdict: approve)`, "info");
+				}
 			} catch (error: any) {
 				ctx.ui.notify(`Audit review failed: ${error?.message ?? error}`, "error");
-			} finally {
-				await rm(tempDir, { recursive: true, force: true });
 			}
 		},
 	});
@@ -384,8 +374,9 @@ export default function auditTrailExtension(pi: ExtensionAPI) {
 			// Read once and gate on these exact bytes so a concurrent append between
 			// check and publication cannot slip unreviewed rows into the PR comment.
 			const rawTsv = await readFile(state.logPath, "utf8");
-			if (!state.review || state.review.sha256 !== sha256Hex(rawTsv)) {
-				ctx.ui.notify("Run /audit-review after the latest decision before publishing", "error");
+			const blocker = reviewBlocker(state, sha256Hex(rawTsv));
+			if (blocker) {
+				ctx.ui.notify(`${blocker}. Run /audit-review before publishing`, "error");
 				return;
 			}
 			const provenance = state.provenance;

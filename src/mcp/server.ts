@@ -3,8 +3,9 @@ import type { Readable, Writable } from "node:stream";
 import { sha256Hex } from "../core/active-state.ts";
 import { publishRawAudit } from "../core/github-publisher.ts";
 import { runIndependentReview } from "../core/independent-review.ts";
-import type { CommandRunner, SessionIdentity } from "../core/ports.ts";
+import type { CommandRunner, ReviewerPort, SessionIdentity } from "../core/ports.ts";
 import { formatStatusLines } from "../core/status.ts";
+import { reviewBlocker } from "../core/validation.ts";
 import {
 	CONFIDENCE_VALUES,
 	ORIGIN_VALUES,
@@ -121,6 +122,8 @@ function oneOf<T extends readonly string[]>(values: T, value: string, label: str
 export interface McpServerOptions {
 	workflow: AuditWorkflow;
 	runner: CommandRunner;
+	/** Reviewer runtime used by audit_review. */
+	reviewer: ReviewerPort;
 	session: SessionIdentity;
 	version?: string;
 }
@@ -132,12 +135,14 @@ export interface McpServerOptions {
 export class McpAuditServer {
 	private readonly workflow: AuditWorkflow;
 	private readonly runner: CommandRunner;
+	private readonly reviewer: ReviewerPort;
 	private readonly session: SessionIdentity;
 	private readonly version: string;
 
 	constructor(options: McpServerOptions) {
 		this.workflow = options.workflow;
 		this.runner = options.runner;
+		this.reviewer = options.reviewer;
 		this.session = options.session;
 		this.version = options.version ?? "0.0.0";
 	}
@@ -184,12 +189,16 @@ export class McpAuditServer {
 				const mode = oneOf(REVIEW_MODES, requireString(args, "mode"), "mode") as ReviewMode;
 				const review = await runIndependentReview({
 					workflow: this.workflow,
-					runner: this.runner,
+					reviewer: this.reviewer,
 					model,
 					mode,
 					harnessName: "mcp",
 				});
-				return `Review saved: ${review.reviewPath} (${review.rowCount} rows reviewed)`;
+				const lines = [`Review saved: ${review.reviewPath} (${review.rowCount} rows reviewed, verdict: ${review.verdict})`];
+				if (review.verdict === "block") {
+					lines.push("The reviewer blocked this audit; publish and close stay gated until findings are addressed and it is re-reviewed.");
+				}
+				return lines.join("\n");
 			}
 			case "audit_publish": {
 				const state = await this.workflow.active();
@@ -198,9 +207,8 @@ export class McpAuditServer {
 				const rows = await this.workflow.rows(state);
 				// Gate on the exact bytes being published.
 				const rawTsv = await readFile(state.logPath, "utf8");
-				if (!state.review || state.review.sha256 !== sha256Hex(rawTsv)) {
-					throw new Error("Run audit_review after the latest decision before publishing.");
-				}
+				const blocker = reviewBlocker(state, sha256Hex(rawTsv));
+				if (blocker) throw new Error(`${blocker}. Run audit_review before publishing.`);
 				const selector =
 					optionalString(args, "selector") ?? (state.provenance.branch !== "DETACHED" ? state.provenance.branch : "");
 				if (!selector) throw new Error("Detached audits require a PR number or URL selector.");

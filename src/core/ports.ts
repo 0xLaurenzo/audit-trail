@@ -39,12 +39,22 @@ export interface ModelSelectionPort {
 	available(): Promise<ReviewModel[]>;
 }
 
-export interface ReviewRequest {
-	model: ReviewModel;
-	promptPath: string;
+export interface ReviewerRequest {
+	/** Full reviewer instructions, including the verdict contract. */
+	prompt: string;
+	/** Reviewer as `provider/model`. */
+	model: string;
 	workingDirectory: string;
+	timeoutMs?: number;
 }
 
+/**
+ * Runs one independent reviewer against the repository and returns its final
+ * report. Implementations must not modify the worktree and should fail fast
+ * with a clear message when their runtime is unavailable. Harness adapters
+ * provide native implementations; `createPiSubprocessReviewer` in
+ * src/adapters/pi-reviewer.ts is the subprocess fallback.
+ */
 export interface ReviewerPort {
-	review(request: ReviewRequest): Promise<string>;
+	review(request: ReviewerRequest): Promise<string>;
 }

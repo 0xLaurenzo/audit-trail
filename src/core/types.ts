@@ -54,6 +54,11 @@ export const REVIEW_MODES = ["cross-provider", "cross-model", "same-model"] as c
 /** How the independent reviewer relates to the working model. */
 export type ReviewMode = (typeof REVIEW_MODES)[number];
 
+export const REVIEW_VERDICTS = ["approve", "block"] as const;
+
+/** The reviewer's explicit conclusion; a missing verdict fails closed to block. */
+export type ReviewVerdict = (typeof REVIEW_VERDICTS)[number];
+
 /** Snapshot of the audit at the moment it was last independently reviewed. */
 export interface ReviewSnapshot {
 	/** Review artifact path, relative to the worktree root when inside it. */
@@ -63,6 +68,11 @@ export interface ReviewSnapshot {
 	mode: ReviewMode;
 	model: string;
 	at: string;
+	/**
+	 * Reviewer's conclusion. Absent only on snapshots recorded before verdicts
+	 * existed; those fail closed and require re-review before publish/close.
+	 */
+	verdict?: ReviewVerdict;
 }
 
 /** Version 1 is kept intact so existing Pi provenance files remain readable. */

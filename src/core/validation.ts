@@ -16,6 +16,19 @@ export function summarize(rows: AuditRow[]): AuditStats {
 	};
 }
 
+export function reviewBlocker(state: AuditState, currentSha256?: string): string | undefined {
+	if (!state.review) return "independent review not run";
+	if (currentSha256 === undefined || state.review.sha256 !== currentSha256) {
+		return "the audit changed after the last review";
+	}
+	if (state.review.verdict !== "approve") {
+		// Fail closed for both an explicit block and a legacy/malformed snapshot
+		// with no verdict: attendance alone does not certify the audit.
+		return `the last review did not approve this audit; address its findings (${state.review.path}) and re-review`;
+	}
+	return undefined;
+}
+
 export function closeBlockers(state: AuditState, rows: AuditRow[], currentSha256?: string): string[] {
 	const stats = summarize(rows);
 	const blockers: string[] = [];
@@ -26,9 +39,7 @@ export function closeBlockers(state: AuditState, rows: AuditRow[], currentSha256
 	if (stats.missingEvidence.length) {
 		blockers.push(`missing evidence: ${stats.missingEvidence.map((row) => row.id).join(", ")}`);
 	}
-	if (!state.review) blockers.push("independent review not run");
-	else if (currentSha256 === undefined || state.review.sha256 !== currentSha256) {
-		blockers.push("the audit changed after the last review");
-	}
+	const review = reviewBlocker(state, currentSha256);
+	if (review) blockers.push(review);
 	return blockers;
 }

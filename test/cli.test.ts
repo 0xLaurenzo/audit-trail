@@ -1,10 +1,13 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { readActiveAudit } from "../src/core/active-state.ts";
+import { readActiveAudit, sha256Hex } from "../src/core/active-state.ts";
 import { readRows } from "../src/core/audit-store.ts";
+import type { CommandRunner, ReviewerPort } from "../src/core/ports.ts";
+import type { NewAuditRow } from "../src/core/types.ts";
+import { AuditWorkflow } from "../src/core/workflow.ts";
 import { runCli, type CliIo } from "../src/cli/main.ts";
 
 function capture(): CliIo & { stdout: string[]; stderr: string[] } {
@@ -102,6 +105,66 @@ test("cli rejects invalid input with clear errors", async () => {
 
 		assert.equal(await runCli(["-C", root, "unknown-command"], io), 1);
 		assert.match(io.stderr.join("\n"), /Unknown command: unknown-command/);
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+test("CLI review records a blocking verdict and exits 1", async () => {
+	const root = await mkdtemp(join(tmpdir(), "audit-cli-test-"));
+	try {
+		assert.equal(await runCli(["-C", root, "start", "task"], capture()), 0);
+		assert.equal(await runCli(["-C", root, ...decisionArgs], capture()), 0);
+		const reviewer: ReviewerPort = { review: async () => "Finding.\nVERDICT: block\n" };
+		const io = capture();
+		assert.equal(
+			await runCli(["-C", root, "review", "provider/model", "--mode", "cross-model"], io, {
+				createReviewer: () => reviewer,
+			}),
+			1,
+		);
+		assert.match(io.stdout.join("\n"), /verdict: block/);
+		assert.match(io.stderr.join("\n"), /reviewer blocked this audit/);
+		assert.equal((await readActiveAudit(root))?.review?.verdict, "block");
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+test("CLI publish rejects a current blocking review before invoking GitHub", async () => {
+	const root = await mkdtemp(join(tmpdir(), "audit-cli-test-"));
+	try {
+		const git: CommandRunner = {
+			exec: async (_command, args) => {
+				const outputs: Record<string, string> = {
+					"rev-parse --show-toplevel": root,
+					"remote get-url origin": "git@github.com:owner/repo.git",
+					"branch --show-current": "feature/task",
+					"rev-parse HEAD": "abcdef1234567890",
+					"status --porcelain": "",
+				};
+				const key = args.join(" ");
+				return { code: key in outputs ? 0 : 1, stdout: outputs[key] ?? "", stderr: key.startsWith("gh") ? "GitHub must not run" : "" };
+			},
+		};
+		const workflow = new AuditWorkflow(root, git);
+		const state = (await workflow.start("task", { harness: "cli", id: "test" })).state;
+		const row: Omit<NewAuditRow, "session" | "entry"> = {
+			phase: "cli", origin: "implementation discovery", decision: "decision", why: "because", alternatives: "none",
+			confidence: "high", evidence: "test", result: "verified", supersedes: "",
+		};
+		await workflow.append({ harness: "cli", id: "test" }, row);
+		await workflow.recordReview({
+			path: join(root, ".audit", "task.review.md"),
+			mode: "cross-model",
+			model: "provider/model",
+			expectedSha256: sha256Hex(await readFile(state.logPath, "utf8")),
+			verdict: "block",
+		});
+		const io = capture();
+		assert.equal(await runCli(["-C", root, "publish", "22"], io), 1);
+		assert.match(io.stderr.join("\n"), /last review did not approve/);
+		assert.doesNotMatch(io.stderr.join("\n"), /GitHub must not run/);
 	} finally {
 		await rm(root, { recursive: true, force: true });
 	}
