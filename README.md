@@ -99,7 +99,7 @@ CLI rows are attributed as `cli/<user>@<host>` in the TSV `session` cell. `audit
 - `/audit-start <task>` — start or resume the worktree audit at `.audit/<task>.tsv`; starting a different task while one is active fails
 - `/audit-status` — show unresolved, low-confidence, and unsupported decisions, plus review freshness
 - `/audit-review [provider/model]` — review the log and pi session, preferring a cross-provider model
-- `/audit-publish [number-or-url]` — create or update raw audit TSV comments on the current checked-out branch's PR
+- `/audit-publish [number-or-url]` — create or update reviewer-friendly audit comments with canonical TSV on the current checked-out branch's PR
 - `/audit-close` — close only after all active rows are resolved and the latest audit bytes have been reviewed
 
 ## Agent tool
@@ -151,6 +151,21 @@ Pass a PR number or URL when automatic branch lookup is not appropriate. Every t
 /audit-publish 123
 ```
 
-Publishing requires an approving review checkpoint matching the current audit bytes: after any new decision, run `/audit-review` again, and a `VERDICT: block` review must be resolved and re-reviewed first. The `gh` CLI must be installed and authenticated. Provenance keeps the original audit-start branch immutable. GitHub must prove that every selected PR head descends from the pinned audit start commit, including same-named branches that may have been force-rewritten. Unrelated or diverged PRs are rejected before comments are read or written. Local branch/HEAD and the remote PR head OID are revalidated immediately before every comment mutation; GitHub has no atomic conditional comment write, so a local change or force-push in the sub-request window cannot be eliminated and requires publishing again from the updated checkout. It publishes the exact canonical TSV inside a collapsed code block, preceded by concise format, history, state, and Git provenance context. No model filters or rewrites the source before publication, allowing reviewers and their own tooling to process every audit row.
+Publishing requires an approving review checkpoint matching the current audit bytes: after any new decision, run `/audit-review` again, and a `VERDICT: block` review must be resolved and re-reviewed first. The `gh` CLI must be installed and authenticated. Provenance keeps the original audit-start branch immutable. GitHub must prove that every selected PR head descends from the pinned audit start commit, including same-named branches that may have been force-rewritten. Unrelated or diverged PRs are rejected before comments are read or written. Local branch/HEAD and the remote PR head OID are revalidated immediately before every comment mutation; GitHub has no atomic conditional comment write, so a local change or force-push in the sub-request window cannot be eliminated and requires publishing again from the updated checkout. It publishes a deterministic reviewer view with an active-decision index, blocker counts, and one Markdown card per decision. Horizontal rules separate entries. Active decisions are expanded; each superseded decision becomes a single collapsed summary line (ID, phase, replacement, result, and confidence) with the complete body and bidirectional history links available on expansion. Each card exposes phase, result, confidence, origin, decision, rationale, alternatives, evidence, supersession, timestamp, and session. A real harness entry ID is shown when available; the CLI/MCP `none` sentinel stays only in canonical TSV. Open, inconclusive, low-confidence, and missing-evidence active rows are visibly flagged. No model summarizes or rewrites these fields.
 
-GitHub comments have a size limit, so large TSV files are split at row boundaries into deterministic numbered comments. Concatenating their fenced TSV blocks in part order recovers the original file exactly. Hidden markers make publication idempotent: subsequent runs update each existing part and remove stale extra parts instead of creating duplicates. Publish before `/audit-close`; closing removes `.audit/active.json` for the worktree.
+```markdown
+### D0002
+
+**publication** · active · `verified` · `high` · user requirement  
+<sub>2026-01-01T01:02:03.000Z · session cli/user</sub>
+
+**Decision**
+
+Render deterministic reviewer-friendly decision cards.
+
+<sub><strong>Evidence:</strong> test/github-publisher.test.ts</sub>
+
+<sub><strong>History:</strong> No supersession links.</sub>
+```
+
+The exact canonical TSV remains in a collapsed block beneath the cards. GitHub comments have a size limit, so large audits are split at decision-row boundaries based on the combined Markdown and TSV size. Each card stays with its exact source row; concatenating fenced TSV blocks in part order recovers the original file byte-for-byte. Hidden markers make publication idempotent: subsequent runs update each existing part and remove stale extra parts instead of creating duplicates. Publish before `/audit-close`; closing removes `.audit/active.json` for the worktree.

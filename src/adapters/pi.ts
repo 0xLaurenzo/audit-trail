@@ -355,7 +355,7 @@ export default function auditTrailExtension(pi: ExtensionAPI) {
 	});
 
 	pi.registerCommand("audit-publish", {
-		description: "Create or update raw audit TSV comments on the branch PR: /audit-publish [number-or-url]",
+		description: "Create or update readable audit comments with canonical TSV on the branch PR: /audit-publish [number-or-url]",
 		handler: async (args, ctx) => {
 			const { wf, state, error } = await activeState(ctx);
 			if (error) {
@@ -390,7 +390,7 @@ export default function auditTrailExtension(pi: ExtensionAPI) {
 					selector: args.trim() || undefined,
 				});
 				ctx.ui.notify(
-					`Published raw audit TSV in ${result.commentCount} comment${result.commentCount === 1 ? "" : "s"} on PR #${result.prNumber}: ${result.commentUrl}`,
+					`Published audit in ${result.commentCount} readable comment${result.commentCount === 1 ? "" : "s"} with canonical TSV on PR #${result.prNumber}: ${result.commentUrl}`,
 					"info",
 				);
 			} catch (error: any) {

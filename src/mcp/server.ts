@@ -88,7 +88,7 @@ const TOOLS: ToolDefinition[] = [
 	},
 	{
 		name: "audit_publish",
-		description: "Create or update raw audit TSV comments on the current checked-out branch's pull request.",
+		description: "Create or update readable audit comments with canonical TSV on the current checked-out branch's pull request.",
 		inputSchema: {
 			type: "object",
 			properties: {
@@ -221,7 +221,7 @@ export class McpAuditServer {
 					rawTsv,
 					selector: optionalString(args, "selector"),
 				});
-				return `Published raw audit TSV in ${result.commentCount} comment${result.commentCount === 1 ? "" : "s"} on PR #${result.prNumber}: ${result.commentUrl}`;
+				return `Published audit in ${result.commentCount} readable comment${result.commentCount === 1 ? "" : "s"} with canonical TSV on PR #${result.prNumber}: ${result.commentUrl}`;
 			}
 			case "audit_close": {
 				const result = await this.workflow.close();
