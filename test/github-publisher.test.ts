@@ -54,6 +54,7 @@ test("publisher updates managed comments and removes stale parts idempotently", 
 	let patchedBody = "";
 	const runner: CommandRunner = {
 		async exec(command, args) {
+			if (command === "git") return { code: 0, stdout: "feature/core\n", stderr: "" };
 			assert.equal(command, "gh");
 			calls.push(args);
 			if (args[0] === "pr") {
@@ -158,7 +159,9 @@ test("publisher rejects a detached audit's explicit PR when it does not descend 
 	let commentsListed = false;
 	const runner: CommandRunner = {
 		async exec(command, args) {
-			assert.equal(command, "gh", "explicit selector does not need current Git branch");
+			if (command === "git" && args[0] === "branch") return { code: 0, stdout: "", stderr: "" };
+			if (command === "git" && args[0] === "rev-parse") return { code: 0, stdout: "other999\n", stderr: "" };
+			assert.equal(command, "gh");
 			if (args[0] === "pr") {
 				return {
 					code: 0,
@@ -186,4 +189,39 @@ test("publisher rejects a detached audit's explicit PR when it does not descend 
 		/does not descend from audit start commit/,
 	);
 	assert.equal(commentsListed, false, "lineage rejection happens before comments are read or written");
+});
+
+test("publisher rejects a sibling descendant PR that does not match the current checkout", async () => {
+	const startedOnMain: AuditState = {
+		...state,
+		provenance: { ...provenance, branch: "main", startCommit: "shared-base" },
+	};
+	let compareCalled = false;
+	const runner: CommandRunner = {
+		async exec(command, args) {
+			if (command === "git") return { code: 0, stdout: "feature/intended\n", stderr: "" };
+			if (args[0] === "pr") {
+				return {
+					code: 0,
+					stdout: JSON.stringify({
+						number: 77,
+						url: "https://github.com/owner/repo/pull/77",
+						title: "Sibling",
+						headRefName: "feature/typo",
+						headRefOid: "sibling-head",
+						baseRefName: "main",
+					}),
+					stderr: "",
+				};
+			}
+			compareCalled = true;
+			return { code: 0, stdout: "ahead\n", stderr: "" };
+		},
+	};
+
+	await assert.rejects(
+		() => publishRawAudit({ runner, state: startedOnMain, rows: [], rawTsv: "header\n", selector: "77" }),
+		/current checkout is feature\/intended/,
+	);
+	assert.equal(compareCalled, false, "checkout-intent rejection happens before ancestry and comment APIs");
 });

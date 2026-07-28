@@ -138,12 +138,20 @@ export async function publishRawAudit(input: PublishAuditInput): Promise<Publish
 	const provenance = input.state.provenance;
 	if (!provenance) throw new Error("This audit has no Git provenance; start a new audit with this version.");
 
+	// Resolve checkout identity even for explicit selectors: a PR number alone
+	// is vulnerable to typos between sibling branches that share startCommit.
+	const branchResult = await input.runner.exec("git", ["branch", "--show-current"], { timeout: 10_000 });
+	const currentBranch = branchResult.code === 0 ? branchResult.stdout.trim() : "";
+	let currentHead = "";
+	if (!currentBranch) {
+		const headResult = await input.runner.exec("git", ["rev-parse", "HEAD"], { timeout: 10_000 });
+		if (headResult.code === 0) currentHead = headResult.stdout.trim();
+	}
+
 	let selector = input.selector?.trim();
 	if (!selector) {
 		// The work may branch after audit start. Keep provenance immutable and
 		// use the caller's current branch as publication intent.
-		const branchResult = await input.runner.exec("git", ["branch", "--show-current"], { timeout: 10_000 });
-		const currentBranch = branchResult.code === 0 ? branchResult.stdout.trim() : "";
 		selector = currentBranch || (provenance.branch !== "DETACHED" ? provenance.branch : "");
 	}
 	if (!selector) throw new Error("Detached audits require an explicit PR number or URL selector");
@@ -156,10 +164,18 @@ export async function publishRawAudit(input: PublishAuditInput): Promise<Publish
 	if (prResult.code !== 0) throw new Error(prResult.stderr.trim() || `could not resolve pull request for ${selector}`);
 	const pr = JSON.parse(prResult.stdout) as PullRequest;
 	if (provenance.branch === "DETACHED" || pr.headRefName !== provenance.branch) {
-		// A start-on-base then branch workflow, or any detached-start audit, is
-		// valid only when the selected PR head descends from the immutable audit
-		// start commit. GitHub compare works even when the PR head is not fetched
-		// into the local clone.
+		// A differing target must match the current checkout before ancestry is
+		// considered. This turns current branch/HEAD into publication intent and
+		// rejects a mistyped sibling PR that happens to share startCommit.
+		const matchesCheckout = currentBranch ? pr.headRefName === currentBranch : Boolean(currentHead && pr.headRefOid === currentHead);
+		if (!matchesCheckout) {
+			throw new Error(
+				`PR #${pr.number} belongs to ${pr.headRefName}, but the current checkout is ${currentBranch || currentHead.slice(0, 12) || "unknown"}. Check out the intended PR branch before publishing.`,
+			);
+		}
+		// A start-on-base then branch workflow, or any detached-start audit, also
+		// requires the selected PR head to descend from the immutable audit start
+		// commit. GitHub compare works without a locally fetched PR head.
 		const compareResult = await input.runner.exec(
 			"gh",
 			[
