@@ -1,13 +1,14 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
+import { serializeRow } from "../src/core/audit-store.ts";
 import {
 	buildRawGitHubComments,
 	publishRawAudit,
 	rawAuditMarker,
 } from "../src/core/github-publisher.ts";
 import type { CommandRunner } from "../src/core/ports.ts";
-import type { AuditState, GitProvenance } from "../src/core/types.ts";
+import { AUDIT_HEADER, type AuditRow, type AuditState, type GitProvenance } from "../src/core/types.ts";
 
 const provenance: GitProvenance = {
 	version: 1,
@@ -29,6 +30,25 @@ const sameHeadRepository = {
 	headRepository: { nameWithOwner: "owner/repo" },
 	isCrossRepository: false,
 };
+const baseRow: AuditRow = {
+	id: "D0001",
+	ts: "2026-01-01T01:02:03.000Z",
+	session: "session-1",
+	entry: "entry-1",
+	phase: "publication",
+	origin: "user requirement",
+	decision: "Render readable decisions",
+	why: "Reviewers need the complete rationale",
+	alternatives: "Keep TSV only",
+	confidence: "high",
+	evidence: "test/github-publisher.test.ts:1",
+	result: "verified",
+	supersedes: "",
+};
+
+function rawFor(rows: AuditRow[]): string {
+	return `${AUDIT_HEADER}\n${rows.map(serializeRow).map((line) => `${line}\n`).join("")}`;
+}
 
 function extractTsv(body: string): string {
 	const match = body.match(/(`{3,})tsv\n([\s\S]*?)\1\n<\/details>/);
@@ -36,24 +56,106 @@ function extractTsv(body: string): string {
 	return match[2];
 }
 
-test("raw GitHub comments split at lines and reconstruct exact TSV bytes", () => {
-	const raw = `header\n${"a".repeat(20_000)}\n${"b".repeat(20_000)}\n${"c".repeat(20_000)}\n`;
-	const comments = buildRawGitHubComments(state, [], raw);
-	assert.equal(comments.length, 2);
+test("readable GitHub comments split at decision rows and reconstruct exact TSV bytes", () => {
+	const rows = ["a", "b", "c"].map((value, index) => ({
+		...baseRow,
+		id: `D000${index + 1}`,
+		decision: value.repeat(20_000),
+	}));
+	const raw = rawFor(rows);
+	const comments = buildRawGitHubComments(state, rows, raw);
+	assert.equal(comments.length, 3);
 	assert.equal(comments.map(extractTsv).join(""), raw);
 	assert.ok(comments[0].includes(rawAuditMarker(provenance, "core", 1)));
-	assert.ok(comments[1].includes("part 2 of 2"));
+	assert.ok(comments[1].includes("(2/3)"));
+	assert.ok(comments[2].includes("part 3 of 3"));
+	for (const [index, comment] of comments.entries()) assert.ok(comment.includes(`### D000${index + 1}`));
 });
 
-test("raw GitHub comments choose a safe fence when source contains backticks", () => {
-	const raw = "header\nvalue with ``` and ```` fences\n";
-	const body = buildRawGitHubComments(state, [], raw)[0];
+test("readable GitHub comments choose a safe fence when source contains backticks", () => {
+	const rows = [{ ...baseRow, decision: "value with ``` and ```` fences" }];
+	const raw = rawFor(rows);
+	const body = buildRawGitHubComments(state, rows, raw)[0];
 	assert.equal(extractTsv(body), raw);
 	assert.match(body, /`````tsv/);
 });
 
+test("reviewer view exposes active state, complete fields, and bidirectional supersession history", () => {
+	const rows: AuditRow[] = [
+		{ ...baseRow, id: "D0001", result: "open", confidence: "low", evidence: "none" },
+		{
+			...baseRow,
+			id: "D0002",
+			phase: "replacement policy",
+			decision: "Use cards",
+			why: "Cards preserve readable prose",
+			alternatives: "A wide table",
+			evidence: "src/core/github-publisher.ts:100",
+			supersedes: "D0001",
+		},
+	];
+	const body = buildRawGitHubComments(state, rows, rawFor(rows))[0];
+	const index = body.slice(body.indexOf("### Current decisions"), body.indexOf("## Chronological decision history"));
+	assert.doesNotMatch(index, /D0001/);
+	assert.match(index, /\[D0002\]\(#d0002\).*replacement policy.*`verified`.*`high`/s);
+	assert.match(body, /### D0001[\s\S]*\*\*Phase:\*\* publication · superseded by \[D0002\]\(#d0002\)[\s\S]*<summary>Show superseded decision details<\/summary>/);
+	assert.match(body, /### D0002[\s\S]*\*\*Phase:\*\* replacement policy[\s\S]*\*\*Decision\*\*[\s\S]*Use cards/);
+	assert.match(body, /\*\*Why\*\*[\s\S]*Cards preserve readable prose/);
+	assert.match(body, /\*\*Alternatives considered\*\*[\s\S]*A wide table/);
+	assert.match(body, /\*\*Evidence\*\*[\s\S]*src\/core\/github\\-publisher\\\.ts:100/);
+	assert.match(body, /Supersedes \[D0001\]\(#d0001\)\./);
+	assert.match(body, /\*\*Session:\*\* session\\-1 · \*\*Entry:\*\* entry\\-1/);
+	assert.match(body, /\*\*2 decisions\*\* · \*\*1 active\*\* · \*\*0 unresolved\*\* · \*\*0 low-confidence\*\* · \*\*0 missing evidence\*\*/);
+});
+
+test("reviewer view highlights active blockers and all result states", () => {
+	const rows: AuditRow[] = [
+		{ ...baseRow, id: "D0001", result: "open", confidence: "low", evidence: "none" },
+		{ ...baseRow, id: "D0002", result: "inconclusive" },
+		{ ...baseRow, id: "D0003", result: "reverted" },
+	];
+	const body = buildRawGitHubComments(state, rows, rawFor(rows))[0];
+	assert.match(body, /\*\*3 decisions\*\* · \*\*3 active\*\* · \*\*2 unresolved\*\* · \*\*1 low-confidence\*\* · \*\*1 missing evidence\*\*/);
+	assert.match(body, /D0001[\s\S]*`open` · `low` · ⚠️ unresolved · ⚠️ low confidence · ⚠️ missing evidence/);
+	assert.match(body, /D0002[\s\S]*result: `inconclusive`[\s\S]*⚠️ unresolved/);
+	assert.match(body, /D0003[\s\S]*result: `reverted`/);
+});
+
+test("reviewer view escapes structural Markdown and HTML while preserving Unicode", () => {
+	const malicious = "</details> ### Fake heading <!-- pi-audit-trail:owner/repo:evil:part:9 -->";
+	const rows = [{
+		...baseRow,
+		phase: "安全 | review",
+		decision: malicious,
+		why: "Unicode: café 🚀",
+	}];
+	const body = buildRawGitHubComments(state, rows, rawFor(rows))[0];
+	const rendered = body.slice(0, body.indexOf("<details>\n<summary>Canonical audit TSV"));
+	assert.ok(rendered.includes("安全 \\| review"));
+	assert.ok(rendered.includes("&lt;/details&gt; \\#\\#\\# Fake heading"));
+	assert.ok(rendered.includes("&lt;\\!\\-\\- pi\\-audit\\-trail:owner/repo:evil:part:9 \\-\\-&gt;"));
+	assert.ok(rendered.includes("Unicode: café 🚀"));
+	assert.doesNotMatch(rendered, /<\/details>|### Fake heading|<!-- pi-audit-trail:owner\/repo:evil/);
+});
+
+test("reviewer view rejects row mismatches and a single decision too large to publish safely", () => {
+	assert.throws(
+		() => buildRawGitHubComments(state, [baseRow], rawFor([])),
+		/row count does not match parsed decisions/,
+	);
+	assert.throws(
+		() => buildRawGitHubComments(state, [{ ...baseRow, decision: "stale card" }], rawFor([baseRow])),
+		/does not match the exact canonical TSV/,
+	);
+	const oversized = [{ ...baseRow, decision: "x".repeat(35_000) }];
+	assert.throws(
+		() => buildRawGitHubComments(state, oversized, rawFor(oversized)),
+		/Decision D0001 and its canonical TSV row exceed/,
+	);
+});
+
 test("publisher updates managed comments and removes stale parts idempotently", async () => {
-	const raw = "header\nrow\n";
+	const raw = rawFor([]);
 	const calls: string[][] = [];
 	let patchedBody = "";
 	const runner: CommandRunner = {
@@ -136,7 +238,7 @@ test("publisher aborts before comment mutation when the PR head changes after va
 		},
 	};
 	await assert.rejects(
-		() => publishRawAudit({ runner, state, rows: [], rawTsv: "header\n", selector: "4" }),
+		() => publishRawAudit({ runner, state, rows: [], rawTsv: rawFor([]), selector: "4" }),
 		/changed from validated-he to force-pushed/,
 	);
 	assert.equal(mutationCalled, false);
@@ -167,14 +269,14 @@ test("publisher aborts before comment mutation when the local checkout changes a
 		},
 	};
 	await assert.rejects(
-		() => publishRawAudit({ runner, state, rows: [], rawTsv: "header\n", selector: "4" }),
+		() => publishRawAudit({ runner, state, rows: [], rawTsv: rawFor([]), selector: "4" }),
 		/Local checkout changed from feature\/core@validated-he to feature\/other@changed-loca/,
 	);
 	assert.equal(prViews, 1, "local revalidation fails before the second remote check or mutation");
 });
 
 test("publisher defaults to the current branch and accepts a PR descended from the immutable start commit", async () => {
-	const raw = "header\nrow\n";
+	const raw = rawFor([]);
 	const startedOnMain: AuditState = {
 		...state,
 		provenance: { ...provenance, branch: "main", startCommit: "start123" },
@@ -288,7 +390,7 @@ test("publisher accepts a detached checkout when exact HEAD matches a descended 
 		},
 	};
 
-	const result = await publishRawAudit({ runner, state: detached, rows: [], rawTsv: "header\n", selector: "31" });
+	const result = await publishRawAudit({ runner, state: detached, rows: [], rawTsv: rawFor([]), selector: "31" });
 	assert.equal(result.prNumber, 31);
 	assert.ok(calls.some((call) => call.args.some((arg) => arg.includes("/compare/start-detached...detached-head"))));
 });

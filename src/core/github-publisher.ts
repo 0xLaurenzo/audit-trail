@@ -1,48 +1,54 @@
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { parseRows } from "./audit-store.ts";
 import type { CommandRunner } from "./ports.ts";
 import type { AuditRow, AuditState, GitProvenance } from "./types.ts";
-import { summarize } from "./validation.ts";
+import { activeRows, summarize } from "./validation.ts";
 
-export const RAW_TSV_CHUNK_BYTES = 48_000;
 const SAFE_GITHUB_COMMENT_BYTES = 60_000;
 
 function githubRefUrl(repositoryUrl: string, kind: "tree" | "commit", ref: string): string {
 	return `${repositoryUrl}/${kind}/${encodeURIComponent(ref)}`;
 }
 
-function markdownCell(value: string): string {
-	return value.replace(/\|/g, "\\|").replace(/[\r\n]+/g, " ").trim() || "—";
+function markdownText(value: string): string {
+	const normalized = value.replace(/\r\n?/g, "\n").trim();
+	if (!normalized) return "—";
+	return normalized
+		.split("\n")
+		.map((line) => line
+			.replace(/&/g, "&amp;")
+			.replace(/</g, "&lt;")
+			.replace(/>/g, "&gt;")
+			.replace(/([\\`*_[\]{}()#+.!|\-])/g, "\\$1"))
+		.join("<br>\n");
+}
+
+function inlineCode(value: string): string {
+	const normalized = value.replace(/\r\n?/g, "\n") || "—";
+	const longest = Math.max(0, ...Array.from(normalized.matchAll(/`+/g), (match) => match[0].length));
+	const fence = "`".repeat(Math.max(1, longest + 1));
+	const padding = /^`|`$/.test(normalized) ? " " : "";
+	return `${fence}${padding}${normalized}${padding}${fence}`;
+}
+
+function decisionLink(id: string): string {
+	const label = markdownText(id);
+	return /^D\d+$/.test(id) ? `[${label}](#${id.toLowerCase()})` : label;
+}
+
+function activeWarnings(row: AuditRow, active: boolean): string[] {
+	if (!active) return [];
+	const warnings: string[] = [];
+	if (row.result === "open" || row.result === "inconclusive") warnings.push("⚠️ unresolved");
+	if (row.confidence === "low") warnings.push("⚠️ low confidence");
+	if (!row.evidence || row.evidence.toLowerCase() === "none") warnings.push("⚠️ missing evidence");
+	return warnings;
 }
 
 export function rawAuditMarker(provenance: GitProvenance, task: string, part: number): string {
 	return `<!-- pi-audit-trail:${provenance.repository}:${task}:part:${part} -->`;
-}
-
-export function splitRawTsv(rawTsv: string, maxBytes = RAW_TSV_CHUNK_BYTES): string[] {
-	if (!rawTsv.endsWith("\n")) {
-		throw new Error("Canonical audit TSV must end with a newline before it can be published exactly");
-	}
-	const lines = rawTsv.match(/.*\n/g) ?? [];
-	const chunks: string[] = [];
-	let chunk = "";
-	let chunkBytes = 0;
-	for (const line of lines) {
-		const lineBytes = Buffer.byteLength(line, "utf8");
-		if (lineBytes > maxBytes) {
-			throw new Error(`Audit TSV contains a row larger than the ${maxBytes}-byte publication chunk limit`);
-		}
-		if (chunk && chunkBytes + lineBytes > maxBytes) {
-			chunks.push(chunk);
-			chunk = "";
-			chunkBytes = 0;
-		}
-		chunk += line;
-		chunkBytes += lineBytes;
-	}
-	if (chunk) chunks.push(chunk);
-	return chunks.length ? chunks : [rawTsv];
 }
 
 export function tsvFence(rawTsv: string): string {
@@ -50,53 +56,189 @@ export function tsvFence(rawTsv: string): string {
 	return "`".repeat(Math.max(3, longest + 1));
 }
 
-export function buildRawGitHubComments(state: AuditState, rows: AuditRow[], rawTsv: string): string[] {
-	if (!state.provenance) throw new Error("This audit has no Git provenance; start a new audit with this version.");
-	const provenance = state.provenance;
-	const chunks = splitRawTsv(rawTsv);
-	const fence = tsvFence(rawTsv);
-	const stats = summarize(rows);
+function replacementMap(rows: AuditRow[]): Map<string, string[]> {
+	const replacements = new Map<string, string[]>();
+	for (const row of rows) {
+		if (!row.supersedes) continue;
+		const ids = replacements.get(row.supersedes) ?? [];
+		ids.push(row.id);
+		replacements.set(row.supersedes, ids);
+	}
+	return replacements;
+}
+
+function renderDecisionBody(row: AuditRow, replacements: Map<string, string[]>): string[] {
+	const replacementIds = replacements.get(row.id) ?? [];
+	const history: string[] = [];
+	if (row.supersedes) history.push(`Supersedes ${decisionLink(row.supersedes)}.`);
+	if (replacementIds.length) history.push(`Superseded by ${replacementIds.map(decisionLink).join(", ")}.`);
+	if (!history.length) history.push("No supersession links.");
+	return [
+		"**Decision**",
+		"",
+		markdownText(row.decision),
+		"",
+		"**Why**",
+		"",
+		markdownText(row.why),
+		"",
+		"**Alternatives considered**",
+		"",
+		markdownText(row.alternatives),
+		"",
+		"**Evidence**",
+		"",
+		markdownText(row.evidence),
+		"",
+		"**History**",
+		"",
+		...history,
+		"",
+		`**Recorded:** ${markdownText(row.ts)} · **Session:** ${markdownText(row.session)} · **Entry:** ${markdownText(row.entry)}`,
+	];
+}
+
+function renderDecisionCard(row: AuditRow, replacements: Map<string, string[]>): string[] {
+	const replacementIds = replacements.get(row.id) ?? [];
+	const superseded = replacementIds.length > 0;
+	const lifecycle = superseded
+		? `superseded by ${replacementIds.map(decisionLink).join(", ")}`
+		: "active";
+	const warnings = activeWarnings(row, !superseded);
+	const lines = [
+		`### ${markdownText(row.id)}`,
+		"",
+		`**Phase:** ${markdownText(row.phase)} · ${lifecycle} · result: ${inlineCode(row.result)} · confidence: ${inlineCode(row.confidence)} · origin: ${inlineCode(row.origin)}${warnings.length ? ` · ${warnings.join(" · ")}` : ""}`,
+		"",
+	];
+	const body = renderDecisionBody(row, replacements);
+	if (superseded) {
+		lines.push("<details>", "<summary>Show superseded decision details</summary>", "", ...body, "</details>", "");
+	} else {
+		lines.push(...body, "");
+	}
+	return lines;
+}
+
+interface RenderChunk {
+	rows: AuditRow[];
+	rawTsv: string;
+}
+
+function renderAuditComment(
+	state: AuditState,
+	allRows: AuditRow[],
+	chunk: RenderChunk,
+	part: number,
+	totalParts: number,
+): string {
+	const provenance = state.provenance!;
+	const stats = summarize(allRows);
+	const current = activeRows(allRows);
+	const replacements = replacementMap(allRows);
 	const branchLink = githubRefUrl(provenance.repositoryUrl, "tree", provenance.branch);
 	const commitLink = githubRefUrl(provenance.repositoryUrl, "commit", provenance.startCommit);
-
-	return chunks.map((chunk, index) => {
-		const part = index + 1;
-		const lines = [
-			rawAuditMarker(provenance, state.task, part),
-			`## Decision audit: \`${state.task}\`${chunks.length > 1 ? ` (${part}/${chunks.length})` : ""}`,
-			"",
-		];
-		if (index === 0) {
-			lines.push(
-				"This is the canonical, append-only audit source for automated or human review.",
-				"",
-				"- **Format:** UTF-8 TSV with a header row; one decision per subsequent row.",
-				"- **History:** Rows remain in the file; `supersedes` identifies a decision replaced by a later row.",
-				"- **State:** `result` records verification state and `confidence` records decision confidence.",
-				`- **Decisions:** ${stats.total} total · ${stats.active} active`,
-				"",
-				"### Provenance",
-				"",
-				`[${provenance.repository}](${provenance.repositoryUrl}) · original branch [\`${markdownCell(provenance.branch)}\`](${branchLink}) · starting commit [\`${provenance.startCommit.slice(0, 12)}\`](${commitLink}) · worktree ${provenance.worktreeDirty ? "dirty" : "clean"} · session \`${markdownCell(provenance.sessionId)}\``,
-				"",
-			);
-		} else {
-			lines.push("Continuation of part 1. Concatenate TSV blocks in part order to recover the exact file.", "");
-		}
+	const lines = [
+		rawAuditMarker(provenance, state.task, part),
+		`## Decision audit: ${inlineCode(state.task)}${totalParts > 1 ? ` (${part}/${totalParts})` : ""}`,
+		"",
+	];
+	if (part === 1) {
 		lines.push(
-			"<details>",
-			`<summary>Raw audit TSV${chunks.length > 1 ? ` — part ${part} of ${chunks.length}` : ""}</summary>`,
+			"Deterministic reviewer view derived from the canonical, append-only audit TSV.",
 			"",
-			`${fence}tsv\n${chunk}${fence}`,
-			"</details>",
+			`**${stats.total} decisions** · **${stats.active} active** · **${stats.unresolved.length} unresolved** · **${stats.lowConfidence.length} low-confidence** · **${stats.missingEvidence.length} missing evidence**`,
 			"",
-			"---",
-			"_Generated by [pi-audit-trail](https://github.com/0xLaurenzo/audit-trail).  The fenced block is unmodified source data._",
+			"### Provenance",
+			"",
+			`[${markdownText(provenance.repository)}](${provenance.repositoryUrl}) · original branch [${inlineCode(provenance.branch)}](${branchLink}) · starting commit [${inlineCode(provenance.startCommit.slice(0, 12))}](${commitLink}) · worktree ${provenance.worktreeDirty ? "dirty" : "clean"} · session ${inlineCode(provenance.sessionId)}`,
+			"",
+			"### Current decisions",
+			"",
+			...(current.length
+				? current.map((row) => {
+					const warnings = activeWarnings(row, true);
+					return `- ${decisionLink(row.id)} — ${markdownText(row.phase)} · ${inlineCode(row.result)} · ${inlineCode(row.confidence)}${warnings.length ? ` · ${warnings.join(" · ")}` : ""}`;
+				})
+				: ["_None._"]),
+			"",
+			"## Chronological decision history",
 			"",
 		);
-		const body = lines.join("\n");
+	} else {
+		lines.push(
+			"Continuation of the chronological decision history. Concatenate canonical TSV blocks in part order to recover the exact file.",
+			"",
+		);
+	}
+	for (const row of chunk.rows) lines.push(...renderDecisionCard(row, replacements));
+	const fence = tsvFence(chunk.rawTsv);
+	lines.push(
+		"<details>",
+		`<summary>Canonical audit TSV${totalParts > 1 ? ` — part ${part} of ${totalParts}` : ""}</summary>`,
+		"",
+		`${fence}tsv\n${chunk.rawTsv}${fence}`,
+		"</details>",
+		"",
+		"---",
+		"_Generated by [pi-audit-trail](https://github.com/0xLaurenzo/audit-trail). The Markdown above is a deterministic derived view; the fenced TSV is the unmodified source._",
+		"",
+	);
+	return lines.join("\n");
+}
+
+export function buildRawGitHubComments(state: AuditState, rows: AuditRow[], rawTsv: string): string[] {
+	if (!state.provenance) throw new Error("This audit has no Git provenance; start a new audit with this version.");
+	if (!rawTsv.endsWith("\n")) {
+		throw new Error("Canonical audit TSV must end with a newline before it can be published exactly");
+	}
+	const rawLines = rawTsv.match(/.*\n/g) ?? [];
+	if (rawLines.join("") !== rawTsv || rawLines.length !== rows.length + 1) {
+		throw new Error(`Canonical audit TSV row count does not match parsed decisions (${rawLines.length - 1} source rows, ${rows.length} parsed rows)`);
+	}
+	const sourceRows = parseRows(rawTsv, "canonical audit TSV selected for publication");
+	const fields: (keyof AuditRow)[] = [
+		"id", "ts", "session", "entry", "phase", "origin", "decision", "why", "alternatives",
+		"confidence", "evidence", "result", "supersedes",
+	];
+	const mismatch = rows.findIndex((row, index) => fields.some((field) => row[field] !== sourceRows[index]?.[field]));
+	if (mismatch !== -1) {
+		throw new Error(`Parsed decision ${rows[mismatch].id || mismatch + 1} does not match the exact canonical TSV selected for publication`);
+	}
+
+	// Use the maximum possible part count while sizing so final part labels can
+	// only become shorter. The rendered card and its exact source row stay in
+	// the same comment; the header belongs only to part one.
+	const sizingTotal = Math.max(1, rows.length + 1);
+	const chunks: RenderChunk[] = [];
+	let cursor = 0;
+	do {
+		const part = chunks.length + 1;
+		const chunkRows: AuditRow[] = [];
+		let chunkRaw = part === 1 ? rawLines[0] : "";
+		const baseBody = renderAuditComment(state, rows, { rows: chunkRows, rawTsv: chunkRaw }, part, sizingTotal);
+		if (Buffer.byteLength(baseBody, "utf8") > SAFE_GITHUB_COMMENT_BYTES) {
+			throw new Error(`Audit overview exceeds the ${SAFE_GITHUB_COMMENT_BYTES}-byte safe GitHub comment limit`);
+		}
+		while (cursor < rows.length) {
+			const candidateRows = [...chunkRows, rows[cursor]];
+			const candidateRaw = `${chunkRaw}${rawLines[cursor + 1]}`;
+			const candidate = renderAuditComment(state, rows, { rows: candidateRows, rawTsv: candidateRaw }, part, sizingTotal);
+			if (Buffer.byteLength(candidate, "utf8") > SAFE_GITHUB_COMMENT_BYTES) break;
+			chunkRows.push(rows[cursor]);
+			chunkRaw = candidateRaw;
+			cursor += 1;
+		}
+		if (chunkRows.length === 0 && cursor < rows.length && part > 1) {
+			throw new Error(`Decision ${rows[cursor].id} and its canonical TSV row exceed the ${SAFE_GITHUB_COMMENT_BYTES}-byte safe GitHub comment limit`);
+		}
+		chunks.push({ rows: chunkRows, rawTsv: chunkRaw });
+	} while (cursor < rows.length);
+
+	return chunks.map((chunk, index) => {
+		const body = renderAuditComment(state, rows, chunk, index + 1, chunks.length);
 		if (Buffer.byteLength(body, "utf8") > SAFE_GITHUB_COMMENT_BYTES) {
-			throw new Error(`Generated audit comment part ${part} exceeds the safe GitHub comment limit`);
+			throw new Error(`Generated audit comment part ${index + 1} exceeds the safe GitHub comment limit`);
 		}
 		return body;
 	});

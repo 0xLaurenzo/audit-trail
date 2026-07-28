@@ -33,7 +33,7 @@ Commands:
   decision           Append one decision row (see options below)
   status             Show audit status and unresolved decision IDs
   review <model>     Run an independent review with <provider/model>
-  publish [pr]       Create or update raw audit TSV comments on the PR
+  publish [pr]       Create or update readable audit comments with canonical TSV
   close              Close the audit once resolved and reviewed
   mcp                Serve the audit tools as a local MCP server on stdio
   install <target>   Configure a harness: pi | claude | codex | opencode | all
@@ -273,7 +273,7 @@ async function commandPublish(workflow: AuditWorkflow, selectorArg: string, io: 
 		selector: selectorArg || undefined,
 	});
 	io.out(
-		`Published raw audit TSV in ${result.commentCount} comment${result.commentCount === 1 ? "" : "s"} on PR #${result.prNumber}: ${result.commentUrl}`,
+		`Published audit in ${result.commentCount} readable comment${result.commentCount === 1 ? "" : "s"} with canonical TSV on PR #${result.prNumber}: ${result.commentUrl}`,
 	);
 	return 0;
 }
