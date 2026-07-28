@@ -108,6 +108,8 @@ interface PullRequest {
 	title: string;
 	headRefName: string;
 	headRefOid: string;
+	headRepository: { nameWithOwner: string };
+	isCrossRepository: boolean;
 	baseRefName: string;
 }
 
@@ -143,11 +145,8 @@ export async function publishRawAudit(input: PublishAuditInput): Promise<Publish
 	const branchResult = await input.runner.exec("git", ["branch", "--show-current"], { timeout: 10_000 });
 	const currentBranch = branchResult.code === 0 ? branchResult.stdout.trim() : "";
 	const checkoutDetached = branchResult.code === 0 && !currentBranch;
-	let currentHead = "";
-	if (!currentBranch) {
-		const headResult = await input.runner.exec("git", ["rev-parse", "HEAD"], { timeout: 10_000 });
-		if (headResult.code === 0) currentHead = headResult.stdout.trim();
-	}
+	const headResult = await input.runner.exec("git", ["rev-parse", "HEAD"], { timeout: 10_000 });
+	const currentHead = headResult.code === 0 ? headResult.stdout.trim() : "";
 
 	let selector = input.selector?.trim();
 	if (!selector) {
@@ -165,18 +164,28 @@ export async function publishRawAudit(input: PublishAuditInput): Promise<Publish
 
 	const prResult = await input.runner.exec(
 		"gh",
-		["pr", "view", selector, "--repo", provenance.repository, "--json", "number,url,title,headRefName,headRefOid,baseRefName"],
+		[
+			"pr",
+			"view",
+			selector,
+			"--repo",
+			provenance.repository,
+			"--json",
+			"number,url,title,headRefName,headRefOid,headRepository,isCrossRepository,baseRefName",
+		],
 		{ timeout: 30_000 },
 	);
 	if (prResult.code !== 0) throw new Error(prResult.stderr.trim() || `could not resolve pull request for ${selector}`);
 	const pr = JSON.parse(prResult.stdout) as PullRequest;
-	// Every selected PR must match the current checkout. Provenance is history,
-	// not current intent: even a PR matching the start branch is rejected while
-	// another named branch is checked out.
-	const matchesCheckout = currentBranch ? pr.headRefName === currentBranch : Boolean(currentHead && pr.headRefOid === currentHead);
-	if (!matchesCheckout) {
+	// Every selected PR must match the repository and exact checkout commit.
+	// Branch names are labels, not identity: forks and stale remote heads can
+	// share a name while referring to different work.
+	const sameRepository = pr.headRepository?.nameWithOwner?.toLowerCase() === provenance.repository.toLowerCase();
+	const sameBranch = currentBranch ? pr.headRefName === currentBranch : true;
+	const sameHead = Boolean(currentHead && pr.headRefOid === currentHead);
+	if (!sameRepository || !sameBranch || !sameHead) {
 		throw new Error(
-			`PR #${pr.number} belongs to ${pr.headRefName}, but the current checkout is ${currentBranch || currentHead.slice(0, 12) || "unknown"}. Check out the intended PR branch before publishing.`,
+			`PR #${pr.number} head ${pr.headRepository?.nameWithOwner ?? "unknown"}:${pr.headRefName}@${pr.headRefOid?.slice(0, 12) ?? "unknown"} does not match current checkout ${provenance.repository}:${currentBranch || "DETACHED"}@${currentHead.slice(0, 12) || "unknown"}. Check out and update the intended PR branch before publishing.`,
 		);
 	}
 	if (provenance.branch === "DETACHED" || pr.headRefName !== provenance.branch) {

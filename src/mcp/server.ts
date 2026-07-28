@@ -94,7 +94,7 @@ const TOOLS: ToolDefinition[] = [
 			properties: {
 				selector: {
 					type: "string",
-					description: "PR number or URL; defaults to the current branch. Differing targets must match the checkout and descend from the audit start commit.",
+					description: "PR number or URL; defaults to the current branch. The PR must be in the provenance repository and match exact local HEAD; later branches must also descend from the audit start commit.",
 				},
 			},
 		},

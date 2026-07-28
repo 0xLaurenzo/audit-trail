@@ -25,6 +25,10 @@ const state: AuditState = {
 	logPath: "/repo/.audit/core.tsv",
 	provenance,
 };
+const sameHeadRepository = {
+	headRepository: { nameWithOwner: "owner/repo" },
+	isCrossRepository: false,
+};
 
 function extractTsv(body: string): string {
 	const match = body.match(/(`{3,})tsv\n([\s\S]*?)\1\n<\/details>/);
@@ -54,7 +58,8 @@ test("publisher updates managed comments and removes stale parts idempotently", 
 	let patchedBody = "";
 	const runner: CommandRunner = {
 		async exec(command, args) {
-			if (command === "git") return { code: 0, stdout: "feature/core\n", stderr: "" };
+			if (command === "git" && args[0] === "branch") return { code: 0, stdout: "feature/core\n", stderr: "" };
+			if (command === "git" && args[0] === "rev-parse") return { code: 0, stdout: "head-core\n", stderr: "" };
 			assert.equal(command, "gh");
 			calls.push(args);
 			if (args[0] === "pr") {
@@ -65,6 +70,8 @@ test("publisher updates managed comments and removes stale parts idempotently", 
 						url: "https://github.com/owner/repo/pull/4",
 						title: "Core",
 						headRefName: "feature/core",
+						headRefOid: "head-core",
+						...sameHeadRepository,
 						baseRefName: "main",
 					}),
 					stderr: "",
@@ -115,7 +122,8 @@ test("publisher defaults to the current branch and accepts a PR descended from t
 	const runner: CommandRunner = {
 		async exec(command, args) {
 			calls.push({ command, args });
-			if (command === "git") return { code: 0, stdout: "feature/after-start\n", stderr: "" };
+			if (command === "git" && args[0] === "branch") return { code: 0, stdout: "feature/after-start\n", stderr: "" };
+			if (command === "git" && args[0] === "rev-parse") return { code: 0, stdout: "head456\n", stderr: "" };
 			if (args[0] === "pr") {
 				return {
 					code: 0,
@@ -125,6 +133,7 @@ test("publisher defaults to the current branch and accepts a PR descended from t
 						title: "After start",
 						headRefName: "feature/after-start",
 						headRefOid: "head456",
+						...sameHeadRepository,
 						baseRefName: "main",
 					}),
 					stderr: "",
@@ -171,6 +180,7 @@ test("publisher rejects a detached audit's explicit PR when it does not descend 
 						title: "Unrelated",
 						headRefName: "feature/unrelated",
 						headRefOid: "other999",
+						...sameHeadRepository,
 						baseRefName: "main",
 					}),
 					stderr: "",
@@ -205,7 +215,7 @@ test("publisher accepts a detached checkout when exact HEAD matches a descended 
 			if (args[0] === "pr") {
 				return {
 					code: 0,
-					stdout: JSON.stringify({ number: 31, url: "https://github.com/owner/repo/pull/31", title: "Detached", headRefName: "feature/detached", headRefOid: "detached-head", baseRefName: "main" }),
+					stdout: JSON.stringify({ number: 31, url: "https://github.com/owner/repo/pull/31", title: "Detached", headRefName: "feature/detached", headRefOid: "detached-head", ...sameHeadRepository, baseRefName: "main" }),
 					stderr: "",
 				};
 			}
@@ -229,7 +239,7 @@ test("publisher rejects a detached target whose head differs from current HEAD b
 		async exec(command, args) {
 			if (command === "git" && args[0] === "branch") return { code: 0, stdout: "", stderr: "" };
 			if (command === "git" && args[0] === "rev-parse") return { code: 0, stdout: "checked-out-head\n", stderr: "" };
-			if (args[0] === "pr") return { code: 0, stdout: JSON.stringify({ number: 32, url: "https://github.com/owner/repo/pull/32", title: "Wrong detached", headRefName: "feature/wrong", headRefOid: "other-head", baseRefName: "main" }), stderr: "" };
+			if (args[0] === "pr") return { code: 0, stdout: JSON.stringify({ number: 32, url: "https://github.com/owner/repo/pull/32", title: "Wrong detached", headRefName: "feature/wrong", headRefOid: "other-head", ...sameHeadRepository, baseRefName: "main" }), stderr: "" };
 			compareCalled = true;
 			return { code: 0, stdout: "ahead\n", stderr: "" };
 		},
@@ -237,7 +247,7 @@ test("publisher rejects a detached target whose head differs from current HEAD b
 
 	await assert.rejects(
 		() => publishRawAudit({ runner, state: detached, rows: [], rawTsv: "header\n", selector: "32" }),
-		/current checkout is checked-out-/,
+		/current checkout .*checked-out-/,
 	);
 	assert.equal(compareCalled, false);
 });
@@ -282,14 +292,14 @@ test("a detached checkout must exactly match an explicit PR head even when its b
 		async exec(command, args) {
 			if (command === "git" && args[0] === "branch") return { code: 0, stdout: "", stderr: "" };
 			if (command === "git" && args[0] === "rev-parse") return { code: 0, stdout: "detached-other-work\n", stderr: "" };
-			if (args[0] === "pr") return { code: 0, stdout: JSON.stringify({ number: 4, url: "https://github.com/owner/repo/pull/4", title: "Original", headRefName: "feature/core", headRefOid: "branch-head", baseRefName: "main" }), stderr: "" };
+			if (args[0] === "pr") return { code: 0, stdout: JSON.stringify({ number: 4, url: "https://github.com/owner/repo/pull/4", title: "Original", headRefName: "feature/core", headRefOid: "branch-head", ...sameHeadRepository, baseRefName: "main" }), stderr: "" };
 			compareCalled = true;
 			return { code: 0, stdout: "ahead\n", stderr: "" };
 		},
 	};
 	await assert.rejects(
 		() => publishRawAudit({ runner, state, rows: [], rawTsv: "header\n", selector: "4" }),
-		/current checkout is detached-oth/,
+		/current checkout .*detached-oth/,
 	);
 	assert.equal(compareCalled, false);
 });
@@ -298,17 +308,48 @@ test("publisher rejects an explicit provenance-branch PR while another named bra
 	let compareCalled = false;
 	const runner: CommandRunner = {
 		async exec(command, args) {
-			if (command === "git") return { code: 0, stdout: "feature/other\n", stderr: "" };
-			if (args[0] === "pr") return { code: 0, stdout: JSON.stringify({ number: 4, url: "https://github.com/owner/repo/pull/4", title: "Original", headRefName: "feature/core", headRefOid: "original-head", baseRefName: "main" }), stderr: "" };
+			if (command === "git" && args[0] === "branch") return { code: 0, stdout: "feature/other\n", stderr: "" };
+			if (command === "git" && args[0] === "rev-parse") return { code: 0, stdout: "other-local-head\n", stderr: "" };
+			if (args[0] === "pr") return { code: 0, stdout: JSON.stringify({ number: 4, url: "https://github.com/owner/repo/pull/4", title: "Original", headRefName: "feature/core", headRefOid: "original-head", ...sameHeadRepository, baseRefName: "main" }), stderr: "" };
 			compareCalled = true;
 			return { code: 0, stdout: "identical\n", stderr: "" };
 		},
 	};
 	await assert.rejects(
 		() => publishRawAudit({ runner, state, rows: [], rawTsv: "header\n", selector: "4" }),
-		/current checkout is feature\/other/,
+		/current checkout .*feature\/other/,
 	);
 	assert.equal(compareCalled, false);
+});
+
+test("publisher rejects a stale same-name PR head that differs from local HEAD", async () => {
+	const runner: CommandRunner = {
+		async exec(command, args) {
+			if (command === "git" && args[0] === "branch") return { code: 0, stdout: "feature/core\n", stderr: "" };
+			if (command === "git" && args[0] === "rev-parse") return { code: 0, stdout: "local-new-head\n", stderr: "" };
+			if (args[0] === "pr") return { code: 0, stdout: JSON.stringify({ number: 4, url: "https://github.com/owner/repo/pull/4", title: "Stale", headRefName: "feature/core", headRefOid: "remote-old-head", ...sameHeadRepository, baseRefName: "main" }), stderr: "" };
+			throw new Error("validation should stop before APIs");
+		},
+	};
+	await assert.rejects(
+		() => publishRawAudit({ runner, state, rows: [], rawTsv: "header\n", selector: "4" }),
+		/remote-old-h.*local-new-he/,
+	);
+});
+
+test("publisher rejects a same-name, same-OID PR from a fork", async () => {
+	const runner: CommandRunner = {
+		async exec(command, args) {
+			if (command === "git" && args[0] === "branch") return { code: 0, stdout: "feature/core\n", stderr: "" };
+			if (command === "git" && args[0] === "rev-parse") return { code: 0, stdout: "same-head\n", stderr: "" };
+			if (args[0] === "pr") return { code: 0, stdout: JSON.stringify({ number: 44, url: "https://github.com/owner/repo/pull/44", title: "Fork", headRefName: "feature/core", headRefOid: "same-head", headRepository: { nameWithOwner: "attacker/repo" }, isCrossRepository: true, baseRefName: "main" }), stderr: "" };
+			throw new Error("validation should stop before APIs");
+		},
+	};
+	await assert.rejects(
+		() => publishRawAudit({ runner, state, rows: [], rawTsv: "header\n", selector: "44" }),
+		/attacker\/repo.*does not match current checkout owner\/repo/,
+	);
 });
 
 test("publisher rejects a sibling descendant PR that does not match the current checkout", async () => {
@@ -319,7 +360,8 @@ test("publisher rejects a sibling descendant PR that does not match the current 
 	let compareCalled = false;
 	const runner: CommandRunner = {
 		async exec(command, args) {
-			if (command === "git") return { code: 0, stdout: "feature/intended\n", stderr: "" };
+			if (command === "git" && args[0] === "branch") return { code: 0, stdout: "feature/intended\n", stderr: "" };
+			if (command === "git" && args[0] === "rev-parse") return { code: 0, stdout: "intended-head\n", stderr: "" };
 			if (args[0] === "pr") {
 				return {
 					code: 0,
@@ -329,6 +371,7 @@ test("publisher rejects a sibling descendant PR that does not match the current 
 						title: "Sibling",
 						headRefName: "feature/typo",
 						headRefOid: "sibling-head",
+						...sameHeadRepository,
 						baseRefName: "main",
 					}),
 					stderr: "",
@@ -341,7 +384,7 @@ test("publisher rejects a sibling descendant PR that does not match the current 
 
 	await assert.rejects(
 		() => publishRawAudit({ runner, state: startedOnMain, rows: [], rawTsv: "header\n", selector: "77" }),
-		/current checkout is feature\/intended/,
+		/current checkout .*feature\/intended/,
 	);
 	assert.equal(compareCalled, false, "checkout-intent rejection happens before ancestry and comment APIs");
 });
