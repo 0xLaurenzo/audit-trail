@@ -35,7 +35,7 @@ function inlineCode(value: string): string {
 
 function decisionLink(id: string, linkableIds: ReadonlySet<string>): string {
 	const label = markdownText(id);
-	return /^D\d+$/.test(id) && linkableIds.has(id) ? `[${label}](#${id.toLowerCase()})` : label;
+	return /^D\d+$/.test(id) && linkableIds.has(id) ? `[${label}](#user-content-${id.toLowerCase()})` : label;
 }
 
 function activeWarnings(row: AuditRow, active: boolean): string[] {
