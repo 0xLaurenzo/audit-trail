@@ -33,9 +33,9 @@ function inlineCode(value: string): string {
 	return `${fence}${padding}${normalized}${padding}${fence}`;
 }
 
-function decisionLink(id: string): string {
+function decisionLink(id: string, linkableIds: ReadonlySet<string>): string {
 	const label = markdownText(id);
-	return /^D\d+$/.test(id) ? `[${label}](#${id.toLowerCase()})` : label;
+	return /^D\d+$/.test(id) && linkableIds.has(id) ? `[${label}](#${id.toLowerCase()})` : label;
 }
 
 function activeWarnings(row: AuditRow, active: boolean): string[] {
@@ -67,11 +67,15 @@ function replacementMap(rows: AuditRow[]): Map<string, string[]> {
 	return replacements;
 }
 
-function renderDecisionBody(row: AuditRow, replacements: Map<string, string[]>): string[] {
+function renderDecisionBody(
+	row: AuditRow,
+	replacements: Map<string, string[]>,
+	linkableIds: ReadonlySet<string>,
+): string[] {
 	const replacementIds = replacements.get(row.id) ?? [];
 	const history: string[] = [];
-	if (row.supersedes) history.push(`Supersedes ${decisionLink(row.supersedes)}.`);
-	if (replacementIds.length) history.push(`Superseded by ${replacementIds.map(decisionLink).join(", ")}.`);
+	if (row.supersedes) history.push(`Supersedes ${decisionLink(row.supersedes, linkableIds)}.`);
+	if (replacementIds.length) history.push(`Superseded by ${replacementIds.map((id) => decisionLink(id, linkableIds)).join(", ")}.`);
 	if (!history.length) history.push("No supersession links.");
 	return [
 		"**Decision**",
@@ -98,20 +102,25 @@ function renderDecisionBody(row: AuditRow, replacements: Map<string, string[]>):
 	];
 }
 
-function renderDecisionCard(row: AuditRow, replacements: Map<string, string[]>): string[] {
+function renderDecisionCard(
+	row: AuditRow,
+	replacements: Map<string, string[]>,
+	linkableIds: ReadonlySet<string>,
+): string[] {
 	const replacementIds = replacements.get(row.id) ?? [];
 	const superseded = replacementIds.length > 0;
 	const lifecycle = superseded
-		? `superseded by ${replacementIds.map(decisionLink).join(", ")}`
+		? `superseded by ${replacementIds.map((id) => decisionLink(id, linkableIds)).join(", ")}`
 		: "active";
 	const warnings = activeWarnings(row, !superseded);
 	const lines = [
+		...(/^D\d+$/.test(row.id) ? [`<a id="${row.id.toLowerCase()}"></a>`] : []),
 		`### ${markdownText(row.id)}`,
 		"",
 		`**Phase:** ${markdownText(row.phase)} · ${lifecycle} · result: ${inlineCode(row.result)} · confidence: ${inlineCode(row.confidence)} · origin: ${inlineCode(row.origin)}${warnings.length ? ` · ${warnings.join(" · ")}` : ""}`,
 		"",
 	];
-	const body = renderDecisionBody(row, replacements);
+	const body = renderDecisionBody(row, replacements, linkableIds);
 	if (superseded) {
 		lines.push("<details>", "<summary>Show superseded decision details</summary>", "", ...body, "</details>", "");
 	} else {
@@ -136,6 +145,9 @@ function renderAuditComment(
 	const stats = summarize(allRows);
 	const current = activeRows(allRows);
 	const replacements = replacementMap(allRows);
+	// A bare #fragment is only reliable inside the same rendered comment. Keep
+	// cross-part relationships visible as IDs rather than emitting dead links.
+	const linkableIds = new Set(chunk.rows.map((row) => row.id));
 	const branchLink = githubRefUrl(provenance.repositoryUrl, "tree", provenance.branch);
 	const commitLink = githubRefUrl(provenance.repositoryUrl, "commit", provenance.startCommit);
 	const lines = [
@@ -158,7 +170,7 @@ function renderAuditComment(
 			...(current.length
 				? current.map((row) => {
 					const warnings = activeWarnings(row, true);
-					return `- ${decisionLink(row.id)} — ${markdownText(row.phase)} · ${inlineCode(row.result)} · ${inlineCode(row.confidence)}${warnings.length ? ` · ${warnings.join(" · ")}` : ""}`;
+					return `- ${decisionLink(row.id, linkableIds)} — ${markdownText(row.phase)} · ${inlineCode(row.result)} · ${inlineCode(row.confidence)}${warnings.length ? ` · ${warnings.join(" · ")}` : ""}`;
 				})
 				: ["_None._"]),
 			"",
@@ -171,7 +183,7 @@ function renderAuditComment(
 			"",
 		);
 	}
-	for (const row of chunk.rows) lines.push(...renderDecisionCard(row, replacements));
+	for (const row of chunk.rows) lines.push(...renderDecisionCard(row, replacements, linkableIds));
 	const fence = tsvFence(chunk.rawTsv);
 	lines.push(
 		"<details>",

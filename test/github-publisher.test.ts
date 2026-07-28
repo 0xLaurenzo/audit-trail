@@ -70,6 +70,9 @@ test("readable GitHub comments split at decision rows and reconstruct exact TSV 
 	assert.ok(comments[1].includes("(2/3)"));
 	assert.ok(comments[2].includes("part 3 of 3"));
 	for (const [index, comment] of comments.entries()) assert.ok(comment.includes(`### D000${index + 1}`));
+	const firstIndex = comments[0].slice(comments[0].indexOf("### Current decisions"), comments[0].indexOf("## Chronological decision history"));
+	assert.match(firstIndex, /\[D0001\]\(#d0001\)/, "same-comment decision is linked");
+	assert.doesNotMatch(firstIndex, /\[D000[23]\]/, "cross-comment decisions remain visible without dead fragment links");
 });
 
 test("readable GitHub comments choose a safe fence when source contains backticks", () => {
@@ -98,7 +101,7 @@ test("reviewer view exposes active state, complete fields, and bidirectional sup
 	const index = body.slice(body.indexOf("### Current decisions"), body.indexOf("## Chronological decision history"));
 	assert.doesNotMatch(index, /D0001/);
 	assert.match(index, /\[D0002\]\(#d0002\).*replacement policy.*`verified`.*`high`/s);
-	assert.match(body, /### D0001[\s\S]*\*\*Phase:\*\* publication · superseded by \[D0002\]\(#d0002\)[\s\S]*<summary>Show superseded decision details<\/summary>/);
+	assert.match(body, /<a id="d0001"><\/a>\n### D0001[\s\S]*\*\*Phase:\*\* publication · superseded by \[D0002\]\(#d0002\)[\s\S]*<summary>Show superseded decision details<\/summary>/);
 	assert.match(body, /### D0002[\s\S]*\*\*Phase:\*\* replacement policy[\s\S]*\*\*Decision\*\*[\s\S]*Use cards/);
 	assert.match(body, /\*\*Why\*\*[\s\S]*Cards preserve readable prose/);
 	assert.match(body, /\*\*Alternatives considered\*\*[\s\S]*A wide table/);
