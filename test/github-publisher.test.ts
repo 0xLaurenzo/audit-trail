@@ -142,6 +142,37 @@ test("publisher aborts before comment mutation when the PR head changes after va
 	assert.equal(mutationCalled, false);
 });
 
+test("publisher aborts before comment mutation when the local checkout changes after validation", async () => {
+	let branchReads = 0;
+	let headReads = 0;
+	let prViews = 0;
+	const runner: CommandRunner = {
+		async exec(command, args) {
+			if (command === "git" && args[0] === "branch") {
+				branchReads += 1;
+				return { code: 0, stdout: `${branchReads === 1 ? "feature/core" : "feature/other"}\n`, stderr: "" };
+			}
+			if (command === "git" && args[0] === "rev-parse") {
+				headReads += 1;
+				return { code: 0, stdout: `${headReads === 1 ? "validated-head" : "changed-local-head"}\n`, stderr: "" };
+			}
+			if (args[0] === "pr") {
+				prViews += 1;
+				return { code: 0, stdout: JSON.stringify({ number: 4, url: "https://github.com/owner/repo/pull/4", title: "Moving local", headRefName: "feature/core", headRefOid: "validated-head", ...sameHeadRepository, baseRefName: "main" }), stderr: "" };
+			}
+			if (args.some((arg) => arg.includes("/compare/abcdef1234567890...validated-head"))) return { code: 0, stdout: "ahead\n", stderr: "" };
+			if (args[1] === "user") return { code: 0, stdout: "reviewer\n", stderr: "" };
+			if (args.some((arg) => arg.endsWith("comments?per_page=100"))) return { code: 0, stdout: "[[]]", stderr: "" };
+			throw new Error("comment mutation must not run");
+		},
+	};
+	await assert.rejects(
+		() => publishRawAudit({ runner, state, rows: [], rawTsv: "header\n", selector: "4" }),
+		/Local checkout changed from feature\/core@validated-he to feature\/other@changed-loca/,
+	);
+	assert.equal(prViews, 1, "local revalidation fails before the second remote check or mutation");
+});
+
 test("publisher defaults to the current branch and accepts a PR descended from the immutable start commit", async () => {
 	const raw = "header\nrow\n";
 	const startedOnMain: AuditState = {
