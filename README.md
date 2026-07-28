@@ -92,7 +92,28 @@ CLI rows are attributed as `cli/<user>@<host>` in the TSV `session` cell. `audit
 
 ## Installer
 
-`audit-trail install <pi|claude|codex|opencode|all>` configures harnesses idempotently from a registry. Today `pi` registers the extension entry point in `~/.pi/agent/settings.json` (stale audit-trail entries — including pre-0.4 `index.ts` paths — are replaced rather than duplicated, and unrelated settings are preserved); `claude`, `codex`, and `opencode` are registry placeholders until their adapter issues land. Declaratively managed settings (for example home-manager) fail with a clear error — add the extension path in your Nix configuration instead.
+`audit-trail install <pi|claude|codex|opencode|all>` configures harnesses idempotently from a registry. Today `pi` registers the extension entry point in `~/.pi/agent/settings.json` (stale audit-trail entries — including pre-0.4 `index.ts` paths — are replaced rather than duplicated, and unrelated settings are preserved), and `opencode` installs the plugin shim and `/audit-*` commands described below; `claude` and `codex` are registry placeholders until their adapter issues land. Declaratively managed settings (for example home-manager) fail with a clear error — add the extension path in your Nix configuration instead.
+
+## OpenCode
+
+`src/adapters/opencode.ts` is a native OpenCode plugin over the same shared worktree state, so Pi, CLI, MCP, and OpenCode sessions interoperate on one audit: an audit started in Pi can be resumed from OpenCode and vice versa. It registers all six operations as plugin tools (`audit_start`, `audit_decision`, `audit_status`, `audit_review`, `audit_publish`, `audit_close`), injects the active-audit guidance into the system prompt, and write-protects extension-managed audit files. Rows are attributed as `opencode/<session-id>` with the message ID as the entry.
+
+Global activation:
+
+```bash
+audit-trail install opencode
+```
+
+This writes only files the package owns — a plugin shim at `~/.config/opencode/plugins/audit-trail.ts` re-exporting the adapter from the installed package, and five prompt-template commands (`/audit-start`, `/audit-status`, `/audit-review`, `/audit-publish`, `/audit-close`) under `~/.config/opencode/commands/` — and never touches `opencode.json` or other user files. Reinstalling is safe: unchanged files are left alone, managed files carry a stable ownership marker, and a stale shim from a previous install location is regenerated. If a target path already contains an unmarked file, installation fails before writing anything rather than overwriting potentially unrelated configuration.
+
+For project-local activation, place the same shim in `.opencode/plugins/` inside the project:
+
+```ts
+// .opencode/plugins/audit-trail.ts
+export { AuditTrailPlugin } from "/path/to/audit-trail/src/adapters/opencode.ts";
+```
+
+`audit_review` selects a reviewer across the configured OpenCode providers, preferring cross-provider, then cross-model, then the working model itself, and truthfully records the relation. The session transcript is captured with `opencode export` into `.audit/<task>.transcript.<session-id>.json` when available; otherwise the review runs transcript-less against the TSV, Git diff, and repository. The reviewer itself runs as a separate non-interactive `opencode run` subprocess using the built-in read-only `plan` agent with `--pure`, so it cannot load this plugin or mutate the worktree.
 
 ## Commands
 

@@ -89,6 +89,9 @@ export function processRunner(cwd?: string): CommandRunner {
 				child.on("error", () => {
 					// execFile callback also fires; nothing extra to do.
 				});
+				// No spawned command takes piped input, but some (opencode run) wait
+				// for EOF on an open stdin pipe and would hang until timeout.
+				child.stdin?.end();
 			});
 		},
 	};

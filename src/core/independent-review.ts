@@ -15,6 +15,8 @@ export interface IndependentReviewInput {
 	model: string;
 	mode: ReviewMode;
 	harnessName: string;
+	/** Optional session transcript for the reviewer; omitted for transcript-less review. */
+	transcriptPath?: string;
 }
 
 export interface IndependentReviewResult {
@@ -24,8 +26,9 @@ export interface IndependentReviewResult {
 }
 
 /**
- * Transcript-less independent review: the reviewer reads the TSV, Git diff,
- * and repository, and its explicit verdict is recorded in the audit's review
+ * Independent review: the reviewer reads the TSV, the Git diff and repository
+ * (or a harness transcript when one is supplied), and its explicit verdict is
+ * recorded in the audit's review
  * checkpoint. A blocking verdict (or a missing one, which fails closed to
  * block) keeps publish and close gated until findings are addressed and the
  * audit is re-reviewed.
@@ -42,6 +45,7 @@ export async function runIndependentReview(input: IndependentReviewInput): Promi
 	const rows = parseRows(reviewedTsv, state.logPath);
 	const prompt = buildReviewPrompt({
 		logPath: state.logPath,
+		transcriptPath: input.transcriptPath,
 		workingDirectory: workflow.root,
 		harnessName: input.harnessName,
 	});
@@ -54,6 +58,7 @@ export async function runIndependentReview(input: IndependentReviewInput): Promi
 		model,
 		reviewMode: mode,
 		logPath: state.logPath,
+		transcriptPath: input.transcriptPath,
 		workingDirectory: workflow.root,
 		rowCount: rows.length,
 		output,
