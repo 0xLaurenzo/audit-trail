@@ -107,6 +107,7 @@ interface PullRequest {
 	url: string;
 	title: string;
 	headRefName: string;
+	headRefOid: string;
 	baseRefName: string;
 }
 
@@ -122,7 +123,8 @@ export interface PublishAuditInput {
 	state: AuditState;
 	rows: AuditRow[];
 	rawTsv: string;
-	selector: string;
+	/** PR number/URL/branch. Defaults to the current branch, then start branch. */
+	selector?: string;
 }
 
 export interface PublishAuditResult {
@@ -135,15 +137,44 @@ export interface PublishAuditResult {
 export async function publishRawAudit(input: PublishAuditInput): Promise<PublishAuditResult> {
 	const provenance = input.state.provenance;
 	if (!provenance) throw new Error("This audit has no Git provenance; start a new audit with this version.");
+
+	let selector = input.selector?.trim();
+	if (!selector) {
+		// The work may branch after audit start. Keep provenance immutable and
+		// use the caller's current branch as publication intent.
+		const branchResult = await input.runner.exec("git", ["branch", "--show-current"], { timeout: 10_000 });
+		const currentBranch = branchResult.code === 0 ? branchResult.stdout.trim() : "";
+		selector = currentBranch || (provenance.branch !== "DETACHED" ? provenance.branch : "");
+	}
+	if (!selector) throw new Error("Detached audits require an explicit PR number or URL selector");
+
 	const prResult = await input.runner.exec(
 		"gh",
-		["pr", "view", input.selector, "--repo", provenance.repository, "--json", "number,url,title,headRefName,baseRefName"],
+		["pr", "view", selector, "--repo", provenance.repository, "--json", "number,url,title,headRefName,headRefOid,baseRefName"],
 		{ timeout: 30_000 },
 	);
-	if (prResult.code !== 0) throw new Error(prResult.stderr.trim() || "could not resolve pull request");
+	if (prResult.code !== 0) throw new Error(prResult.stderr.trim() || `could not resolve pull request for ${selector}`);
 	const pr = JSON.parse(prResult.stdout) as PullRequest;
 	if (provenance.branch !== "DETACHED" && pr.headRefName !== provenance.branch) {
-		throw new Error(`PR #${pr.number} belongs to ${pr.headRefName}, but this audit started on ${provenance.branch}`);
+		// A start-on-base then branch workflow is valid only when the selected
+		// PR head descends from the immutable audit start commit. GitHub compare
+		// works even when the PR head is not fetched into the local clone.
+		const compareResult = await input.runner.exec(
+			"gh",
+			[
+				"api",
+				`repos/${provenance.repository}/compare/${encodeURIComponent(provenance.startCommit)}...${encodeURIComponent(pr.headRefOid)}`,
+				"--jq",
+				".status",
+			],
+			{ timeout: 30_000 },
+		);
+		const relation = compareResult.code === 0 ? compareResult.stdout.trim() : "";
+		if (relation !== "ahead" && relation !== "identical") {
+			throw new Error(
+				`PR #${pr.number} belongs to ${pr.headRefName}, not the audit start branch ${provenance.branch}, and its head does not descend from audit start commit ${provenance.startCommit.slice(0, 12)}. Check out or select a PR branch that contains the audit start commit.`,
+			);
+		}
 	}
 
 	const bodies = buildRawGitHubComments(input.state, input.rows, input.rawTsv);

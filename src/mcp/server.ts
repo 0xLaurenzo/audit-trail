@@ -209,10 +209,13 @@ export class McpAuditServer {
 				const rawTsv = await readFile(state.logPath, "utf8");
 				const blocker = reviewBlocker(state, sha256Hex(rawTsv));
 				if (blocker) throw new Error(`${blocker}. Run audit_review before publishing.`);
-				const selector =
-					optionalString(args, "selector") ?? (state.provenance.branch !== "DETACHED" ? state.provenance.branch : "");
-				if (!selector) throw new Error("Detached audits require a PR number or URL selector.");
-				const result = await publishRawAudit({ runner: this.runner, state, rows, rawTsv, selector });
+				const result = await publishRawAudit({
+					runner: this.runner,
+					state,
+					rows,
+					rawTsv,
+					selector: optionalString(args, "selector"),
+				});
 				return `Published raw audit TSV in ${result.commentCount} comment${result.commentCount === 1 ? "" : "s"} on PR #${result.prNumber}: ${result.commentUrl}`;
 			}
 			case "audit_close": {

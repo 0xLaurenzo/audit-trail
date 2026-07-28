@@ -380,14 +380,15 @@ export default function auditTrailExtension(pi: ExtensionAPI) {
 				return;
 			}
 			const provenance = state.provenance;
-			const selector = args.trim() || (provenance.branch !== "DETACHED" ? provenance.branch : "");
-			if (!selector) {
-				ctx.ui.notify("Detached audits require /audit-publish <pr-number-or-url>", "error");
-				return;
-			}
-			ctx.ui.notify(`Resolving PR for ${provenance.repository}@${provenance.branch}...`, "info");
+			ctx.ui.notify(`Resolving PR for the current branch in ${provenance.repository}...`, "info");
 			try {
-				const result = await publishRawAudit({ runner, state, rows, rawTsv, selector });
+				const result = await publishRawAudit({
+					runner,
+					state,
+					rows,
+					rawTsv,
+					selector: args.trim() || undefined,
+				});
 				ctx.ui.notify(
 					`Published raw audit TSV in ${result.commentCount} comment${result.commentCount === 1 ? "" : "s"} on PR #${result.prNumber}: ${result.commentUrl}`,
 					"info",

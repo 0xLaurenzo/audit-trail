@@ -136,9 +136,9 @@ Every review ends with an explicit verdict. The reviewer must finish its report 
 
 ## Publish to a pull request
 
-Start the audit from the branch that will open the pull request. The extension captures that branch and its starting commit once and reuses the metadata when an audit is resumed.
+The audit captures its original branch and starting commit once and preserves them as immutable provenance. You may create or switch to the feature branch after starting; publication uses the current checked-out branch (or an explicit PR selector) and verifies that a later PR head descends from the pinned start commit.
 
-After reviewing the latest decisions, publish to the pull request associated with the original branch:
+After reviewing the latest decisions, publish to the pull request associated with the current checked-out branch:
 
 ```text
 /audit-review openai/gpt-5.2
@@ -151,6 +151,6 @@ Pass a PR number or URL when automatic branch lookup is not appropriate:
 /audit-publish 123
 ```
 
-Publishing requires an approving review checkpoint matching the current audit bytes: after any new decision, run `/audit-review` again, and a `VERDICT: block` review must be resolved and re-reviewed first. The `gh` CLI must be installed and authenticated. The command refuses to post to a PR whose head branch differs from the audit's original branch. It publishes the exact canonical TSV inside a collapsed code block, preceded by concise format, history, state, and Git provenance context. No model filters or rewrites the source before publication, allowing reviewers and their own tooling to process every audit row.
+Publishing requires an approving review checkpoint matching the current audit bytes: after any new decision, run `/audit-review` again, and a `VERDICT: block` review must be resolved and re-reviewed first. The `gh` CLI must be installed and authenticated. Provenance keeps the original audit-start branch immutable. If the selected PR uses a later branch (for example, the audit started on `main` before the feature branch was created), publishing requires GitHub to prove that the PR head descends from the pinned audit start commit. Unrelated or diverged PRs are rejected before comments are read or written. It publishes the exact canonical TSV inside a collapsed code block, preceded by concise format, history, state, and Git provenance context. No model filters or rewrites the source before publication, allowing reviewers and their own tooling to process every audit row.
 
 GitHub comments have a size limit, so large TSV files are split at row boundaries into deterministic numbered comments. Concatenating their fenced TSV blocks in part order recovers the original file exactly. Hidden markers make publication idempotent: subsequent runs update each existing part and remove stale extra parts instead of creating duplicates. Publish before `/audit-close`; closing removes `.audit/active.json` for the worktree.

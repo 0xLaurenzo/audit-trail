@@ -103,3 +103,87 @@ test("publisher updates managed comments and removes stale parts idempotently", 
 	assert.ok(calls.some((args) => args.includes("DELETE") && args.includes("repos/owner/repo/issues/comments/11")));
 	assert.ok(!calls.some((args) => args.includes("POST")));
 });
+
+test("publisher defaults to the current branch and accepts a PR descended from the immutable start commit", async () => {
+	const raw = "header\nrow\n";
+	const startedOnMain: AuditState = {
+		...state,
+		provenance: { ...provenance, branch: "main", startCommit: "start123" },
+	};
+	const calls: { command: string; args: string[] }[] = [];
+	const runner: CommandRunner = {
+		async exec(command, args) {
+			calls.push({ command, args });
+			if (command === "git") return { code: 0, stdout: "feature/after-start\n", stderr: "" };
+			if (args[0] === "pr") {
+				return {
+					code: 0,
+					stdout: JSON.stringify({
+						number: 23,
+						url: "https://github.com/owner/repo/pull/23",
+						title: "After start",
+						headRefName: "feature/after-start",
+						headRefOid: "head456",
+						baseRefName: "main",
+					}),
+					stderr: "",
+				};
+			}
+			if (args.some((arg) => arg.includes("/compare/start123...head456"))) {
+				return { code: 0, stdout: "ahead\n", stderr: "" };
+			}
+			if (args[1] === "user") return { code: 0, stdout: "reviewer\n", stderr: "" };
+			if (args.some((arg) => arg.endsWith("comments?per_page=100"))) {
+				return { code: 0, stdout: "[[]]", stderr: "" };
+			}
+			if (args.includes("POST")) {
+				return { code: 0, stdout: JSON.stringify({ html_url: "https://comment/23" }), stderr: "" };
+			}
+			throw new Error(`Unexpected call: ${command} ${args.join(" ")}`);
+		},
+	};
+
+	const result = await publishRawAudit({ runner, state: startedOnMain, rows: [], rawTsv: raw });
+	assert.equal(result.prNumber, 23);
+	const prCall = calls.find((call) => call.args[0] === "pr");
+	assert.equal(prCall?.args[2], "feature/after-start", "current branch is the default selector");
+	assert.ok(calls.some((call) => call.args.some((arg) => arg.includes("/compare/start123...head456"))));
+});
+
+test("publisher rejects an explicit different-branch PR that does not descend from the start commit", async () => {
+	const startedOnMain: AuditState = {
+		...state,
+		provenance: { ...provenance, branch: "main", startCommit: "start1234567890" },
+	};
+	let commentsListed = false;
+	const runner: CommandRunner = {
+		async exec(command, args) {
+			assert.equal(command, "gh", "explicit selector does not need current Git branch");
+			if (args[0] === "pr") {
+				return {
+					code: 0,
+					stdout: JSON.stringify({
+						number: 99,
+						url: "https://github.com/owner/repo/pull/99",
+						title: "Unrelated",
+						headRefName: "feature/unrelated",
+						headRefOid: "other999",
+						baseRefName: "main",
+					}),
+					stderr: "",
+				};
+			}
+			if (args.some((arg) => arg.includes("/compare/start1234567890...other999"))) {
+				return { code: 0, stdout: "diverged\n", stderr: "" };
+			}
+			commentsListed = true;
+			return { code: 1, stdout: "", stderr: "must not publish" };
+		},
+	};
+
+	await assert.rejects(
+		() => publishRawAudit({ runner, state: startedOnMain, rows: [], rawTsv: "header\n", selector: "99" }),
+		/does not descend from audit start commit/,
+	);
+	assert.equal(commentsListed, false, "lineage rejection happens before comments are read or written");
+});
