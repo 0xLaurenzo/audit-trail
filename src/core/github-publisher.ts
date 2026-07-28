@@ -188,26 +188,24 @@ export async function publishRawAudit(input: PublishAuditInput): Promise<Publish
 			`PR #${pr.number} head ${pr.headRepository?.nameWithOwner ?? "unknown"}:${pr.headRefName}@${pr.headRefOid?.slice(0, 12) ?? "unknown"} does not match current checkout ${provenance.repository}:${currentBranch || "DETACHED"}@${currentHead.slice(0, 12) || "unknown"}. Check out and update the intended PR branch before publishing.`,
 		);
 	}
-	if (provenance.branch === "DETACHED" || pr.headRefName !== provenance.branch) {
-		// A start-on-base then branch workflow, or any detached-start audit, also
-		// requires the selected PR head to descend from the immutable audit start
-		// commit. GitHub compare works without a locally fetched PR head.
-		const compareResult = await input.runner.exec(
-			"gh",
-			[
-				"api",
-				`repos/${provenance.repository}/compare/${encodeURIComponent(provenance.startCommit)}...${encodeURIComponent(pr.headRefOid)}`,
-				"--jq",
-				".status",
-			],
-			{ timeout: 30_000 },
+	// Branch names survive force pushes and history recreation, so every target
+	// (including the original named branch) must descend from immutable
+	// startCommit. GitHub compare works without a locally fetched PR head.
+	const compareResult = await input.runner.exec(
+		"gh",
+		[
+			"api",
+			`repos/${provenance.repository}/compare/${encodeURIComponent(provenance.startCommit)}...${encodeURIComponent(pr.headRefOid)}`,
+			"--jq",
+			".status",
+		],
+		{ timeout: 30_000 },
+	);
+	const relation = compareResult.code === 0 ? compareResult.stdout.trim() : "";
+	if (relation !== "ahead" && relation !== "identical") {
+		throw new Error(
+			`PR #${pr.number} head does not descend from audit start commit ${provenance.startCommit.slice(0, 12)} (GitHub compare: ${relation || "unavailable"}). Check out or select a PR branch that contains the audit start commit.`,
 		);
-		const relation = compareResult.code === 0 ? compareResult.stdout.trim() : "";
-		if (relation !== "ahead" && relation !== "identical") {
-			throw new Error(
-				`PR #${pr.number} belongs to ${pr.headRefName}, not the audit start branch ${provenance.branch}, and its head does not descend from audit start commit ${provenance.startCommit.slice(0, 12)}. Check out or select a PR branch that contains the audit start commit.`,
-			);
-		}
 	}
 
 	const bodies = buildRawGitHubComments(input.state, input.rows, input.rawTsv);

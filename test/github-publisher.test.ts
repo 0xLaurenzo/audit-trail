@@ -77,6 +77,9 @@ test("publisher updates managed comments and removes stale parts idempotently", 
 					stderr: "",
 				};
 			}
+			if (args.some((arg) => arg.includes("/compare/abcdef1234567890...head-core"))) {
+				return { code: 0, stdout: "ahead\n", stderr: "" };
+			}
 			if (args[1] === "user") return { code: 0, stdout: "reviewer\n", stderr: "" };
 			if (args.some((arg) => arg.endsWith("comments?per_page=100"))) {
 				return {
@@ -320,6 +323,25 @@ test("publisher rejects an explicit provenance-branch PR while another named bra
 		/current checkout .*feature\/other/,
 	);
 	assert.equal(compareCalled, false);
+});
+
+test("publisher rejects same-name, same-HEAD rewritten history that dropped startCommit", async () => {
+	let commentsCalled = false;
+	const runner: CommandRunner = {
+		async exec(command, args) {
+			if (command === "git" && args[0] === "branch") return { code: 0, stdout: "feature/core\n", stderr: "" };
+			if (command === "git" && args[0] === "rev-parse") return { code: 0, stdout: "rewritten-head\n", stderr: "" };
+			if (args[0] === "pr") return { code: 0, stdout: JSON.stringify({ number: 4, url: "https://github.com/owner/repo/pull/4", title: "Rewritten", headRefName: "feature/core", headRefOid: "rewritten-head", ...sameHeadRepository, baseRefName: "main" }), stderr: "" };
+			if (args.some((arg) => arg.includes("/compare/abcdef1234567890...rewritten-head"))) return { code: 0, stdout: "diverged\n", stderr: "" };
+			commentsCalled = true;
+			return { code: 1, stdout: "", stderr: "comments must not run" };
+		},
+	};
+	await assert.rejects(
+		() => publishRawAudit({ runner, state, rows: [], rawTsv: "header\n", selector: "4" }),
+		/GitHub compare: diverged/,
+	);
+	assert.equal(commentsCalled, false);
 });
 
 test("publisher rejects a stale same-name PR head that differs from local HEAD", async () => {

@@ -145,12 +145,12 @@ After reviewing the latest decisions, publish to the pull request associated wit
 /audit-publish
 ```
 
-Pass a PR number or URL when automatic branch lookup is not appropriate. Every target must belong to the provenance repository and match both the current branch name (when named) and exact local HEAD, so check out and update that PR branch first:
+Pass a PR number or URL when automatic branch lookup is not appropriate. Every target must belong to the provenance repository, match both the current branch name (when named) and exact local HEAD, and descend from the pinned audit start commit, so check out and update that PR branch first:
 
 ```text
 /audit-publish 123
 ```
 
-Publishing requires an approving review checkpoint matching the current audit bytes: after any new decision, run `/audit-review` again, and a `VERDICT: block` review must be resolved and re-reviewed first. The `gh` CLI must be installed and authenticated. Provenance keeps the original audit-start branch immutable. If the selected PR uses a later branch (for example, the audit started on `main` before the feature branch was created), publishing additionally requires GitHub to prove that the PR head descends from the pinned audit start commit. Unrelated or diverged PRs are rejected before comments are read or written. It publishes the exact canonical TSV inside a collapsed code block, preceded by concise format, history, state, and Git provenance context. No model filters or rewrites the source before publication, allowing reviewers and their own tooling to process every audit row.
+Publishing requires an approving review checkpoint matching the current audit bytes: after any new decision, run `/audit-review` again, and a `VERDICT: block` review must be resolved and re-reviewed first. The `gh` CLI must be installed and authenticated. Provenance keeps the original audit-start branch immutable. GitHub must prove that every selected PR head descends from the pinned audit start commit, including same-named branches that may have been force-rewritten. Unrelated or diverged PRs are rejected before comments are read or written. It publishes the exact canonical TSV inside a collapsed code block, preceded by concise format, history, state, and Git provenance context. No model filters or rewrites the source before publication, allowing reviewers and their own tooling to process every audit row.
 
 GitHub comments have a size limit, so large TSV files are split at row boundaries into deterministic numbered comments. Concatenating their fenced TSV blocks in part order recovers the original file exactly. Hidden markers make publication idempotent: subsequent runs update each existing part and remove stale extra parts instead of creating duplicates. Publish before `/audit-close`; closing removes `.audit/active.json` for the worktree.
