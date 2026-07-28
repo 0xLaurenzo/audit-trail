@@ -106,8 +106,8 @@ function renderDecisionBody(
 ): string[] {
 	const replacementIds = replacements.get(row.id) ?? [];
 	const history: string[] = [];
-	if (row.supersedes) history.push(`Supersedes ${decisionLink(row.supersedes, linkableIds)}.`);
-	if (replacementIds.length) history.push(`Superseded by ${replacementIds.map((id) => decisionLink(id, linkableIds)).join(", ")}.`);
+	if (row.supersedes) history.push(`Supersedes ${htmlDecisionLink(row.supersedes, linkableIds)}.`);
+	if (replacementIds.length) history.push(`Superseded by ${replacementIds.map((id) => htmlDecisionLink(id, linkableIds)).join(", ")}.`);
 	if (!history.length) history.push("No supersession links.");
 	const lifecycle = replacementIds.length
 		? `superseded by ${replacementIds.map((id) => decisionLink(id, linkableIds)).join(", ")}`
@@ -128,7 +128,7 @@ function renderDecisionBody(
 		"",
 		`<sub><strong>Evidence:</strong> ${htmlText(row.evidence)}</sub>`,
 		"",
-		`**History:** ${history.join(" ")}`,
+		`<sub><strong>History:</strong> ${history.join(" ")}</sub>`,
 	];
 }
 
