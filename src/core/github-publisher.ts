@@ -87,6 +87,7 @@ function renderDecisionBody(
 	row: AuditRow,
 	replacements: Map<string, string[]>,
 	linkableIds: ReadonlySet<string>,
+	includeMetadata = false,
 ): string[] {
 	const replacementIds = replacements.get(row.id) ?? [];
 	const history: string[] = [];
@@ -94,6 +95,12 @@ function renderDecisionBody(
 	if (replacementIds.length) history.push(`Superseded by ${replacementIds.map((id) => decisionLink(id, linkableIds)).join(", ")}.`);
 	if (!history.length) history.push("No supersession links.");
 	return [
+		...(includeMetadata ? [
+			"**Metadata**",
+			"",
+			`**ID:** ${markdownText(row.id)} · **Phase:** ${markdownText(row.phase)} · **Origin:** ${inlineCode(row.origin)} · **Result:** ${inlineCode(row.result)} · **Confidence:** ${inlineCode(row.confidence)}`,
+			"",
+		] : []),
 		"**Decision**",
 		"",
 		markdownText(row.decision),
@@ -126,7 +133,7 @@ function renderDecisionCard(
 	const replacementIds = replacements.get(row.id) ?? [];
 	const superseded = replacementIds.length > 0;
 	const anchor = /^D\d+$/.test(row.id) ? [`<a id="${row.id.toLowerCase()}"></a>`] : [];
-	const body = renderDecisionBody(row, replacements, linkableIds);
+	const body = renderDecisionBody(row, replacements, linkableIds, superseded);
 	if (superseded) {
 		const replacementSummary = replacementIds.map((id) => htmlDecisionLink(id, linkableIds)).join(", ");
 		return [

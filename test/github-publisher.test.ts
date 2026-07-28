@@ -103,6 +103,15 @@ test("reviewer view exposes active state, complete fields, and bidirectional sup
 	assert.match(index, /\[D0002\]\(#user-content-d0002\).*replacement policy.*`verified`.*`high`/s);
 	assert.match(body, /<a id="d0001"><\/a>\n<details>\n<summary><strong>D0001<\/strong> · publication · superseded by <a href="#user-content-d0002"><code>D0002<\/code><\/a> · result: <code>open<\/code> · confidence: <code>low<\/code><\/summary>/);
 	assert.doesNotMatch(body, /### D0001/);
+	const supersededBody = body.match(/<a id="d0001"><\/a>\n<details>[\s\S]*?<\/details>/)?.[0];
+	assert.ok(supersededBody, "superseded body remains available");
+	assert.match(supersededBody, /\*\*Metadata\*\*[\s\S]*\*\*ID:\*\* D0001 · \*\*Phase:\*\* publication · \*\*Origin:\*\* `user requirement` · \*\*Result:\*\* `open` · \*\*Confidence:\*\* `low`/);
+	assert.match(supersededBody, /\*\*Decision\*\*[\s\S]*Render readable decisions/);
+	assert.match(supersededBody, /\*\*Why\*\*[\s\S]*Reviewers need the complete rationale/);
+	assert.match(supersededBody, /\*\*Alternatives considered\*\*[\s\S]*Keep TSV only/);
+	assert.match(supersededBody, /\*\*Evidence\*\*[\s\S]*none/);
+	assert.match(supersededBody, /\*\*History\*\*[\s\S]*Superseded by \[D0002\]/);
+	assert.match(supersededBody, /\*\*Recorded:\*\* 2026\\-01\\-01T01:02:03\\\.000Z · \*\*Session:\*\* session\\-1 · \*\*Entry:\*\* entry\\-1/);
 	assert.match(body, /<\/details>\n\n---\n\n<a id="d0002"><\/a>\n### D0002/);
 	assert.match(body, /### D0002[\s\S]*\*\*Phase:\*\* replacement policy[\s\S]*\*\*Decision\*\*[\s\S]*Use cards/);
 	assert.match(body, /\*\*Why\*\*[\s\S]*Cards preserve readable prose/);
