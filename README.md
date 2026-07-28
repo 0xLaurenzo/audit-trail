@@ -156,11 +156,16 @@ Publishing requires an approving review checkpoint matching the current audit by
 ```markdown
 ### D0002
 
-**Phase:** publication · active · result: `verified` · confidence: `high`
+**publication** · active · `verified` · `high` · user requirement  
+<sub>2026-01-01 01:02 UTC · session cli/user · entry none</sub>
 
 **Decision**
 
 Render deterministic reviewer-friendly decision cards.
+
+<sub><strong>Evidence:</strong> test/github-publisher.test.ts</sub>
+
+**History:** No supersession links.
 ```
 
 The exact canonical TSV remains in a collapsed block beneath the cards. GitHub comments have a size limit, so large audits are split at decision-row boundaries based on the combined Markdown and TSV size. Each card stays with its exact source row; concatenating fenced TSV blocks in part order recovers the original file byte-for-byte. Hidden markers make publication idempotent: subsequent runs update each existing part and remove stale extra parts instead of creating duplicates. Publish before `/audit-close`; closing removes `.audit/active.json` for the worktree.

@@ -105,20 +105,22 @@ test("reviewer view exposes active state, complete fields, and bidirectional sup
 	assert.doesNotMatch(body, /### D0001/);
 	const supersededBody = body.match(/<a id="d0001"><\/a>\n<details>[\s\S]*?<\/details>/)?.[0];
 	assert.ok(supersededBody, "superseded body remains available");
-	assert.match(supersededBody, /\*\*Metadata\*\*[\s\S]*\*\*ID:\*\* D0001 · \*\*Phase:\*\* publication · \*\*Origin:\*\* `user requirement` · \*\*Result:\*\* `open` · \*\*Confidence:\*\* `low`/);
+	assert.match(supersededBody, /\*\*publication\*\* · superseded by \[D0002\]\(#user-content-d0002\) · `open` · `low` · user requirement  \n<sub>2026-01-01 01:02 UTC · session session-1 · entry entry-1<\/sub>/);
 	assert.match(supersededBody, /\*\*Decision\*\*[\s\S]*Render readable decisions/);
 	assert.match(supersededBody, /\*\*Why\*\*[\s\S]*Reviewers need the complete rationale/);
 	assert.match(supersededBody, /\*\*Alternatives considered\*\*[\s\S]*Keep TSV only/);
-	assert.match(supersededBody, /\*\*Evidence\*\*[\s\S]*none/);
-	assert.match(supersededBody, /\*\*History\*\*[\s\S]*Superseded by \[D0002\]/);
-	assert.match(supersededBody, /\*\*Recorded:\*\* 2026\\-01\\-01T01:02:03\\\.000Z · \*\*Session:\*\* session\\-1 · \*\*Entry:\*\* entry\\-1/);
+	assert.match(supersededBody, /<sub><strong>Evidence:<\/strong> none<\/sub>/);
+	assert.match(supersededBody, /\*\*History:\*\* Superseded by \[D0002\]/);
 	assert.match(body, /<\/details>\n\n---\n\n<a id="d0002"><\/a>\n### D0002/);
-	assert.match(body, /### D0002[\s\S]*\*\*Phase:\*\* replacement policy[\s\S]*\*\*Decision\*\*[\s\S]*Use cards/);
+	assert.match(body, /### D0002[\s\S]*\*\*replacement policy\*\* · active[\s\S]*\*\*Decision\*\*[\s\S]*Use cards/);
 	assert.match(body, /\*\*Why\*\*[\s\S]*Cards preserve readable prose/);
 	assert.match(body, /\*\*Alternatives considered\*\*[\s\S]*A wide table/);
-	assert.match(body, /\*\*Evidence\*\*[\s\S]*src\/core\/github\\-publisher\\\.ts:100/);
 	assert.match(body, /Supersedes \[D0001\]\(#user-content-d0001\)\./);
-	assert.match(body, /\*\*Session:\*\* session\\-1 · \*\*Entry:\*\* entry\\-1/);
+	const activeBody = body.slice(body.indexOf("### D0002"), body.indexOf("<details>\n<summary>Canonical audit TSV"));
+	assert.match(activeBody, /### D0002\n\n\*\*replacement policy\*\* · active · `verified` · `high` · user requirement  \n<sub>2026-01-01 01:02 UTC · session session-1 · entry entry-1<\/sub>/);
+	assert.match(activeBody, /<sub><strong>Evidence:<\/strong> src\/core\/github-publisher\.ts:100<\/sub>/);
+	assert.match(activeBody, /\*\*History:\*\* Supersedes \[D0001\]/);
+	assert.doesNotMatch(activeBody, /\*\*Recorded:|\*\*Evidence\*\*|\*\*History\*\*/);
 	assert.match(body, /\*\*2 decisions\*\* · \*\*1 active\*\* · \*\*0 unresolved\*\* · \*\*0 low-confidence\*\* · \*\*0 missing evidence\*\*/);
 });
 
@@ -131,8 +133,8 @@ test("reviewer view highlights active blockers and all result states", () => {
 	const body = buildRawGitHubComments(state, rows, rawFor(rows))[0];
 	assert.match(body, /\*\*3 decisions\*\* · \*\*3 active\*\* · \*\*2 unresolved\*\* · \*\*1 low-confidence\*\* · \*\*1 missing evidence\*\*/);
 	assert.match(body, /D0001[\s\S]*`open` · `low` · ⚠️ unresolved · ⚠️ low confidence · ⚠️ missing evidence/);
-	assert.match(body, /D0002[\s\S]*result: `inconclusive`[\s\S]*⚠️ unresolved/);
-	assert.match(body, /D0003[\s\S]*result: `reverted`/);
+	assert.match(body, /### D0002[\s\S]*\*\*publication\*\* · active · `inconclusive` · `high` · user requirement · ⚠️ unresolved/);
+	assert.match(body, /### D0003[\s\S]*\*\*publication\*\* · active · `reverted` · `high` · user requirement/);
 });
 
 test("reviewer view escapes structural Markdown and HTML while preserving Unicode", () => {

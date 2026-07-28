@@ -27,6 +27,7 @@ function markdownText(value: string): string {
 
 function htmlText(value: string): string {
 	return (value || "—")
+		.replace(/\r?\n/g, " ")
 		.replace(/&/g, "&amp;")
 		.replace(/</g, "&lt;")
 		.replace(/>/g, "&gt;")
@@ -52,6 +53,20 @@ function htmlDecisionLink(id: string, linkableIds: ReadonlySet<string>): string 
 	return /^D\d+$/.test(id) && linkableIds.has(id)
 		? `<a href="#user-content-${id.toLowerCase()}">${label}</a>`
 		: label;
+}
+
+function compactTimestamp(value: string): string {
+	const parsed = new Date(value);
+	return Number.isNaN(parsed.getTime())
+		? value || "—"
+		: `${parsed.toISOString().slice(0, 16).replace("T", " ")} UTC`;
+}
+
+function renderCompactMetadata(row: AuditRow, lifecycle: string, warnings: string[] = []): string[] {
+	return [
+		`**${markdownText(row.phase)}** · ${lifecycle} · ${inlineCode(row.result)} · ${inlineCode(row.confidence)} · ${markdownText(row.origin)}${warnings.length ? ` · ${warnings.join(" · ")}` : ""}  `,
+		`<sub>${htmlText(compactTimestamp(row.ts))} · session ${htmlText(row.session)} · entry ${htmlText(row.entry)}</sub>`,
+	];
 }
 
 function activeWarnings(row: AuditRow, active: boolean): string[] {
@@ -94,13 +109,11 @@ function renderDecisionBody(
 	if (row.supersedes) history.push(`Supersedes ${decisionLink(row.supersedes, linkableIds)}.`);
 	if (replacementIds.length) history.push(`Superseded by ${replacementIds.map((id) => decisionLink(id, linkableIds)).join(", ")}.`);
 	if (!history.length) history.push("No supersession links.");
+	const lifecycle = replacementIds.length
+		? `superseded by ${replacementIds.map((id) => decisionLink(id, linkableIds)).join(", ")}`
+		: "active";
 	return [
-		...(includeMetadata ? [
-			"**Metadata**",
-			"",
-			`**ID:** ${markdownText(row.id)} · **Phase:** ${markdownText(row.phase)} · **Origin:** ${inlineCode(row.origin)} · **Result:** ${inlineCode(row.result)} · **Confidence:** ${inlineCode(row.confidence)}`,
-			"",
-		] : []),
+		...(includeMetadata ? [...renderCompactMetadata(row, lifecycle), ""] : []),
 		"**Decision**",
 		"",
 		markdownText(row.decision),
@@ -113,15 +126,9 @@ function renderDecisionBody(
 		"",
 		markdownText(row.alternatives),
 		"",
-		"**Evidence**",
+		`<sub><strong>Evidence:</strong> ${htmlText(row.evidence)}</sub>`,
 		"",
-		markdownText(row.evidence),
-		"",
-		"**History**",
-		"",
-		...history,
-		"",
-		`**Recorded:** ${markdownText(row.ts)} · **Session:** ${markdownText(row.session)} · **Entry:** ${markdownText(row.entry)}`,
+		`**History:** ${history.join(" ")}`,
 	];
 }
 
@@ -151,7 +158,7 @@ function renderDecisionCard(
 		...anchor,
 		`### ${markdownText(row.id)}`,
 		"",
-		`**Phase:** ${markdownText(row.phase)} · active · result: ${inlineCode(row.result)} · confidence: ${inlineCode(row.confidence)} · origin: ${inlineCode(row.origin)}${warnings.length ? ` · ${warnings.join(" · ")}` : ""}`,
+		...renderCompactMetadata(row, "active", warnings),
 		"",
 		...body,
 		"",
