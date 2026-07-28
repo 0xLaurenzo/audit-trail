@@ -1,6 +1,7 @@
 export * from "./active-state.ts";
 export * from "./audit-store.ts";
 export * from "./github-publisher.ts";
+export * from "./guidance.ts";
 export * from "./independent-review.ts";
 export * from "./lock.ts";
 export * from "./paths.ts";

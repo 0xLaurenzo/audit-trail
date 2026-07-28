@@ -78,6 +78,6 @@ test("harness registry resolves targets and rejects unknown ones", async () => {
 	assert.equal(selectInstallers("codex")[0].harness, "codex");
 	const planned = await selectInstallers("claude")[0].install({ home: "/none", packageRoot: "/none" });
 	assert.equal(planned.changed, false);
-	assert.match(planned.message, /issue #6/);
+	assert.match(planned.message, /issue #7/);
 	assert.throws(() => selectInstallers("zed"), /Unknown harness: zed/);
 });
