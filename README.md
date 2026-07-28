@@ -104,7 +104,7 @@ Global activation:
 audit-trail install opencode
 ```
 
-This writes only files the package owns — a plugin shim at `~/.config/opencode/plugins/audit-trail.ts` re-exporting the adapter from the installed package, and five prompt-template commands (`/audit-start`, `/audit-status`, `/audit-review`, `/audit-publish`, `/audit-close`) under `~/.config/opencode/commands/` — and never touches `opencode.json` or other user files. Reinstalling is safe: unchanged files are left alone and a stale shim from a previous install location is regenerated.
+This writes only files the package owns — a plugin shim at `~/.config/opencode/plugins/audit-trail.ts` re-exporting the adapter from the installed package, and five prompt-template commands (`/audit-start`, `/audit-status`, `/audit-review`, `/audit-publish`, `/audit-close`) under `~/.config/opencode/commands/` — and never touches `opencode.json` or other user files. Reinstalling is safe: unchanged files are left alone, managed files carry a stable ownership marker, and a stale shim from a previous install location is regenerated. If a target path already contains an unmarked file, installation fails before writing anything rather than overwriting potentially unrelated configuration.
 
 For project-local activation, place the same shim in `.opencode/plugins/` inside the project:
 

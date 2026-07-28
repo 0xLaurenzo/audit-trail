@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -144,9 +144,15 @@ test("reviewer selection prefers cross-provider, then cross-model, then the work
 	const onlyWorking = selectOpencodeReviewer([working], working);
 	assert.deepEqual(onlyWorking, { model: working, mode: "same-model" });
 
-	// Empty catalog falls back to the working model itself.
+	// Empty catalog falls back to the working model itself. Missing working
+	// metadata must fail instead of inventing an independence mode.
 	assert.deepEqual(selectOpencodeReviewer([], working), { model: working, mode: "same-model" });
-	assert.throws(() => selectOpencodeReviewer([], undefined), /No model is available/);
+	assert.throws(() => selectOpencodeReviewer([], undefined), /Working model metadata is unavailable/);
+	assert.throws(() => selectOpencodeReviewer(catalog, undefined), /Working model metadata is unavailable/);
+	assert.throws(
+		() => selectOpencodeReviewer(catalog, undefined, "openai/gpt-5.6-sol"),
+		/Working model metadata is unavailable/,
+	);
 
 	// Explicit requests: honored when known, rejected when the catalog disagrees,
 	// trusted verbatim when no catalog is available.
@@ -185,10 +191,12 @@ test("opencode installer writes shim and commands idempotently without touching 
 		assert.equal(first.changed, true);
 
 		const shim = await readFile(join(configDir, "plugins", "audit-trail.ts"), "utf8");
+		assert.match(shim, /audit-trail-managed:v1/);
 		assert.match(shim, /export \{ AuditTrailPlugin \} from "\/opt\/audit-trail\/src\/adapters\/opencode\.ts"/);
 		for (const name of ["audit-start", "audit-status", "audit-review", "audit-publish", "audit-close"]) {
 			const command = await readFile(join(configDir, "commands", `${name}.md`), "utf8");
 			assert.match(command, /^---\ndescription: /, `${name} has frontmatter`);
+			assert.match(command, /audit-trail-managed:v1/, `${name} has an ownership marker`);
 			assert.match(command, new RegExp(`${name.replace("-", "_")} tool`), `${name} instructs its tool`);
 		}
 
@@ -200,11 +208,15 @@ test("opencode installer writes shim and commands idempotently without touching 
 		assert.equal(second.changed, false);
 		assert.match(second.message, /already installed/);
 
-		// A stale shim (older packageRoot) or edited command is regenerated.
-		await writeFile(join(configDir, "plugins", "audit-trail.ts"), "stale\n", "utf8");
-		const third = await opencodeInstaller.install({ home, packageRoot: "/opt/audit-trail" });
+		// A managed shim from an older packageRoot is regenerated.
+		const third = await opencodeInstaller.install({ home, packageRoot: "/new/audit-trail" });
 		assert.equal(third.changed, true);
-		assert.equal(await readFile(join(configDir, "plugins", "audit-trail.ts"), "utf8"), shim);
+		assert.match(
+			await readFile(join(configDir, "plugins", "audit-trail.ts"), "utf8"),
+			/export \{ AuditTrailPlugin \} from "\/new\/audit-trail\/src\/adapters\/opencode\.ts"/,
+		);
+		const fourth = await opencodeInstaller.install({ home, packageRoot: "/new/audit-trail" });
+		assert.equal(fourth.changed, false);
 
 		assert.equal(await readFile(join(configDir, "commands", "my-command.md"), "utf8"), "mine\n");
 		assert.equal(await readFile(join(configDir, "plugins", "other-plugin.ts"), "utf8"), "export {}\n");
@@ -213,12 +225,77 @@ test("opencode installer writes shim and commands idempotently without touching 
 	}
 });
 
-test("installed shim smoke test: the shim resolves the adapter and serves tool calls", async () => {
+test("opencode installer rejects unowned same-name collisions before writing anything", async () => {
+	const home = await mkdtemp(join(tmpdir(), "audit-opencode-collision-"));
+	try {
+		const configDir = join(home, ".config", "opencode");
+		const pluginPath = join(configDir, "plugins", "audit-trail.ts");
+		const commandPath = join(configDir, "commands", "audit-review.md");
+		await mkdir(join(configDir, "plugins"), { recursive: true });
+		await mkdir(join(configDir, "commands"), { recursive: true });
+		await writeFile(pluginPath, "export const MyAuditTrail = {}\n", "utf8");
+		await writeFile(commandPath, "---\ndescription: My command\n---\nDo something else.\n", "utf8");
+
+		await assert.rejects(
+			() => opencodeInstaller.install({ home, packageRoot: "/opt/audit-trail" }),
+			(error: Error) =>
+				/unmanaged|not managed/.test(error.message) &&
+				error.message.includes(pluginPath) &&
+				error.message.includes(commandPath),
+		);
+		assert.equal(await readFile(pluginPath, "utf8"), "export const MyAuditTrail = {}\n");
+		assert.equal(await readFile(commandPath, "utf8"), "---\ndescription: My command\n---\nDo something else.\n");
+		await assert.rejects(() => readFile(join(configDir, "commands", "audit-start.md"), "utf8"), /ENOENT/);
+	} finally {
+		await rm(home, { recursive: true, force: true });
+	}
+});
+
+test("opencode installer migrates exact pre-marker files emitted by the initial adapter", async () => {
+	const home = await mkdtemp(join(tmpdir(), "audit-opencode-legacy-"));
+	try {
+		const configDir = join(home, ".config", "opencode");
+		const pluginPath = join(configDir, "plugins", "audit-trail.ts");
+		await mkdir(join(configDir, "plugins"), { recursive: true });
+		await mkdir(join(configDir, "commands"), { recursive: true });
+		await writeFile(
+			pluginPath,
+			'// Managed by `audit-trail install opencode`; edits are overwritten on reinstall.\nexport { AuditTrailPlugin } from "/old/src/adapters/opencode.ts";\n',
+			"utf8",
+		);
+		await writeFile(
+			join(configDir, "commands", "audit-status.md"),
+			"---\ndescription: Show decision-audit status and unresolved decision IDs\n---\nCall the audit_status tool with no arguments and report its output verbatim.\n",
+			"utf8",
+		);
+		const result = await opencodeInstaller.install({ home, packageRoot: "/new/audit-trail" });
+		assert.equal(result.changed, true);
+		assert.match(await readFile(pluginPath, "utf8"), /audit-trail-managed:v1/);
+		assert.match(await readFile(join(configDir, "commands", "audit-status.md"), "utf8"), /audit-trail-managed:v1/);
+	} finally {
+		await rm(home, { recursive: true, force: true });
+	}
+});
+
+test("installed-version smoke test resolves the adapter from a staged artifact, not checkout node_modules", async () => {
 	const home = await mkdtemp(join(tmpdir(), "audit-opencode-smoke-"));
 	const worktree = await mkdtemp(join(tmpdir(), "audit-opencode-smoke-wt-"));
+	const packageRoot = await mkdtemp(join(tmpdir(), "audit-opencode-installed-"));
 	try {
-		// Install against this checkout as the "installed" package root.
-		const packageRoot = join(import.meta.dirname, "..");
+		const checkout = join(import.meta.dirname, "..");
+		// Match the runtime shape shipped by Nix: package sources plus only the
+		// adapter's declared runtime dependency graph. Because packageRoot is a
+		// sibling under /tmp, module resolution cannot fall back to checkout
+		// node_modules and hide a missing installed dependency.
+		await cp(join(checkout, "src"), join(packageRoot, "src"), { recursive: true });
+		await cp(join(checkout, "package.json"), join(packageRoot, "package.json"));
+		await mkdir(join(packageRoot, "node_modules", "@opencode-ai"), { recursive: true });
+		await cp(
+			join(checkout, "node_modules", "@opencode-ai", "plugin"),
+			join(packageRoot, "node_modules", "@opencode-ai", "plugin"),
+			{ recursive: true },
+		);
+		await cp(join(checkout, "node_modules", "zod"), join(packageRoot, "node_modules", "zod"), { recursive: true });
 		await opencodeInstaller.install({ home, packageRoot });
 		const shimPath = join(home, ".config", "opencode", "plugins", "audit-trail.ts");
 		const module: any = await import(pathToFileURL(shimPath).href);
@@ -231,5 +308,6 @@ test("installed shim smoke test: the shim resolves the adapter and serves tool c
 	} finally {
 		await rm(home, { recursive: true, force: true });
 		await rm(worktree, { recursive: true, force: true });
+		await rm(packageRoot, { recursive: true, force: true });
 	}
 });

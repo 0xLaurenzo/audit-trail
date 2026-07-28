@@ -62,38 +62,54 @@ export const piInstaller: HarnessInstaller = {
 	},
 };
 
+const OPENCODE_MANAGED_MARKER = "audit-trail-managed:v1";
+const OPENCODE_COMMAND_MARKER = `<!-- ${OPENCODE_MANAGED_MARKER} -->\n`;
+
 const OPENCODE_COMMANDS: Record<string, string> = {
 	"audit-start": `---
 description: Start or resume the worktree's decision audit
 ---
-Call the audit_start tool with task: $ARGUMENTS
+${OPENCODE_COMMAND_MARKER}Call the audit_start tool with task: $ARGUMENTS
 
 Report the tool output verbatim. If it fails, report the error instead of retrying with a different task name.
 `,
 	"audit-status": `---
 description: Show decision-audit status and unresolved decision IDs
 ---
-Call the audit_status tool with no arguments and report its output verbatim.
+${OPENCODE_COMMAND_MARKER}Call the audit_status tool with no arguments and report its output verbatim.
 `,
 	"audit-review": `---
 description: Run an independent review of the active decision audit
 ---
-Call the audit_review tool. If "$ARGUMENTS" is non-empty, pass it as the model argument (provider/model); otherwise omit model so a cross-provider reviewer is selected automatically. The review may take several minutes. Report the tool output verbatim.
+${OPENCODE_COMMAND_MARKER}Call the audit_review tool. If "$ARGUMENTS" is non-empty, pass it as the model argument (provider/model); otherwise omit model so a cross-provider reviewer is selected automatically. The review may take several minutes. Report the tool output verbatim.
 `,
 	"audit-publish": `---
 description: Publish the audit to the current branch's pull request
 ---
-Call the audit_publish tool. If "$ARGUMENTS" is non-empty, pass it as the selector argument (PR number or URL); otherwise omit selector to target the current checked-out branch's PR. Report the tool output verbatim.
+${OPENCODE_COMMAND_MARKER}Call the audit_publish tool. If "$ARGUMENTS" is non-empty, pass it as the selector argument (PR number or URL); otherwise omit selector to target the current checked-out branch's PR. Report the tool output verbatim.
 `,
 	"audit-close": `---
 description: Close the audit once resolved and reviewed
 ---
-Call the audit_close tool with no arguments and report its output verbatim. If it reports blockers, list them and do not attempt to work around them.
+${OPENCODE_COMMAND_MARKER}Call the audit_close tool with no arguments and report its output verbatim. If it reports blockers, list them and do not attempt to work around them.
 `,
 };
 
 function opencodePluginShim(packageRoot: string): string {
-	return `// Managed by \`audit-trail install opencode\`; edits are overwritten on reinstall.\nexport { AuditTrailPlugin } from ${JSON.stringify(join(packageRoot, "src", "adapters", "opencode.ts"))};\n`;
+	return `// ${OPENCODE_MANAGED_MARKER}\n// Managed by \`audit-trail install opencode\`; edits are overwritten on reinstall.\nexport { AuditTrailPlugin } from ${JSON.stringify(join(packageRoot, "src", "adapters", "opencode.ts"))};\n`;
+}
+
+/**
+ * Recognize current managed files and the exact pre-marker files emitted by
+ * the unreleased initial OpenCode installer. Arbitrary same-name files are
+ * unowned collisions and must never be overwritten.
+ */
+function isManagedOpencodeFile(path: string, existing: string, desired: string): boolean {
+	if (existing.includes(OPENCODE_MANAGED_MARKER)) return true;
+	if (path.endsWith("/plugins/audit-trail.ts")) {
+		return existing.startsWith("// Managed by `audit-trail install opencode`;");
+	}
+	return existing === desired.replace(OPENCODE_COMMAND_MARKER, "");
 }
 
 /**
@@ -116,7 +132,10 @@ export const opencodeInstaller: HarnessInstaller = {
 				([name, content]): [string, string] => [join(configDir, "commands", `${name}.md`), content],
 			),
 		]);
-		const written: string[] = [];
+		// Preflight every target before writing any of them: one unowned
+		// collision must not leave a partial installation behind.
+		const pending: [string, string][] = [];
+		const collisions: string[] = [];
 		for (const [path, content] of managed) {
 			let existing: string | undefined;
 			try {
@@ -125,17 +144,28 @@ export const opencodeInstaller: HarnessInstaller = {
 				if (error?.code !== "ENOENT") throw error;
 			}
 			if (existing === content) continue;
+			if (existing !== undefined && !isManagedOpencodeFile(path, existing, content)) {
+				collisions.push(path);
+				continue;
+			}
+			pending.push([path, content]);
+		}
+		if (collisions.length) {
+			throw new Error(
+				`Refusing to overwrite OpenCode files not managed by audit-trail:\n${collisions.map((path) => `- ${path}`).join("\n")}\nMove or remove the conflicting files, then run the installer again.`,
+			);
+		}
+		for (const [path, content] of pending) {
 			await mkdir(dirname(path), { recursive: true });
 			await writeFile(path, content, "utf8");
-			written.push(path);
 		}
-		if (!written.length) {
+		if (!pending.length) {
 			return { harness: "opencode", changed: false, message: `already installed under ${configDir}` };
 		}
 		return {
 			harness: "opencode",
 			changed: true,
-			message: `wrote ${written.length} file${written.length === 1 ? "" : "s"} under ${configDir} (plugin shim and /audit-* commands)`,
+			message: `wrote ${pending.length} file${pending.length === 1 ? "" : "s"} under ${configDir} (plugin shim and /audit-* commands)`,
 		};
 	},
 };

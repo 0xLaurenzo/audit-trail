@@ -37,6 +37,12 @@ export function selectOpencodeReviewer(
 	working: ReviewModelRef | undefined,
 	requested?: string,
 ): { model: ReviewModelRef; mode: ReviewMode } {
+	// The checkpoint's mode is a durable independence claim. OpenCode declares
+	// chat.message.model optional, so fail rather than comparing a reviewer to
+	// undefined and falsely recording cross-provider.
+	if (!working) {
+		throw new Error("Working model metadata is unavailable; cannot determine a truthful review mode");
+	}
 	let model: ReviewModelRef | undefined;
 	if (requested) {
 		if (!requested.includes("/")) throw new Error(`Review model must be provider/model: ${requested}`);
@@ -53,13 +59,13 @@ export function selectOpencodeReviewer(
 			REVIEW_MODEL_PREFERENCE.map((pattern) => models.find((candidate) => pattern.test(candidate.id))).find(Boolean) ??
 			models[0];
 		model =
-			prefer(available.filter((candidate) => candidate.provider !== working?.provider)) ??
-			prefer(available.filter((candidate) => candidate.provider === working?.provider && candidate.id !== working?.id)) ??
+			prefer(available.filter((candidate) => candidate.provider !== working.provider)) ??
+			prefer(available.filter((candidate) => candidate.provider === working.provider && candidate.id !== working.id)) ??
 			working;
 		if (!model) throw new Error("No model is available for review; pass model as provider/model");
 	}
 	const mode: ReviewMode =
-		model.provider !== working?.provider ? "cross-provider" : model.id !== working?.id ? "cross-model" : "same-model";
+		model.provider !== working.provider ? "cross-provider" : model.id !== working.id ? "cross-model" : "same-model";
 	return { model, mode };
 }
 
