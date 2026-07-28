@@ -99,7 +99,7 @@ CLI rows are attributed as `cli/<user>@<host>` in the TSV `session` cell. `audit
 - `/audit-start <task>` — start or resume the worktree audit at `.audit/<task>.tsv`; starting a different task while one is active fails
 - `/audit-status` — show unresolved, low-confidence, and unsupported decisions, plus review freshness
 - `/audit-review [provider/model]` — review the log and pi session, preferring a cross-provider model
-- `/audit-publish [number-or-url]` — create or update raw audit TSV comments on the original branch's PR
+- `/audit-publish [number-or-url]` — create or update raw audit TSV comments on the current checked-out branch's PR
 - `/audit-close` — close only after all active rows are resolved and the latest audit bytes have been reviewed
 
 ## Agent tool
@@ -145,7 +145,7 @@ After reviewing the latest decisions, publish to the pull request associated wit
 /audit-publish
 ```
 
-Pass a PR number or URL when automatic branch lookup is not appropriate:
+Pass a PR number or URL when automatic branch lookup is not appropriate. A differing explicit target must still match the current checked-out branch (or exact HEAD when detached), so check out that PR branch first:
 
 ```text
 /audit-publish 123

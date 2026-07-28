@@ -191,6 +191,57 @@ test("publisher rejects a detached audit's explicit PR when it does not descend 
 	assert.equal(commentsListed, false, "lineage rejection happens before comments are read or written");
 });
 
+test("publisher accepts a detached checkout when exact HEAD matches a descended PR", async () => {
+	const detached: AuditState = {
+		...state,
+		provenance: { ...provenance, branch: "DETACHED", startCommit: "start-detached" },
+	};
+	const calls: { command: string; args: string[] }[] = [];
+	const runner: CommandRunner = {
+		async exec(command, args) {
+			calls.push({ command, args });
+			if (command === "git" && args[0] === "branch") return { code: 0, stdout: "", stderr: "" };
+			if (command === "git" && args[0] === "rev-parse") return { code: 0, stdout: "detached-head\n", stderr: "" };
+			if (args[0] === "pr") {
+				return {
+					code: 0,
+					stdout: JSON.stringify({ number: 31, url: "https://github.com/owner/repo/pull/31", title: "Detached", headRefName: "feature/detached", headRefOid: "detached-head", baseRefName: "main" }),
+					stderr: "",
+				};
+			}
+			if (args.some((arg) => arg.includes("/compare/start-detached...detached-head"))) return { code: 0, stdout: "ahead\n", stderr: "" };
+			if (args[1] === "user") return { code: 0, stdout: "reviewer\n", stderr: "" };
+			if (args.some((arg) => arg.endsWith("comments?per_page=100"))) return { code: 0, stdout: "[[]]", stderr: "" };
+			if (args.includes("POST")) return { code: 0, stdout: JSON.stringify({ html_url: "https://comment/31" }), stderr: "" };
+			throw new Error(`Unexpected call: ${command} ${args.join(" ")}`);
+		},
+	};
+
+	const result = await publishRawAudit({ runner, state: detached, rows: [], rawTsv: "header\n", selector: "31" });
+	assert.equal(result.prNumber, 31);
+	assert.ok(calls.some((call) => call.args.some((arg) => arg.includes("/compare/start-detached...detached-head"))));
+});
+
+test("publisher rejects a detached target whose head differs from current HEAD before ancestry", async () => {
+	const detached: AuditState = { ...state, provenance: { ...provenance, branch: "DETACHED", startCommit: "shared-base" } };
+	let compareCalled = false;
+	const runner: CommandRunner = {
+		async exec(command, args) {
+			if (command === "git" && args[0] === "branch") return { code: 0, stdout: "", stderr: "" };
+			if (command === "git" && args[0] === "rev-parse") return { code: 0, stdout: "checked-out-head\n", stderr: "" };
+			if (args[0] === "pr") return { code: 0, stdout: JSON.stringify({ number: 32, url: "https://github.com/owner/repo/pull/32", title: "Wrong detached", headRefName: "feature/wrong", headRefOid: "other-head", baseRefName: "main" }), stderr: "" };
+			compareCalled = true;
+			return { code: 0, stdout: "ahead\n", stderr: "" };
+		},
+	};
+
+	await assert.rejects(
+		() => publishRawAudit({ runner, state: detached, rows: [], rawTsv: "header\n", selector: "32" }),
+		/current checkout is checked-out-/,
+	);
+	assert.equal(compareCalled, false);
+});
+
 test("publisher rejects a sibling descendant PR that does not match the current checkout", async () => {
 	const startedOnMain: AuditState = {
 		...state,

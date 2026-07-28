@@ -88,10 +88,15 @@ const TOOLS: ToolDefinition[] = [
 	},
 	{
 		name: "audit_publish",
-		description: "Create or update raw audit TSV comments on the original branch's pull request.",
+		description: "Create or update raw audit TSV comments on the current checked-out branch's pull request.",
 		inputSchema: {
 			type: "object",
-			properties: { selector: { type: "string", description: "PR number or URL; defaults to the audit branch" } },
+			properties: {
+				selector: {
+					type: "string",
+					description: "PR number or URL; defaults to the current branch. Differing targets must match the checkout and descend from the audit start commit.",
+				},
+			},
 		},
 	},
 	{
