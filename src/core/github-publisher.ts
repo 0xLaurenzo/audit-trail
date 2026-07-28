@@ -225,6 +225,23 @@ export async function publishRawAudit(input: PublishAuditInput): Promise<Publish
 	const managed = comments.filter(
 		(comment) => comment.user?.login === login && comment.body.includes(markerPrefix),
 	);
+	const assertPrHeadUnchanged = async (): Promise<void> => {
+		// GitHub comment APIs have no conditional write tied to a PR head OID.
+		// Revalidate immediately before every mutation to minimize the remote
+		// force-push window; never mutate after an observed head change.
+		const currentResult = await input.runner.exec(
+			"gh",
+			["pr", "view", String(pr.number), "--repo", provenance.repository, "--json", "headRefOid"],
+			{ timeout: 30_000 },
+		);
+		if (currentResult.code !== 0) throw new Error(currentResult.stderr.trim() || `could not revalidate PR #${pr.number} head`);
+		const current = JSON.parse(currentResult.stdout) as { headRefOid?: string };
+		if (current.headRefOid !== pr.headRefOid) {
+			throw new Error(
+				`PR #${pr.number} changed from ${pr.headRefOid.slice(0, 12)} to ${current.headRefOid?.slice(0, 12) ?? "unknown"} while publishing; no further audit comments were changed. Re-run publish from the updated checkout.`,
+			);
+		}
+	};
 	const unused = new Map(managed.map((comment) => [comment.id, comment]));
 	const tempDir = await mkdtemp(join(tmpdir(), "audit-trail-publish-"));
 	const bodyPath = join(tempDir, "comment.json");
@@ -238,6 +255,7 @@ export async function publishRawAudit(input: PublishAuditInput): Promise<Publish
 			const endpoint = existing
 				? `repos/${provenance.repository}/issues/comments/${existing.id}`
 				: `repos/${provenance.repository}/issues/${pr.number}/comments`;
+			await assertPrHeadUnchanged();
 			const publishResult = await input.runner.exec(
 				"gh",
 				["api", "--method", existing ? "PATCH" : "POST", endpoint, "--input", bodyPath],
@@ -250,6 +268,7 @@ export async function publishRawAudit(input: PublishAuditInput): Promise<Publish
 			if (index === 0 && published.html_url) publishedUrl = published.html_url;
 		}
 		for (const stale of unused.values()) {
+			await assertPrHeadUnchanged();
 			const deleteResult = await input.runner.exec(
 				"gh",
 				["api", "--method", "DELETE", `repos/${provenance.repository}/issues/comments/${stale.id}`],

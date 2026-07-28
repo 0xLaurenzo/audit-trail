@@ -115,6 +115,33 @@ test("publisher updates managed comments and removes stale parts idempotently", 
 	assert.ok(!calls.some((args) => args.includes("POST")));
 });
 
+test("publisher aborts before comment mutation when the PR head changes after validation", async () => {
+	let prViews = 0;
+	let mutationCalled = false;
+	const runner: CommandRunner = {
+		async exec(command, args) {
+			if (command === "git" && args[0] === "branch") return { code: 0, stdout: "feature/core\n", stderr: "" };
+			if (command === "git" && args[0] === "rev-parse") return { code: 0, stdout: "validated-head\n", stderr: "" };
+			if (args[0] === "pr") {
+				prViews += 1;
+				return { code: 0, stdout: JSON.stringify(prViews === 1
+					? { number: 4, url: "https://github.com/owner/repo/pull/4", title: "Moving", headRefName: "feature/core", headRefOid: "validated-head", ...sameHeadRepository, baseRefName: "main" }
+					: { headRefOid: "force-pushed-head" }), stderr: "" };
+			}
+			if (args.some((arg) => arg.includes("/compare/abcdef1234567890...validated-head"))) return { code: 0, stdout: "ahead\n", stderr: "" };
+			if (args[1] === "user") return { code: 0, stdout: "reviewer\n", stderr: "" };
+			if (args.some((arg) => arg.endsWith("comments?per_page=100"))) return { code: 0, stdout: "[[]]", stderr: "" };
+			mutationCalled = true;
+			return { code: 1, stdout: "", stderr: "mutation must not run" };
+		},
+	};
+	await assert.rejects(
+		() => publishRawAudit({ runner, state, rows: [], rawTsv: "header\n", selector: "4" }),
+		/changed from validated-he to force-pushed/,
+	);
+	assert.equal(mutationCalled, false);
+});
+
 test("publisher defaults to the current branch and accepts a PR descended from the immutable start commit", async () => {
 	const raw = "header\nrow\n";
 	const startedOnMain: AuditState = {
