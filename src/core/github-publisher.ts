@@ -143,7 +143,6 @@ export async function publishRawAudit(input: PublishAuditInput): Promise<Publish
 	const branchResult = await input.runner.exec("git", ["branch", "--show-current"], { timeout: 10_000 });
 	const currentBranch = branchResult.code === 0 ? branchResult.stdout.trim() : "";
 	const checkoutDetached = branchResult.code === 0 && !currentBranch;
-	const checkoutBranchUnknown = branchResult.code !== 0;
 	let currentHead = "";
 	if (!currentBranch) {
 		const headResult = await input.runner.exec("git", ["rev-parse", "HEAD"], { timeout: 10_000 });
@@ -171,16 +170,16 @@ export async function publishRawAudit(input: PublishAuditInput): Promise<Publish
 	);
 	if (prResult.code !== 0) throw new Error(prResult.stderr.trim() || `could not resolve pull request for ${selector}`);
 	const pr = JSON.parse(prResult.stdout) as PullRequest;
-	if (checkoutDetached || checkoutBranchUnknown || provenance.branch === "DETACHED" || pr.headRefName !== provenance.branch) {
-		// A differing target must match the current checkout before ancestry is
-		// considered. This turns current branch/HEAD into publication intent and
-		// rejects a mistyped sibling PR that happens to share startCommit.
-		const matchesCheckout = currentBranch ? pr.headRefName === currentBranch : Boolean(currentHead && pr.headRefOid === currentHead);
-		if (!matchesCheckout) {
-			throw new Error(
-				`PR #${pr.number} belongs to ${pr.headRefName}, but the current checkout is ${currentBranch || currentHead.slice(0, 12) || "unknown"}. Check out the intended PR branch before publishing.`,
-			);
-		}
+	// Every selected PR must match the current checkout. Provenance is history,
+	// not current intent: even a PR matching the start branch is rejected while
+	// another named branch is checked out.
+	const matchesCheckout = currentBranch ? pr.headRefName === currentBranch : Boolean(currentHead && pr.headRefOid === currentHead);
+	if (!matchesCheckout) {
+		throw new Error(
+			`PR #${pr.number} belongs to ${pr.headRefName}, but the current checkout is ${currentBranch || currentHead.slice(0, 12) || "unknown"}. Check out the intended PR branch before publishing.`,
+		);
+	}
+	if (provenance.branch === "DETACHED" || pr.headRefName !== provenance.branch) {
 		// A start-on-base then branch workflow, or any detached-start audit, also
 		// requires the selected PR head to descend from the immutable audit start
 		// commit. GitHub compare works without a locally fetched PR head.

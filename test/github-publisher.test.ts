@@ -294,6 +294,23 @@ test("a detached checkout must exactly match an explicit PR head even when its b
 	assert.equal(compareCalled, false);
 });
 
+test("publisher rejects an explicit provenance-branch PR while another named branch is checked out", async () => {
+	let compareCalled = false;
+	const runner: CommandRunner = {
+		async exec(command, args) {
+			if (command === "git") return { code: 0, stdout: "feature/other\n", stderr: "" };
+			if (args[0] === "pr") return { code: 0, stdout: JSON.stringify({ number: 4, url: "https://github.com/owner/repo/pull/4", title: "Original", headRefName: "feature/core", headRefOid: "original-head", baseRefName: "main" }), stderr: "" };
+			compareCalled = true;
+			return { code: 0, stdout: "identical\n", stderr: "" };
+		},
+	};
+	await assert.rejects(
+		() => publishRawAudit({ runner, state, rows: [], rawTsv: "header\n", selector: "4" }),
+		/current checkout is feature\/other/,
+	);
+	assert.equal(compareCalled, false);
+});
+
 test("publisher rejects a sibling descendant PR that does not match the current checkout", async () => {
 	const startedOnMain: AuditState = {
 		...state,
