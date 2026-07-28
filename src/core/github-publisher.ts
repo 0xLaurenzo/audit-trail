@@ -155,10 +155,11 @@ export async function publishRawAudit(input: PublishAuditInput): Promise<Publish
 	);
 	if (prResult.code !== 0) throw new Error(prResult.stderr.trim() || `could not resolve pull request for ${selector}`);
 	const pr = JSON.parse(prResult.stdout) as PullRequest;
-	if (provenance.branch !== "DETACHED" && pr.headRefName !== provenance.branch) {
-		// A start-on-base then branch workflow is valid only when the selected
-		// PR head descends from the immutable audit start commit. GitHub compare
-		// works even when the PR head is not fetched into the local clone.
+	if (provenance.branch === "DETACHED" || pr.headRefName !== provenance.branch) {
+		// A start-on-base then branch workflow, or any detached-start audit, is
+		// valid only when the selected PR head descends from the immutable audit
+		// start commit. GitHub compare works even when the PR head is not fetched
+		// into the local clone.
 		const compareResult = await input.runner.exec(
 			"gh",
 			[

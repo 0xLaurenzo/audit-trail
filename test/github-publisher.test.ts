@@ -150,10 +150,10 @@ test("publisher defaults to the current branch and accepts a PR descended from t
 	assert.ok(calls.some((call) => call.args.some((arg) => arg.includes("/compare/start123...head456"))));
 });
 
-test("publisher rejects an explicit different-branch PR that does not descend from the start commit", async () => {
-	const startedOnMain: AuditState = {
+test("publisher rejects a detached audit's explicit PR when it does not descend from the start commit", async () => {
+	const startedDetached: AuditState = {
 		...state,
-		provenance: { ...provenance, branch: "main", startCommit: "start1234567890" },
+		provenance: { ...provenance, branch: "DETACHED", startCommit: "start1234567890" },
 	};
 	let commentsListed = false;
 	const runner: CommandRunner = {
@@ -182,7 +182,7 @@ test("publisher rejects an explicit different-branch PR that does not descend fr
 	};
 
 	await assert.rejects(
-		() => publishRawAudit({ runner, state: startedOnMain, rows: [], rawTsv: "header\n", selector: "99" }),
+		() => publishRawAudit({ runner, state: startedDetached, rows: [], rawTsv: "header\n", selector: "99" }),
 		/does not descend from audit start commit/,
 	);
 	assert.equal(commentsListed, false, "lineage rejection happens before comments are read or written");
