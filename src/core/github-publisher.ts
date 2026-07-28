@@ -25,6 +25,15 @@ function markdownText(value: string): string {
 		.join("<br>\n");
 }
 
+function htmlText(value: string): string {
+	return (value || "—")
+		.replace(/&/g, "&amp;")
+		.replace(/</g, "&lt;")
+		.replace(/>/g, "&gt;")
+		.replace(/"/g, "&quot;")
+		.replace(/'/g, "&#39;");
+}
+
 function inlineCode(value: string): string {
 	const normalized = value.replace(/\r\n?/g, "\n") || "—";
 	const longest = Math.max(0, ...Array.from(normalized.matchAll(/`+/g), (match) => match[0].length));
@@ -36,6 +45,13 @@ function inlineCode(value: string): string {
 function decisionLink(id: string, linkableIds: ReadonlySet<string>): string {
 	const label = markdownText(id);
 	return /^D\d+$/.test(id) && linkableIds.has(id) ? `[${label}](#user-content-${id.toLowerCase()})` : label;
+}
+
+function htmlDecisionLink(id: string, linkableIds: ReadonlySet<string>): string {
+	const label = `<code>${htmlText(id)}</code>`;
+	return /^D\d+$/.test(id) && linkableIds.has(id)
+		? `<a href="#user-content-${id.toLowerCase()}">${label}</a>`
+		: label;
 }
 
 function activeWarnings(row: AuditRow, active: boolean): string[] {
@@ -109,24 +125,30 @@ function renderDecisionCard(
 ): string[] {
 	const replacementIds = replacements.get(row.id) ?? [];
 	const superseded = replacementIds.length > 0;
-	const lifecycle = superseded
-		? `superseded by ${replacementIds.map((id) => decisionLink(id, linkableIds)).join(", ")}`
-		: "active";
-	const warnings = activeWarnings(row, !superseded);
-	const lines = [
-		...(/^D\d+$/.test(row.id) ? [`<a id="${row.id.toLowerCase()}"></a>`] : []),
-		`### ${markdownText(row.id)}`,
-		"",
-		`**Phase:** ${markdownText(row.phase)} · ${lifecycle} · result: ${inlineCode(row.result)} · confidence: ${inlineCode(row.confidence)} · origin: ${inlineCode(row.origin)}${warnings.length ? ` · ${warnings.join(" · ")}` : ""}`,
-		"",
-	];
+	const anchor = /^D\d+$/.test(row.id) ? [`<a id="${row.id.toLowerCase()}"></a>`] : [];
 	const body = renderDecisionBody(row, replacements, linkableIds);
 	if (superseded) {
-		lines.push("<details>", "<summary>Show superseded decision details</summary>", "", ...body, "</details>", "");
-	} else {
-		lines.push(...body, "");
+		const replacementSummary = replacementIds.map((id) => htmlDecisionLink(id, linkableIds)).join(", ");
+		return [
+			...anchor,
+			"<details>",
+			`<summary><strong>${htmlText(row.id)}</strong> · ${htmlText(row.phase)} · superseded by ${replacementSummary} · result: <code>${htmlText(row.result)}</code> · confidence: <code>${htmlText(row.confidence)}</code></summary>`,
+			"",
+			...body,
+			"</details>",
+			"",
+		];
 	}
-	return lines;
+	const warnings = activeWarnings(row, true);
+	return [
+		...anchor,
+		`### ${markdownText(row.id)}`,
+		"",
+		`**Phase:** ${markdownText(row.phase)} · active · result: ${inlineCode(row.result)} · confidence: ${inlineCode(row.confidence)} · origin: ${inlineCode(row.origin)}${warnings.length ? ` · ${warnings.join(" · ")}` : ""}`,
+		"",
+		...body,
+		"",
+	];
 }
 
 interface RenderChunk {
@@ -183,7 +205,10 @@ function renderAuditComment(
 			"",
 		);
 	}
-	for (const row of chunk.rows) lines.push(...renderDecisionCard(row, replacements, linkableIds));
+	for (const [index, row] of chunk.rows.entries()) {
+		if (index > 0) lines.push("---", "");
+		lines.push(...renderDecisionCard(row, replacements, linkableIds));
+	}
 	const fence = tsvFence(chunk.rawTsv);
 	lines.push(
 		"<details>",

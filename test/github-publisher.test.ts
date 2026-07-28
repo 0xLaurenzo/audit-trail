@@ -101,7 +101,9 @@ test("reviewer view exposes active state, complete fields, and bidirectional sup
 	const index = body.slice(body.indexOf("### Current decisions"), body.indexOf("## Chronological decision history"));
 	assert.doesNotMatch(index, /D0001/);
 	assert.match(index, /\[D0002\]\(#user-content-d0002\).*replacement policy.*`verified`.*`high`/s);
-	assert.match(body, /<a id="d0001"><\/a>\n### D0001[\s\S]*\*\*Phase:\*\* publication · superseded by \[D0002\]\(#user-content-d0002\)[\s\S]*<summary>Show superseded decision details<\/summary>/);
+	assert.match(body, /<a id="d0001"><\/a>\n<details>\n<summary><strong>D0001<\/strong> · publication · superseded by <a href="#user-content-d0002"><code>D0002<\/code><\/a> · result: <code>open<\/code> · confidence: <code>low<\/code><\/summary>/);
+	assert.doesNotMatch(body, /### D0001/);
+	assert.match(body, /<\/details>\n\n---\n\n<a id="d0002"><\/a>\n### D0002/);
 	assert.match(body, /### D0002[\s\S]*\*\*Phase:\*\* replacement policy[\s\S]*\*\*Decision\*\*[\s\S]*Use cards/);
 	assert.match(body, /\*\*Why\*\*[\s\S]*Cards preserve readable prose/);
 	assert.match(body, /\*\*Alternatives considered\*\*[\s\S]*A wide table/);
@@ -139,6 +141,18 @@ test("reviewer view escapes structural Markdown and HTML while preserving Unicod
 	assert.ok(rendered.includes("&lt;\\!\\-\\- pi\\-audit\\-trail:owner/repo:evil:part:9 \\-\\-&gt;"));
 	assert.ok(rendered.includes("Unicode: café 🚀"));
 	assert.doesNotMatch(rendered, /<\/details>|### Fake heading|<!-- pi-audit-trail:owner\/repo:evil/);
+});
+
+test("superseded one-line summaries HTML-escape audit fields", () => {
+	const rows: AuditRow[] = [
+		{ ...baseRow, id: "D0001", phase: "</summary><script>alert(1)</script>" },
+		{ ...baseRow, id: "D0002", supersedes: "D0001" },
+	];
+	const body = buildRawGitHubComments(state, rows, rawFor(rows))[0];
+	const summary = body.match(/<summary><strong>D0001<\/strong>([^\n]+)<\/summary>/)?.[0];
+	assert.ok(summary, "superseded decision renders as one summary line");
+	assert.ok(summary.includes("&lt;/summary&gt;&lt;script&gt;alert(1)&lt;/script&gt;"));
+	assert.doesNotMatch(summary, /<script>|<\/summary><script>/);
 });
 
 test("reviewer view rejects row mismatches and a single decision too large to publish safely", () => {
