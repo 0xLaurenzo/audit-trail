@@ -88,10 +88,15 @@ const TOOLS: ToolDefinition[] = [
 	},
 	{
 		name: "audit_publish",
-		description: "Create or update raw audit TSV comments on the original branch's pull request.",
+		description: "Create or update raw audit TSV comments on the current checked-out branch's pull request.",
 		inputSchema: {
 			type: "object",
-			properties: { selector: { type: "string", description: "PR number or URL; defaults to the audit branch" } },
+			properties: {
+				selector: {
+					type: "string",
+					description: "PR number or URL; defaults to the current branch. The PR must be in the provenance repository, match exact local HEAD, and descend from the audit start commit.",
+				},
+			},
 		},
 	},
 	{
@@ -209,10 +214,13 @@ export class McpAuditServer {
 				const rawTsv = await readFile(state.logPath, "utf8");
 				const blocker = reviewBlocker(state, sha256Hex(rawTsv));
 				if (blocker) throw new Error(`${blocker}. Run audit_review before publishing.`);
-				const selector =
-					optionalString(args, "selector") ?? (state.provenance.branch !== "DETACHED" ? state.provenance.branch : "");
-				if (!selector) throw new Error("Detached audits require a PR number or URL selector.");
-				const result = await publishRawAudit({ runner: this.runner, state, rows, rawTsv, selector });
+				const result = await publishRawAudit({
+					runner: this.runner,
+					state,
+					rows,
+					rawTsv,
+					selector: optionalString(args, "selector"),
+				});
 				return `Published raw audit TSV in ${result.commentCount} comment${result.commentCount === 1 ? "" : "s"} on PR #${result.prNumber}: ${result.commentUrl}`;
 			}
 			case "audit_close": {

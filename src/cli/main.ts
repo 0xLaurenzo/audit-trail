@@ -265,12 +265,13 @@ async function commandPublish(workflow: AuditWorkflow, selectorArg: string, io: 
 		io.err(`${blocker}. Run audit-trail review before publishing`);
 		return 1;
 	}
-	const selector = selectorArg || (state.provenance.branch !== "DETACHED" ? state.provenance.branch : "");
-	if (!selector) {
-		io.err("Detached audits require: audit-trail publish <pr-number-or-url>");
-		return 1;
-	}
-	const result = await publishRawAudit({ runner: processRunner(workflow.root), state, rows, rawTsv, selector });
+	const result = await publishRawAudit({
+		runner: processRunner(workflow.root),
+		state,
+		rows,
+		rawTsv,
+		selector: selectorArg || undefined,
+	});
 	io.out(
 		`Published raw audit TSV in ${result.commentCount} comment${result.commentCount === 1 ? "" : "s"} on PR #${result.prNumber}: ${result.commentUrl}`,
 	);

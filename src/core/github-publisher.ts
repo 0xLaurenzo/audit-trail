@@ -107,6 +107,9 @@ interface PullRequest {
 	url: string;
 	title: string;
 	headRefName: string;
+	headRefOid: string;
+	headRepository: { nameWithOwner: string };
+	isCrossRepository: boolean;
 	baseRefName: string;
 }
 
@@ -122,7 +125,8 @@ export interface PublishAuditInput {
 	state: AuditState;
 	rows: AuditRow[];
 	rawTsv: string;
-	selector: string;
+	/** PR number/URL/branch. Defaults to the current checked-out branch. */
+	selector?: string;
 }
 
 export interface PublishAuditResult {
@@ -135,15 +139,73 @@ export interface PublishAuditResult {
 export async function publishRawAudit(input: PublishAuditInput): Promise<PublishAuditResult> {
 	const provenance = input.state.provenance;
 	if (!provenance) throw new Error("This audit has no Git provenance; start a new audit with this version.");
+
+	// Resolve checkout identity even for explicit selectors: a PR number alone
+	// is vulnerable to typos between sibling branches that share startCommit.
+	const branchResult = await input.runner.exec("git", ["branch", "--show-current"], { timeout: 10_000 });
+	const currentBranch = branchResult.code === 0 ? branchResult.stdout.trim() : "";
+	const checkoutDetached = branchResult.code === 0 && !currentBranch;
+	const headResult = await input.runner.exec("git", ["rev-parse", "HEAD"], { timeout: 10_000 });
+	const currentHead = headResult.code === 0 ? headResult.stdout.trim() : "";
+
+	let selector = input.selector?.trim();
+	if (!selector) {
+		// The work may branch after audit start. Keep provenance immutable and
+		// use the caller's current branch as publication intent. A detached
+		// checkout has no branch intent, even when provenance started named.
+		if (!currentBranch) {
+			throw new Error(
+				`${checkoutDetached ? "Detached checkouts" : "Checkouts whose current branch cannot be identified"} require an explicit PR number or URL selector`,
+			);
+		}
+		selector = currentBranch;
+	}
+	if (!selector) throw new Error("An explicit PR number or URL selector is required");
+
 	const prResult = await input.runner.exec(
 		"gh",
-		["pr", "view", input.selector, "--repo", provenance.repository, "--json", "number,url,title,headRefName,baseRefName"],
+		[
+			"pr",
+			"view",
+			selector,
+			"--repo",
+			provenance.repository,
+			"--json",
+			"number,url,title,headRefName,headRefOid,headRepository,isCrossRepository,baseRefName",
+		],
 		{ timeout: 30_000 },
 	);
-	if (prResult.code !== 0) throw new Error(prResult.stderr.trim() || "could not resolve pull request");
+	if (prResult.code !== 0) throw new Error(prResult.stderr.trim() || `could not resolve pull request for ${selector}`);
 	const pr = JSON.parse(prResult.stdout) as PullRequest;
-	if (provenance.branch !== "DETACHED" && pr.headRefName !== provenance.branch) {
-		throw new Error(`PR #${pr.number} belongs to ${pr.headRefName}, but this audit started on ${provenance.branch}`);
+	// Every selected PR must match the repository and exact checkout commit.
+	// Branch names are labels, not identity: forks and stale remote heads can
+	// share a name while referring to different work.
+	const sameRepository = pr.headRepository?.nameWithOwner?.toLowerCase() === provenance.repository.toLowerCase();
+	const sameBranch = currentBranch ? pr.headRefName === currentBranch : true;
+	const sameHead = Boolean(currentHead && pr.headRefOid === currentHead);
+	if (!sameRepository || !sameBranch || !sameHead) {
+		throw new Error(
+			`PR #${pr.number} head ${pr.headRepository?.nameWithOwner ?? "unknown"}:${pr.headRefName}@${pr.headRefOid?.slice(0, 12) ?? "unknown"} does not match current checkout ${provenance.repository}:${currentBranch || "DETACHED"}@${currentHead.slice(0, 12) || "unknown"}. Check out and update the intended PR branch before publishing.`,
+		);
+	}
+	// Branch names survive force pushes and history recreation, so every target
+	// (including the original named branch) must descend from immutable
+	// startCommit. GitHub compare works without a locally fetched PR head.
+	const compareResult = await input.runner.exec(
+		"gh",
+		[
+			"api",
+			`repos/${provenance.repository}/compare/${encodeURIComponent(provenance.startCommit)}...${encodeURIComponent(pr.headRefOid)}`,
+			"--jq",
+			".status",
+		],
+		{ timeout: 30_000 },
+	);
+	const relation = compareResult.code === 0 ? compareResult.stdout.trim() : "";
+	if (relation !== "ahead" && relation !== "identical") {
+		throw new Error(
+			`PR #${pr.number} head does not descend from audit start commit ${provenance.startCommit.slice(0, 12)} (GitHub compare: ${relation || "unavailable"}). Check out or select a PR branch that contains the audit start commit.`,
+		);
 	}
 
 	const bodies = buildRawGitHubComments(input.state, input.rows, input.rawTsv);
@@ -163,6 +225,37 @@ export async function publishRawAudit(input: PublishAuditInput): Promise<Publish
 	const managed = comments.filter(
 		(comment) => comment.user?.login === login && comment.body.includes(markerPrefix),
 	);
+	const assertTargetUnchanged = async (): Promise<void> => {
+		// Revalidate local intent first: another process may commit or switch the
+		// shared worktree while publication is listing/building comments.
+		const [branchNow, headNow] = await Promise.all([
+			input.runner.exec("git", ["branch", "--show-current"], { timeout: 10_000 }),
+			input.runner.exec("git", ["rev-parse", "HEAD"], { timeout: 10_000 }),
+		]);
+		const branch = branchNow.code === 0 ? branchNow.stdout.trim() : "";
+		const head = headNow.code === 0 ? headNow.stdout.trim() : "";
+		if (branch !== currentBranch || head !== currentHead) {
+			throw new Error(
+				`Local checkout changed from ${currentBranch || "DETACHED"}@${currentHead.slice(0, 12)} to ${branch || "DETACHED"}@${head.slice(0, 12) || "unknown"} while publishing; no further audit comments were changed. Re-run publish from the intended checkout.`,
+			);
+		}
+
+		// GitHub comment APIs have no conditional write tied to a PR head OID.
+		// Revalidate immediately before every mutation to minimize the remote
+		// force-push window; never mutate after an observed head change.
+		const currentResult = await input.runner.exec(
+			"gh",
+			["pr", "view", String(pr.number), "--repo", provenance.repository, "--json", "headRefOid"],
+			{ timeout: 30_000 },
+		);
+		if (currentResult.code !== 0) throw new Error(currentResult.stderr.trim() || `could not revalidate PR #${pr.number} head`);
+		const current = JSON.parse(currentResult.stdout) as { headRefOid?: string };
+		if (current.headRefOid !== pr.headRefOid) {
+			throw new Error(
+				`PR #${pr.number} changed from ${pr.headRefOid.slice(0, 12)} to ${current.headRefOid?.slice(0, 12) ?? "unknown"} while publishing; no further audit comments were changed. Re-run publish from the updated checkout.`,
+			);
+		}
+	};
 	const unused = new Map(managed.map((comment) => [comment.id, comment]));
 	const tempDir = await mkdtemp(join(tmpdir(), "audit-trail-publish-"));
 	const bodyPath = join(tempDir, "comment.json");
@@ -176,6 +269,7 @@ export async function publishRawAudit(input: PublishAuditInput): Promise<Publish
 			const endpoint = existing
 				? `repos/${provenance.repository}/issues/comments/${existing.id}`
 				: `repos/${provenance.repository}/issues/${pr.number}/comments`;
+			await assertTargetUnchanged();
 			const publishResult = await input.runner.exec(
 				"gh",
 				["api", "--method", existing ? "PATCH" : "POST", endpoint, "--input", bodyPath],
@@ -188,6 +282,7 @@ export async function publishRawAudit(input: PublishAuditInput): Promise<Publish
 			if (index === 0 && published.html_url) publishedUrl = published.html_url;
 		}
 		for (const stale of unused.values()) {
+			await assertTargetUnchanged();
 			const deleteResult = await input.runner.exec(
 				"gh",
 				["api", "--method", "DELETE", `repos/${provenance.repository}/issues/comments/${stale.id}`],

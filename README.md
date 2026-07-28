@@ -99,7 +99,7 @@ CLI rows are attributed as `cli/<user>@<host>` in the TSV `session` cell. `audit
 - `/audit-start <task>` — start or resume the worktree audit at `.audit/<task>.tsv`; starting a different task while one is active fails
 - `/audit-status` — show unresolved, low-confidence, and unsupported decisions, plus review freshness
 - `/audit-review [provider/model]` — review the log and pi session, preferring a cross-provider model
-- `/audit-publish [number-or-url]` — create or update raw audit TSV comments on the original branch's PR
+- `/audit-publish [number-or-url]` — create or update raw audit TSV comments on the current checked-out branch's PR
 - `/audit-close` — close only after all active rows are resolved and the latest audit bytes have been reviewed
 
 ## Agent tool
@@ -136,21 +136,21 @@ Every review ends with an explicit verdict. The reviewer must finish its report 
 
 ## Publish to a pull request
 
-Start the audit from the branch that will open the pull request. The extension captures that branch and its starting commit once and reuses the metadata when an audit is resumed.
+The audit captures its original branch and starting commit once and preserves them as immutable provenance. You may create or switch to the feature branch after starting; publication uses the current checked-out branch (or an explicit PR selector) and verifies that a later PR head descends from the pinned start commit.
 
-After reviewing the latest decisions, publish to the pull request associated with the original branch:
+After reviewing the latest decisions, publish to the pull request associated with the current checked-out branch:
 
 ```text
 /audit-review openai/gpt-5.2
 /audit-publish
 ```
 
-Pass a PR number or URL when automatic branch lookup is not appropriate:
+Pass a PR number or URL when automatic branch lookup is not appropriate. Every target must belong to the provenance repository, match both the current branch name (when named) and exact committed local HEAD, and descend from the pinned audit start commit, so check out, commit, and update that PR branch first. Uncommitted working-tree/index changes are not part of PR target identity:
 
 ```text
 /audit-publish 123
 ```
 
-Publishing requires an approving review checkpoint matching the current audit bytes: after any new decision, run `/audit-review` again, and a `VERDICT: block` review must be resolved and re-reviewed first. The `gh` CLI must be installed and authenticated. The command refuses to post to a PR whose head branch differs from the audit's original branch. It publishes the exact canonical TSV inside a collapsed code block, preceded by concise format, history, state, and Git provenance context. No model filters or rewrites the source before publication, allowing reviewers and their own tooling to process every audit row.
+Publishing requires an approving review checkpoint matching the current audit bytes: after any new decision, run `/audit-review` again, and a `VERDICT: block` review must be resolved and re-reviewed first. The `gh` CLI must be installed and authenticated. Provenance keeps the original audit-start branch immutable. GitHub must prove that every selected PR head descends from the pinned audit start commit, including same-named branches that may have been force-rewritten. Unrelated or diverged PRs are rejected before comments are read or written. Local branch/HEAD and the remote PR head OID are revalidated immediately before every comment mutation; GitHub has no atomic conditional comment write, so a local change or force-push in the sub-request window cannot be eliminated and requires publishing again from the updated checkout. It publishes the exact canonical TSV inside a collapsed code block, preceded by concise format, history, state, and Git provenance context. No model filters or rewrites the source before publication, allowing reviewers and their own tooling to process every audit row.
 
 GitHub comments have a size limit, so large TSV files are split at row boundaries into deterministic numbered comments. Concatenating their fenced TSV blocks in part order recovers the original file exactly. Hidden markers make publication idempotent: subsequent runs update each existing part and remove stale extra parts instead of creating duplicates. Publish before `/audit-close`; closing removes `.audit/active.json` for the worktree.
