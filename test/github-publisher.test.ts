@@ -242,6 +242,41 @@ test("publisher rejects a detached target whose head differs from current HEAD b
 	assert.equal(compareCalled, false);
 });
 
+test("publisher requires an explicit selector when named provenance is published from a detached checkout", async () => {
+	let githubCalled = false;
+	const runner: CommandRunner = {
+		async exec(command, args) {
+			if (command === "git" && args[0] === "branch") return { code: 0, stdout: "", stderr: "" };
+			if (command === "git" && args[0] === "rev-parse") return { code: 0, stdout: "detached-work\n", stderr: "" };
+			githubCalled = true;
+			return { code: 1, stdout: "", stderr: "GitHub must not run" };
+		},
+	};
+	await assert.rejects(
+		() => publishRawAudit({ runner, state, rows: [], rawTsv: "header\n" }),
+		/Detached checkouts require an explicit PR/,
+	);
+	assert.equal(githubCalled, false);
+});
+
+test("a detached checkout must exactly match an explicit PR head even when its branch matches provenance", async () => {
+	let compareCalled = false;
+	const runner: CommandRunner = {
+		async exec(command, args) {
+			if (command === "git" && args[0] === "branch") return { code: 0, stdout: "", stderr: "" };
+			if (command === "git" && args[0] === "rev-parse") return { code: 0, stdout: "detached-other-work\n", stderr: "" };
+			if (args[0] === "pr") return { code: 0, stdout: JSON.stringify({ number: 4, url: "https://github.com/owner/repo/pull/4", title: "Original", headRefName: "feature/core", headRefOid: "branch-head", baseRefName: "main" }), stderr: "" };
+			compareCalled = true;
+			return { code: 0, stdout: "ahead\n", stderr: "" };
+		},
+	};
+	await assert.rejects(
+		() => publishRawAudit({ runner, state, rows: [], rawTsv: "header\n", selector: "4" }),
+		/current checkout is detached-oth/,
+	);
+	assert.equal(compareCalled, false);
+});
+
 test("publisher rejects a sibling descendant PR that does not match the current checkout", async () => {
 	const startedOnMain: AuditState = {
 		...state,

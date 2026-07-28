@@ -142,6 +142,7 @@ export async function publishRawAudit(input: PublishAuditInput): Promise<Publish
 	// is vulnerable to typos between sibling branches that share startCommit.
 	const branchResult = await input.runner.exec("git", ["branch", "--show-current"], { timeout: 10_000 });
 	const currentBranch = branchResult.code === 0 ? branchResult.stdout.trim() : "";
+	const checkoutDetached = branchResult.code === 0 && !currentBranch;
 	let currentHead = "";
 	if (!currentBranch) {
 		const headResult = await input.runner.exec("git", ["rev-parse", "HEAD"], { timeout: 10_000 });
@@ -151,7 +152,9 @@ export async function publishRawAudit(input: PublishAuditInput): Promise<Publish
 	let selector = input.selector?.trim();
 	if (!selector) {
 		// The work may branch after audit start. Keep provenance immutable and
-		// use the caller's current branch as publication intent.
+		// use the caller's current branch as publication intent. A detached
+		// checkout has no branch intent, even when provenance started named.
+		if (checkoutDetached) throw new Error("Detached checkouts require an explicit PR number or URL selector");
 		selector = currentBranch || (provenance.branch !== "DETACHED" ? provenance.branch : "");
 	}
 	if (!selector) throw new Error("Detached audits require an explicit PR number or URL selector");
@@ -163,7 +166,7 @@ export async function publishRawAudit(input: PublishAuditInput): Promise<Publish
 	);
 	if (prResult.code !== 0) throw new Error(prResult.stderr.trim() || `could not resolve pull request for ${selector}`);
 	const pr = JSON.parse(prResult.stdout) as PullRequest;
-	if (provenance.branch === "DETACHED" || pr.headRefName !== provenance.branch) {
+	if (checkoutDetached || provenance.branch === "DETACHED" || pr.headRefName !== provenance.branch) {
 		// A differing target must match the current checkout before ancestry is
 		// considered. This turns current branch/HEAD into publication intent and
 		// rejects a mistyped sibling PR that happens to share startCommit.
