@@ -1,0 +1,12 @@
+{
+	"name": "audit-trail",
+	"version": "0.3.0",
+	"description": "Append-only decision auditing with independent review, shared across harnesses per Git worktree",
+	"author": {
+		"name": "0xLaurenzo",
+		"url": "https://github.com/0xLaurenzo/audit-trail"
+	},
+	"commands": "./claude/commands",
+	"hooks": "./claude/hooks.json",
+	"mcpServers": "./claude/mcp.json"
+}

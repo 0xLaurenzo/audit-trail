@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readFile, readlink, symlink, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -170,6 +170,61 @@ export const opencodeInstaller: HarnessInstaller = {
 	},
 };
 
+/**
+ * Symlinks the package into Claude Code's skills directory, where any folder
+ * with .claude-plugin/plugin.json loads as a plugin (audit-trail@skills-dir)
+ * on the next session — discovered in place, with no marketplace and no
+ * Claude-managed registry mutation. One symlink keeps installation idempotent
+ * and structurally unable to touch unrelated Claude configuration. Because a
+ * symlink cannot prove who created it, every different or non-symlink target is
+ * a collision; package-location upgrades require explicit removal of the old
+ * link before reinstalling.
+ */
+export const claudeInstaller: HarnessInstaller = {
+	harness: "claude",
+	description: "Symlink the plugin into ~/.claude/skills (loads as audit-trail@skills-dir)",
+	async install(ctx) {
+		const manifestPath = join(ctx.packageRoot, ".claude-plugin", "plugin.json");
+		let manifestName: unknown;
+		try {
+			manifestName = JSON.parse(await readFile(manifestPath, "utf8"))?.name;
+		} catch (error: any) {
+			throw new Error(`Package is missing a readable Claude plugin manifest at ${manifestPath}: ${error?.message ?? error}`);
+		}
+		if (manifestName !== "audit-trail") {
+			throw new Error(`Unexpected plugin name in ${manifestPath}: ${String(manifestName)}`);
+		}
+		const linkPath = join(ctx.home, ".claude", "skills", "audit-trail");
+		let existing;
+		try {
+			existing = await lstat(linkPath);
+		} catch (error: any) {
+			if (error?.code !== "ENOENT") throw error;
+		}
+		if (existing) {
+			if (!existing.isSymbolicLink()) {
+				throw new Error(
+					`Refusing to replace ${linkPath}: it is not a symlink managed by audit-trail. Move or remove it, then run the installer again.`,
+				);
+			}
+			const currentTarget = resolve(dirname(linkPath), await readlink(linkPath));
+			if (currentTarget === resolve(ctx.packageRoot)) {
+				return { harness: "claude", changed: false, message: `already linked: ${linkPath} -> ${ctx.packageRoot}` };
+			}
+			throw new Error(
+				`Refusing to replace ${linkPath}: it points at a different target (${currentTarget}), and symlink ownership cannot be proven. Remove it explicitly, then run the installer again.`,
+			);
+		}
+		await mkdir(dirname(linkPath), { recursive: true });
+		await symlink(ctx.packageRoot, linkPath, "dir");
+		return {
+			harness: "claude",
+			changed: true,
+			message: `linked ${linkPath} -> ${ctx.packageRoot}; Claude Code loads it as audit-trail@skills-dir on the next session`,
+		};
+	},
+};
+
 function plannedInstaller(harness: string, issue: string): HarnessInstaller {
 	return {
 		harness,
@@ -183,7 +238,7 @@ function plannedInstaller(harness: string, issue: string): HarnessInstaller {
 /** Harness registry; later issues replace planned entries with real installers. */
 export const installers: readonly HarnessInstaller[] = [
 	piInstaller,
-	plannedInstaller("claude", "issue #7"),
+	claudeInstaller,
 	plannedInstaller("codex", "issue #8"),
 	opencodeInstaller,
 ];

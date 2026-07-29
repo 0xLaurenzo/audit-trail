@@ -96,14 +96,16 @@ test("transcript-less review prompt and document target the TSV, diff, and repos
 	);
 });
 
-test("review prompt and document preserve the Pi review contract", () => {
+test("review prompt keeps repository evidence when adding a Pi transcript", () => {
 	const prompt = buildReviewPrompt({
 		logPath: "/repo/.audit/core.tsv",
 		transcriptPath: "/sessions/pi.jsonl",
 		workingDirectory: "/repo",
 		harnessName: "pi",
 	});
-	assert.match(prompt, /append-only TSV decision log and the pi JSONL session transcript/);
+	assert.match(prompt, /append-only TSV decision log, the Git diff against the audit's starting commit, and the repository/);
+	assert.match(prompt, /pi JSONL session transcript as supplementary evidence/);
+	assert.match(prompt, /repository evidence and transcript moments/);
 	assert.match(prompt, /Pi session: \/sessions\/pi.jsonl/);
 	assert.match(prompt, /"VERDICT: approve"/);
 	const document = buildReviewDocument({

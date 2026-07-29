@@ -75,9 +75,9 @@ test("harness registry resolves targets and rejects unknown ones", async () => {
 		selectInstallers("all").map((installer) => installer.harness),
 		["pi", "claude", "codex", "opencode"],
 	);
-	assert.equal(selectInstallers("codex")[0].harness, "codex");
-	const planned = await selectInstallers("claude")[0].install({ home: "/none", packageRoot: "/none" });
+	assert.equal(selectInstallers("claude")[0].harness, "claude");
+	const planned = await selectInstallers("codex")[0].install({ home: "/none", packageRoot: "/none" });
 	assert.equal(planned.changed, false);
-	assert.match(planned.message, /issue #7/);
+	assert.match(planned.message, /issue #8/);
 	assert.throws(() => selectInstallers("zed"), /Unknown harness: zed/);
 });

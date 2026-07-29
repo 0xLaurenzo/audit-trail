@@ -1,3 +1,5 @@
+import type { ReviewMode } from "./types.ts";
+
 export interface ExecOptions {
 	timeout?: number;
 	signal?: AbortSignal;
@@ -44,6 +46,8 @@ export interface ReviewerRequest {
 	prompt: string;
 	/** Reviewer as `provider/model`. */
 	model: string;
+	/** Relationship between the reviewer and working model, recorded in the checkpoint. */
+	mode: ReviewMode;
 	workingDirectory: string;
 	timeoutMs?: number;
 }

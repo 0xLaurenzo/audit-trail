@@ -49,7 +49,7 @@ export async function runIndependentReview(input: IndependentReviewInput): Promi
 		workingDirectory: workflow.root,
 		harnessName: input.harnessName,
 	});
-	const output = await reviewer.review({ prompt, model, workingDirectory: workflow.root });
+	const output = await reviewer.review({ prompt, model, mode, workingDirectory: workflow.root });
 	// Fail closed: a review without an explicit verdict certifies nothing.
 	const verdict = parseReviewVerdict(output) ?? "block";
 	const stamp = new Date().toISOString().replace(/[:.]/g, "-");

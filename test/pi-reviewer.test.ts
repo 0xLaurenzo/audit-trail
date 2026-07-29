@@ -16,6 +16,7 @@ test("Pi reviewer fails fast when the runtime is unavailable", async () => {
 			createPiSubprocessReviewer(runner).review({
 				prompt: "review",
 				model: "provider/model",
+				mode: "cross-provider",
 				workingDirectory: "/repo",
 			}),
 		/pi CLI is required.*spawn pi ENOENT/,
@@ -42,6 +43,7 @@ test("Pi reviewer preflights, invokes read-only no-session mode, and returns fin
 	const output = await createPiSubprocessReviewer(runner).review({
 		prompt: "review instructions",
 		model: "provider/model",
+		mode: "cross-provider",
 		workingDirectory: "/repo",
 	});
 	assert.equal(output, "No flags\nVERDICT: approve");

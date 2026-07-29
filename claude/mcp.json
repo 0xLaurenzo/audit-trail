@@ -1,0 +1,8 @@
+{
+	"mcpServers": {
+		"audit-trail": {
+			"command": "${CLAUDE_PLUGIN_ROOT}/bin/audit-trail",
+			"args": ["mcp", "--harness", "claude"]
+		}
+	}
+}

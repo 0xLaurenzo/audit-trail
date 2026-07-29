@@ -303,6 +303,7 @@ export default function auditTrailExtension(pi: ExtensionAPI) {
 				const output = await reviewer.review({
 					prompt: reviewerPrompt,
 					model: `${reviewModel.provider}/${reviewModel.id}`,
+					mode,
 					workingDirectory: ctx.cwd,
 				});
 				// Fail closed: a review without an explicit verdict certifies nothing.

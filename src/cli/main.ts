@@ -20,9 +20,12 @@ import {
 	type ReviewMode,
 } from "../core/types.ts";
 import { AuditWorkflow, resolveWorktreeRoot } from "../core/workflow.ts";
+import { handleClaudeHook } from "../adapters/claude-hook.ts";
+import { createClaudeSubprocessReviewer } from "../adapters/claude-reviewer.ts";
+import { readClaudeSessionState } from "../adapters/claude-session.ts";
 import { createPiSubprocessReviewer } from "../adapters/pi-reviewer.ts";
 import { packageRootFromModule, selectInstallers } from "../install/installers.ts";
-import { McpAuditServer, serveStdio } from "../mcp/server.ts";
+import { McpAuditServer, serveStdio, type McpServerOptions } from "../mcp/server.ts";
 
 const HELP = `audit-trail — append-only decision auditing for one Git worktree
 
@@ -36,6 +39,8 @@ Commands:
   publish [pr]       Create or update readable audit comments with canonical TSV
   close              Close the audit once resolved and reviewed
   mcp                Serve the audit tools as a local MCP server on stdio
+                     (--harness claude attributes rows from Claude hook state)
+  claude-hook        Handle a Claude Code hook payload on stdin (plugin use)
   install <target>   Configure a harness: pi | claude | codex | opencode | all
   help               Show this help
 
@@ -221,17 +226,62 @@ async function commandReview(
 	return 0;
 }
 
-async function commandMcp(workflow: AuditWorkflow, io: CliIo, dependencies: CliDependencies): Promise<number> {
+
+
+async function commandMcp(
+	workflow: AuditWorkflow,
+	args: string[],
+	io: CliIo,
+	dependencies: CliDependencies,
+): Promise<number> {
+	const { values } = parseArgs({ args, options: { harness: { type: "string" } }, strict: true });
+	const harness = values.harness ?? "mcp";
 	const runner = processRunner(workflow.root);
-	const server = new McpAuditServer({
-		workflow,
-		runner,
-		reviewer: dependencies.createReviewer(runner),
-		session: { harness: "mcp", id: cliSession().id },
-	});
-	io.err(`audit-trail MCP server on stdio for ${workflow.root}`);
+	let options: Pick<McpServerOptions, "session" | "reviewer" | "reviewTranscriptPath">;
+	if (harness === "claude") {
+		// Claude Code passes session metadata only to hooks; the SessionStart
+		// hook records it and this long-lived server re-reads it per call so a
+		// successful resume/clear refresh changes attribution without a restart.
+		options = {
+			session: async () => {
+				const state = await readClaudeSessionState(workflow.root);
+				return { harness: "claude", id: state?.sessionId ?? cliSession().id };
+			},
+			reviewer: createClaudeSubprocessReviewer(runner),
+			reviewTranscriptPath: async () => {
+				const transcript = (await readClaudeSessionState(workflow.root))?.transcriptPath;
+				if (!transcript) return undefined;
+				try {
+					await readFile(transcript, "utf8");
+					return transcript;
+				} catch {
+					// A stale or unreadable transcript falls back to transcript-less review.
+					return undefined;
+				}
+			},
+		};
+	} else if (harness === "mcp") {
+		options = {
+			session: { harness: "mcp", id: cliSession().id },
+			reviewer: dependencies.createReviewer(runner),
+		};
+	} else {
+		io.err(`Unknown --harness: ${harness}. Expected one of: mcp, claude`);
+		return 1;
+	}
+	const server = new McpAuditServer({ workflow, runner, ...options });
+	io.err(`audit-trail MCP server on stdio for ${workflow.root} (harness: ${harness})`);
 	await serveStdio(server);
 	return 0;
+}
+
+async function commandClaudeHook(io: CliIo): Promise<number> {
+	const chunks: Buffer[] = [];
+	for await (const chunk of process.stdin) chunks.push(chunk as Buffer);
+	const result = await handleClaudeHook(Buffer.concat(chunks).toString("utf8"), processRunner);
+	if (result.output) io.out(result.output);
+	if (result.error) io.err(result.error);
+	return result.exitCode;
 }
 
 async function commandInstall(target: string, io: CliIo): Promise<number> {
@@ -314,6 +364,15 @@ export async function runCli(
 		io.out(HELP);
 		return 0;
 	}
+	if (command === "claude-hook") {
+		// Hooks must not require an existing workflow; they run in any repo.
+		try {
+			return await commandClaudeHook(io);
+		} catch (error: any) {
+			io.err(`Error: ${error?.message ?? error}`);
+			return 1;
+		}
+	}
 	try {
 		const runner = processRunner(directory);
 		const root = await resolveWorktreeRoot(runner, directory);
@@ -332,7 +391,7 @@ export async function runCli(
 			case "close":
 				return await commandClose(workflow, io);
 			case "mcp":
-				return await commandMcp(workflow, io, dependencies);
+				return await commandMcp(workflow, args, io, dependencies);
 			case "install":
 				return await commandInstall((args[0] ?? "").trim(), io);
 			default:
