@@ -2,8 +2,9 @@ import type { CommandRunner, ReviewerPort, ReviewerRequest } from "../core/ports
 
 /**
  * ReviewerPort implementation that runs non-interactive Claude Code. Headless
- * `-p` auto-denies tools outside the explicit read-only allowed list, and
- * `--strict-mcp-config` (with no --mcp-config) keeps the reviewer child from
+ * `--tools` restricts built-ins to a read-only set, `--allowedTools`
+ * pre-authorizes that set for headless use, and `--strict-mcp-config` (with no
+ * --mcp-config) keeps the reviewer child from
  * connecting to MCP servers — including this package's own audit server.
  * Session persistence is disabled so reviews leave no session behind.
  *
@@ -13,6 +14,12 @@ import type { CommandRunner, ReviewerPort, ReviewerRequest } from "../core/ports
 export function createClaudeSubprocessReviewer(runner: CommandRunner): ReviewerPort {
 	return {
 		async review(request: ReviewerRequest): Promise<string> {
+			if (!request.model.startsWith("anthropic/") || request.model.length === "anthropic/".length) {
+				throw new Error("Claude reviews require an anthropic/<model-id> model");
+			}
+			if (request.mode === "cross-provider") {
+				throw new Error("Claude-run reviews cannot use cross-provider mode");
+			}
 			// Fail fast before any review work: a missing runtime should surface
 			// immediately, not minutes into a review attempt.
 			const probe = await runner.exec("claude", ["--version"], { timeout: 15_000 });
@@ -21,13 +28,15 @@ export function createClaudeSubprocessReviewer(runner: CommandRunner): ReviewerP
 					`The claude CLI is required as the reviewer runtime but is unavailable: ${probe.stderr.trim() || `exit ${probe.code}`}`,
 				);
 			}
-			const model = request.model.includes("/") ? request.model.slice(request.model.indexOf("/") + 1) : request.model;
+			const model = request.model.slice("anthropic/".length);
 			const invocation = await runner.exec(
 				"claude",
 				[
 					"-p",
 					"--model",
 					model,
+					"--tools",
+					"Read,Grep,Glob",
 					"--allowedTools",
 					"Read",
 					"Grep",

@@ -179,7 +179,7 @@ test("claude-harness MCP attribution resolves the hook state per call with a fal
 	}
 });
 
-test("claude reviewer runs headless read-only and strips the provider prefix", async () => {
+test("claude reviewer validates provenance and runs headless read-only", async () => {
 	const calls: { command: string; args: string[] }[] = [];
 	const runner: CommandRunner = {
 		exec: async (command, args): Promise<ExecResult> => {
@@ -191,6 +191,7 @@ test("claude reviewer runs headless read-only and strips the provider prefix", a
 	const output = await createClaudeSubprocessReviewer(runner).review({
 		prompt: "Review the audit.",
 		model: "anthropic/claude-opus-4-8",
+		mode: "cross-model",
 		workingDirectory: "/repo",
 	});
 	assert.match(output, /VERDICT: approve/);
@@ -199,14 +200,36 @@ test("claude reviewer runs headless read-only and strips the provider prefix", a
 	assert.equal(calls[1].command, "claude");
 	assert.equal(args[0], "-p");
 	assert.deepEqual(args.slice(1, 3), ["--model", "claude-opus-4-8"], "provider prefix stripped for the claude CLI");
+	assert.deepEqual(
+		args.slice(args.indexOf("--tools"), args.indexOf("--tools") + 2),
+		["--tools", "Read,Grep,Glob"],
+		"available built-ins are structurally restricted to read-only tools",
+	);
 	assert.ok(args.includes("--allowedTools") && args.includes("Read") && args.includes("Grep") && args.includes("Glob"));
 	assert.ok(args.includes("--strict-mcp-config"), "reviewer must not connect to MCP servers");
 	assert.ok(args.includes("--no-session-persistence"));
 	assert.ok(!args.includes("Write") && !args.includes("Edit") && !args.includes("Bash"), "read-only tool list");
 
+	for (const request of [
+		{ prompt: "x", model: "openai/claude-opus-4-8", mode: "cross-provider" as const, workingDirectory: "/" },
+		{ prompt: "x", model: "anthropic/claude-opus-4-8", mode: "cross-provider" as const, workingDirectory: "/" },
+	]) {
+		await assert.rejects(
+			() => createClaudeSubprocessReviewer(runner).review(request),
+			/anthropic\/<model-id>|cannot use cross-provider/,
+		);
+	}
+	assert.equal(calls.length, 2, "invalid provenance must fail before probing or invoking Claude");
+
 	const missing: CommandRunner = { exec: async () => ({ code: 127, stdout: "", stderr: "not found" }) };
 	await assert.rejects(
-		() => createClaudeSubprocessReviewer(missing).review({ prompt: "x", model: "anthropic/m", workingDirectory: "/" }),
+		() =>
+			createClaudeSubprocessReviewer(missing).review({
+				prompt: "x",
+				model: "anthropic/m",
+				mode: "same-model",
+				workingDirectory: "/",
+			}),
 		/claude CLI is required/,
 	);
 });
@@ -216,6 +239,8 @@ test("claude installer manages exactly one owned skills-dir symlink", async () =
 	const packageA = await mkdtemp(join(tmpdir(), "audit-claude-pkg-a-"));
 	const packageB = await mkdtemp(join(tmpdir(), "audit-claude-pkg-b-"));
 	const foreign = await mkdtemp(join(tmpdir(), "audit-claude-foreign-"));
+	const manifestless = await mkdtemp(join(tmpdir(), "audit-claude-skill-"));
+	const malformed = await mkdtemp(join(tmpdir(), "audit-claude-malformed-"));
 	const linkPath = join(home, ".claude", "skills", "audit-trail");
 	try {
 		for (const pkg of [packageA, packageB]) {
@@ -231,13 +256,29 @@ test("claude installer manages exactly one owned skills-dir symlink", async () =
 		assert.equal(second.changed, false);
 		assert.match(second.message, /already linked/);
 
-		// Upgrades repoint the owned link, including when the old target is gone.
+		// Upgrades repoint an owned link.
 		const third = await claudeInstaller.install({ home, packageRoot: packageB });
 		assert.equal(third.changed, true);
 		assert.equal(await readlink(linkPath), packageB);
+
+		// A genuinely dangling upgrade link can also be repointed.
+		await rm(linkPath);
+		await symlink(packageA, linkPath, "dir");
 		await rm(packageA, { recursive: true, force: true });
 		const afterDangling = await claudeInstaller.install({ home, packageRoot: packageB });
-		assert.equal(afterDangling.changed, false);
+		assert.equal(afterDangling.changed, true);
+		assert.equal(await readlink(linkPath), packageB);
+
+		// Live manifest-less and malformed skill targets are unowned collisions.
+		await writeFile(join(manifestless, "SKILL.md"), "user-managed skill\n", "utf8");
+		await mkdir(join(malformed, ".claude-plugin"), { recursive: true });
+		await writeFile(join(malformed, ".claude-plugin", "plugin.json"), "{malformed", "utf8");
+		for (const target of [manifestless, malformed]) {
+			await rm(linkPath);
+			await symlink(target, linkPath, "dir");
+			await assert.rejects(() => claudeInstaller.install({ home, packageRoot: packageB }), /different plugin/);
+			assert.equal(await readlink(linkPath), target, "unowned skill link preserved");
+		}
 
 		// A foreign plugin behind the same name is a collision, not an upgrade.
 		await mkdir(join(foreign, ".claude-plugin"), { recursive: true });
@@ -257,7 +298,9 @@ test("claude installer manages exactly one owned skills-dir symlink", async () =
 		await rm(linkPath, { recursive: true, force: true });
 		await assert.rejects(() => claudeInstaller.install({ home, packageRoot: foreign }), /Unexpected plugin name/);
 	} finally {
-		for (const dir of [home, packageA, packageB, foreign]) await rm(dir, { recursive: true, force: true });
+		for (const dir of [home, packageA, packageB, foreign, manifestless, malformed]) {
+			await rm(dir, { recursive: true, force: true });
+		}
 	}
 });
 

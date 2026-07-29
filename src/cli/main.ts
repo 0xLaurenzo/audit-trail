@@ -240,8 +240,8 @@ async function commandMcp(
 	let options: Pick<McpServerOptions, "session" | "reviewer" | "reviewTranscriptPath">;
 	if (harness === "claude") {
 		// Claude Code passes session metadata only to hooks; the SessionStart
-		// hook records it and this long-lived server re-reads it per call so
-		// resume/clear cannot leave rows attributed to a dead session.
+		// hook records it and this long-lived server re-reads it per call so a
+		// successful resume/clear refresh changes attribution without a restart.
 		options = {
 			session: async () => {
 				const state = await readClaudeSessionState(workflow.root);

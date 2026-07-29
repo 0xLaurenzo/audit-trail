@@ -197,10 +197,17 @@ export const claudeInstaller: HarnessInstaller = {
 		const linkPath = join(ctx.home, ".claude", "skills", "audit-trail");
 		const ownedByAuditTrail = async (targetDir: string): Promise<boolean> => {
 			try {
+				await lstat(targetDir);
+			} catch (error: any) {
+				if (error?.code === "ENOENT") return true; // Genuinely dangling upgrade link.
+				throw error;
+			}
+			try {
 				return JSON.parse(await readFile(join(targetDir, ".claude-plugin", "plugin.json"), "utf8"))?.name === "audit-trail";
 			} catch {
-				// Dangling or manifest-less targets cannot be someone's live plugin.
-				return true;
+				// A live target without a valid matching manifest may be a
+				// user-managed skill, so absence or corruption cannot prove ownership.
+				return false;
 			}
 		};
 		let existing;
