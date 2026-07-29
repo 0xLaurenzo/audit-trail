@@ -1,4 +1,5 @@
-import { resolve } from "node:path";
+import { realpath } from "node:fs/promises";
+import { basename, dirname, resolve, sep } from "node:path";
 import {
 	AuditWorkflow,
 	activeStatePath,
@@ -30,6 +31,22 @@ async function lookupActive(runner: CommandRunner, cwd: string): Promise<ActiveL
 		return { root, state: await new AuditWorkflow(root, runner).active() };
 	} catch (error: any) {
 		return { root, error: String(error?.message ?? error) };
+	}
+}
+
+async function canonicalPath(path: string): Promise<string> {
+	let current = resolve(path);
+	const missing: string[] = [];
+	for (;;) {
+		try {
+			return resolve(await realpath(current), ...missing.reverse());
+		} catch (error: any) {
+			if (error?.code !== "ENOENT") return resolve(path);
+			const parent = dirname(current);
+			if (parent === current) return resolve(path);
+			missing.push(basename(current));
+			current = parent;
+		}
 	}
 }
 
@@ -108,7 +125,7 @@ export async function handleClaudeHook(
 		if (input.tool_name !== "Write" && input.tool_name !== "Edit") return { exitCode: 0 };
 		const filePath = input.tool_input?.file_path;
 		if (typeof filePath !== "string" || !filePath) return { exitCode: 0 };
-		const target = resolve(cwd, filePath);
+		const target = await canonicalPath(resolve(cwd, filePath));
 		const deny = (reason: string): ClaudeHookResult => ({
 			output: JSON.stringify({
 				hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: reason },
@@ -119,7 +136,8 @@ export async function handleClaudeHook(
 		if (lookup.error) {
 			// Fail closed: with unreadable active-audit state, protect the whole
 			// .audit directory instead of silently disabling the guard.
-			if (target.startsWith(`${resolve(lookup.root, ".audit")}/`)) {
+			const auditRoot = await canonicalPath(resolve(lookup.root, ".audit"));
+			if (target === auditRoot || target.startsWith(`${auditRoot}${sep}`)) {
 				return deny(`Audit state is unreadable (${lookup.error}); refusing writes under .audit/.`);
 			}
 			return { exitCode: 0 };
@@ -128,7 +146,8 @@ export async function handleClaudeHook(
 		const protectedPaths = [lookup.state.logPath, lookup.state.provenancePath, activeStatePath(lookup.root)].filter(
 			(path): path is string => Boolean(path),
 		);
-		if (protectedPaths.some((path) => target === resolve(path))) {
+		const canonicalProtectedPaths = await Promise.all(protectedPaths.map(canonicalPath));
+		if (canonicalProtectedPaths.includes(target)) {
 			return deny("Audit state and Git provenance are extension-managed; use the audit_decision tool for corrections.");
 		}
 		return { exitCode: 0 };

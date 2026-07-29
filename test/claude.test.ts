@@ -109,6 +109,10 @@ test("PreToolUse hook denies audit-managed files and fails closed on unreadable 
 		assert.equal(JSON.parse(denied.output!).hookSpecificOutput.permissionDecision, "deny");
 		const deniedActive = await guard("Edit", join(root, ".audit", "active.json"));
 		assert.equal(JSON.parse(deniedActive.output!).hookSpecificOutput.permissionDecision, "deny");
+		const fileAlias = join(root, "audit-log-alias.tsv");
+		await symlink(state.logPath, fileAlias);
+		const deniedAlias = await guard("Edit", fileAlias);
+		assert.equal(JSON.parse(deniedAlias.output!).hookSpecificOutput.permissionDecision, "deny", "symlink alias denied");
 
 		const allowed = await guard("Write", join(root, "src", "main.ts"));
 		assert.equal(allowed.output, undefined);
@@ -119,9 +123,13 @@ test("PreToolUse hook denies audit-managed files and fails closed on unreadable 
 		);
 		assert.equal(read.output, undefined, "non-mutating tools are not guarded");
 
+		const auditDirAlias = join(root, "audit-dir-alias");
+		await symlink(join(root, ".audit"), auditDirAlias);
 		await writeFile(join(root, ".audit", "active.json"), "{corrupt", "utf8");
 		const failClosed = await guard("Write", join(root, ".audit", "anything.tsv"));
 		assert.match(JSON.parse(failClosed.output!).hookSpecificOutput.permissionDecisionReason, /unreadable/);
+		const failClosedAlias = await guard("Write", join(auditDirAlias, "new.tsv"));
+		assert.match(JSON.parse(failClosedAlias.output!).hookSpecificOutput.permissionDecisionReason, /unreadable/);
 		const outsideAudit = await guard("Write", join(root, "src", "ok.ts"));
 		assert.equal(outsideAudit.output, undefined, "unreadable state only locks .audit/");
 	} finally {
