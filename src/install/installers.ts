@@ -1,4 +1,4 @@
-import { lstat, mkdir, readFile, readlink, rm, symlink, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readFile, readlink, symlink, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -174,11 +174,11 @@ export const opencodeInstaller: HarnessInstaller = {
  * Symlinks the package into Claude Code's skills directory, where any folder
  * with .claude-plugin/plugin.json loads as a plugin (audit-trail@skills-dir)
  * on the next session — discovered in place, with no marketplace and no
- * Claude-managed registry mutation. One owned symlink keeps installation
- * idempotent and structurally unable to touch unrelated Claude configuration;
- * regenerating it follows package-location upgrades (for example new Nix
- * store paths). An unowned directory or foreign plugin at the link path is a
- * collision and fails the install.
+ * Claude-managed registry mutation. One symlink keeps installation idempotent
+ * and structurally unable to touch unrelated Claude configuration. Because a
+ * symlink cannot prove who created it, every different or non-symlink target is
+ * a collision; package-location upgrades require explicit removal of the old
+ * link before reinstalling.
  */
 export const claudeInstaller: HarnessInstaller = {
 	harness: "claude",
@@ -195,21 +195,6 @@ export const claudeInstaller: HarnessInstaller = {
 			throw new Error(`Unexpected plugin name in ${manifestPath}: ${String(manifestName)}`);
 		}
 		const linkPath = join(ctx.home, ".claude", "skills", "audit-trail");
-		const ownedByAuditTrail = async (targetDir: string): Promise<boolean> => {
-			try {
-				await lstat(targetDir);
-			} catch (error: any) {
-				if (error?.code === "ENOENT") return true; // Genuinely dangling upgrade link.
-				throw error;
-			}
-			try {
-				return JSON.parse(await readFile(join(targetDir, ".claude-plugin", "plugin.json"), "utf8"))?.name === "audit-trail";
-			} catch {
-				// A live target without a valid matching manifest may be a
-				// user-managed skill, so absence or corruption cannot prove ownership.
-				return false;
-			}
-		};
 		let existing;
 		try {
 			existing = await lstat(linkPath);
@@ -226,12 +211,9 @@ export const claudeInstaller: HarnessInstaller = {
 			if (currentTarget === resolve(ctx.packageRoot)) {
 				return { harness: "claude", changed: false, message: `already linked: ${linkPath} -> ${ctx.packageRoot}` };
 			}
-			if (!(await ownedByAuditTrail(currentTarget))) {
-				throw new Error(
-					`Refusing to replace ${linkPath}: it points at a different plugin (${currentTarget}). Move or remove it, then run the installer again.`,
-				);
-			}
-			await rm(linkPath);
+			throw new Error(
+				`Refusing to replace ${linkPath}: it points at a different target (${currentTarget}), and symlink ownership cannot be proven. Remove it explicitly, then run the installer again.`,
+			);
 		}
 		await mkdir(dirname(linkPath), { recursive: true });
 		await symlink(ctx.packageRoot, linkPath, "dir");

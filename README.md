@@ -96,13 +96,13 @@ CLI rows are attributed as `cli/<user>@<host>` in the TSV `session` cell. `audit
 
 ## Claude Code
 
-The package doubles as a Claude Code plugin: `.claude-plugin/plugin.json` at the package root declares commands, hooks, and an MCP server under `claude/`. Installation is one owned symlink:
+The package doubles as a Claude Code plugin: `.claude-plugin/plugin.json` at the package root declares commands, hooks, and an MCP server under `claude/`. Installation is one symlink:
 
 ```bash
 audit-trail install claude
 ```
 
-This links `~/.claude/skills/audit-trail` to the installed package, which Claude Code loads in place as `audit-trail@skills-dir` on the next session — no marketplace, no edits to `settings.json` or Claude-managed plugin state. Reinstalling is idempotent and repoints the link after package upgrades; an unowned directory or foreign plugin at that path fails the install instead of being replaced. Remove the symlink (or `claude plugin disable audit-trail@skills-dir`) to deactivate.
+This links `~/.claude/skills/audit-trail` to the installed package, which Claude Code loads in place as `audit-trail@skills-dir` on the next session — no marketplace, no edits to `settings.json` or Claude-managed plugin state. Reinstalling against the same package path is idempotent. Because a symlink cannot prove who created it, any different target (including a same-name plugin or dangling link) and any real directory fails the install instead of being replaced; remove the old link explicitly before reinstalling after a package-location upgrade. Remove the symlink (or `claude plugin disable audit-trail@skills-dir`) to deactivate.
 
 The plugin provides:
 

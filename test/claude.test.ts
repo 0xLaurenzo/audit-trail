@@ -234,7 +234,7 @@ test("claude reviewer validates provenance and runs headless read-only", async (
 	);
 });
 
-test("claude installer manages exactly one owned skills-dir symlink", async () => {
+test("claude installer manages one collision-safe skills-dir symlink", async () => {
 	const home = await mkdtemp(join(tmpdir(), "audit-claude-install-"));
 	const packageA = await mkdtemp(join(tmpdir(), "audit-claude-pkg-a-"));
 	const packageB = await mkdtemp(join(tmpdir(), "audit-claude-pkg-b-"));
@@ -256,18 +256,21 @@ test("claude installer manages exactly one owned skills-dir symlink", async () =
 		assert.equal(second.changed, false);
 		assert.match(second.message, /already linked/);
 
-		// Upgrades repoint an owned link.
-		const third = await claudeInstaller.install({ home, packageRoot: packageB });
-		assert.equal(third.changed, true);
+		// A different target is never inferred to be installer-owned, even when it
+		// contains the same plugin manifest. Upgrades require explicit removal.
+		await assert.rejects(() => claudeInstaller.install({ home, packageRoot: packageB }), /ownership cannot be proven/);
+		assert.equal(await readlink(linkPath), packageA);
+		await rm(linkPath);
+		const upgraded = await claudeInstaller.install({ home, packageRoot: packageB });
+		assert.equal(upgraded.changed, true);
 		assert.equal(await readlink(linkPath), packageB);
 
-		// A genuinely dangling upgrade link can also be repointed.
+		// A dangling target is equally unprovable and must be preserved.
 		await rm(linkPath);
 		await symlink(packageA, linkPath, "dir");
 		await rm(packageA, { recursive: true, force: true });
-		const afterDangling = await claudeInstaller.install({ home, packageRoot: packageB });
-		assert.equal(afterDangling.changed, true);
-		assert.equal(await readlink(linkPath), packageB);
+		await assert.rejects(() => claudeInstaller.install({ home, packageRoot: packageB }), /ownership cannot be proven/);
+		assert.equal(await readlink(linkPath), packageA);
 
 		// Live manifest-less and malformed skill targets are unowned collisions.
 		await writeFile(join(manifestless, "SKILL.md"), "user-managed skill\n", "utf8");
@@ -276,7 +279,7 @@ test("claude installer manages exactly one owned skills-dir symlink", async () =
 		for (const target of [manifestless, malformed]) {
 			await rm(linkPath);
 			await symlink(target, linkPath, "dir");
-			await assert.rejects(() => claudeInstaller.install({ home, packageRoot: packageB }), /different plugin/);
+			await assert.rejects(() => claudeInstaller.install({ home, packageRoot: packageB }), /ownership cannot be proven/);
 			assert.equal(await readlink(linkPath), target, "unowned skill link preserved");
 		}
 
@@ -285,7 +288,7 @@ test("claude installer manages exactly one owned skills-dir symlink", async () =
 		await writeFile(join(foreign, ".claude-plugin", "plugin.json"), JSON.stringify({ name: "other-plugin" }), "utf8");
 		await rm(linkPath);
 		await symlink(foreign, linkPath, "dir");
-		await assert.rejects(() => claudeInstaller.install({ home, packageRoot: packageB }), /different plugin/);
+		await assert.rejects(() => claudeInstaller.install({ home, packageRoot: packageB }), /ownership cannot be proven/);
 		assert.equal(await readlink(linkPath), foreign, "foreign link preserved");
 
 		// A real directory is never replaced.
