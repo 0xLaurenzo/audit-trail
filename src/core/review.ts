@@ -14,10 +14,10 @@ export interface ReviewPromptInput {
 
 export function buildReviewPrompt(input: ReviewPromptInput): string {
 	const harness = input.harnessName ?? "pi";
-	const sources = input.transcriptPath
-		? `the append-only TSV decision log and the ${harness} JSONL session transcript`
-		: "the append-only TSV decision log, the Git diff against the audit's starting commit, and the repository";
-	const evidenceAnchor = input.transcriptPath ? "transcript moments" : "repository evidence";
+	const sources = `the append-only TSV decision log, the Git diff against the audit's starting commit, and the repository${
+		input.transcriptPath ? `, using the ${harness} JSONL session transcript as supplementary evidence` : ""
+	}`;
+	const evidenceAnchor = input.transcriptPath ? "repository evidence and transcript moments" : "repository evidence";
 	const sessionLine = input.transcriptPath
 		? `\n${harness === "pi" ? "Pi session" : `${harness} session`}: ${input.transcriptPath}`
 		: "";
