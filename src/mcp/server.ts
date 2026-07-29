@@ -129,7 +129,13 @@ export interface McpServerOptions {
 	runner: CommandRunner;
 	/** Reviewer runtime used by audit_review. */
 	reviewer: ReviewerPort;
-	session: SessionIdentity;
+	/**
+	 * Fixed identity, or a per-call resolver for harnesses (like Claude Code)
+	 * whose session changes while this server process keeps running.
+	 */
+	session: SessionIdentity | (() => Promise<SessionIdentity>);
+	/** Optional harness transcript for audit_review; omit for transcript-less review. */
+	reviewTranscriptPath?: () => Promise<string | undefined>;
 	version?: string;
 }
 
@@ -141,21 +147,27 @@ export class McpAuditServer {
 	private readonly workflow: AuditWorkflow;
 	private readonly runner: CommandRunner;
 	private readonly reviewer: ReviewerPort;
-	private readonly session: SessionIdentity;
+	private readonly sessionSource: SessionIdentity | (() => Promise<SessionIdentity>);
+	private readonly reviewTranscriptPath?: () => Promise<string | undefined>;
 	private readonly version: string;
 
 	constructor(options: McpServerOptions) {
 		this.workflow = options.workflow;
 		this.runner = options.runner;
 		this.reviewer = options.reviewer;
-		this.session = options.session;
+		this.sessionSource = options.session;
+		this.reviewTranscriptPath = options.reviewTranscriptPath;
 		this.version = options.version ?? "0.0.0";
+	}
+
+	private session(): Promise<SessionIdentity> {
+		return typeof this.sessionSource === "function" ? this.sessionSource() : Promise.resolve(this.sessionSource);
 	}
 
 	async call(name: string, args: Record<string, unknown>): Promise<string> {
 		switch (name) {
 			case "audit_start": {
-				const result = await this.workflow.start(requireString(args, "task"), this.session);
+				const result = await this.workflow.start(requireString(args, "task"), await this.session());
 				const provenance = result.state.provenance;
 				const lines = [
 					`${result.resumed ? "Resumed" : "Started"} decision audit: ${result.state.logPath}${provenance ? ` (${provenance.repository}@${provenance.branch})` : ""}`,
@@ -175,7 +187,7 @@ export class McpAuditServer {
 					result: oneOf(RESULT_VALUES, requireString(args, "result"), "result"),
 					supersedes: optionalString(args, "supersedes") ?? "",
 				};
-				const appended = await this.workflow.append(this.session, row);
+				const appended = await this.workflow.append(await this.session(), row);
 				return `Logged ${appended.row.id}: ${appended.row.decision}`;
 			}
 			case "audit_status": {
@@ -197,7 +209,9 @@ export class McpAuditServer {
 					reviewer: this.reviewer,
 					model,
 					mode,
-					harnessName: "mcp",
+					// The review artifact names the harness that served this call.
+					harnessName: (await this.session()).harness,
+					transcriptPath: await this.reviewTranscriptPath?.(),
 				});
 				const lines = [`Review saved: ${review.reviewPath} (${review.rowCount} rows reviewed, verdict: ${review.verdict})`];
 				if (review.verdict === "block") {

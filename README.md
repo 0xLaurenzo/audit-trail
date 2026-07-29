@@ -92,7 +92,28 @@ CLI rows are attributed as `cli/<user>@<host>` in the TSV `session` cell. `audit
 
 ## Installer
 
-`audit-trail install <pi|claude|codex|opencode|all>` configures harnesses idempotently from a registry. Today `pi` registers the extension entry point in `~/.pi/agent/settings.json` (stale audit-trail entries — including pre-0.4 `index.ts` paths — are replaced rather than duplicated, and unrelated settings are preserved), and `opencode` installs the plugin shim and `/audit-*` commands described below; `claude` and `codex` are registry placeholders until their adapter issues land. Declaratively managed settings (for example home-manager) fail with a clear error — add the extension path in your Nix configuration instead.
+`audit-trail install <pi|claude|codex|opencode|all>` configures harnesses idempotently from a registry. Today `pi` registers the extension entry point in `~/.pi/agent/settings.json` (stale audit-trail entries — including pre-0.4 `index.ts` paths — are replaced rather than duplicated, and unrelated settings are preserved), `claude` links the Claude Code plugin described below, and `opencode` installs the plugin shim and `/audit-*` commands described below; `codex` is a registry placeholder until its adapter issue lands. Declaratively managed settings (for example home-manager) fail with a clear error — add the extension path in your Nix configuration instead.
+
+## Claude Code
+
+The package doubles as a Claude Code plugin: `.claude-plugin/plugin.json` at the package root declares commands, hooks, and an MCP server under `claude/`. Installation is one owned symlink:
+
+```bash
+audit-trail install claude
+```
+
+This links `~/.claude/skills/audit-trail` to the installed package, which Claude Code loads in place as `audit-trail@skills-dir` on the next session — no marketplace, no edits to `settings.json` or Claude-managed plugin state. Reinstalling is idempotent and repoints the link after package upgrades; an unowned directory or foreign plugin at that path fails the install instead of being replaced. Remove the symlink (or `claude plugin disable audit-trail@skills-dir`) to deactivate.
+
+The plugin provides:
+
+- **Tools** via the shared MCP server (`audit-trail mcp --harness claude`), exposed as `mcp__plugin_audit-trail_audit-trail__audit_*`. A `SessionStart` hook records `{session ID, transcript path, model, worktree}` under `$XDG_STATE_HOME/audit-trail/claude/`, and the server re-reads it on every call, so rows are attributed `claude/<session-id>` even across resume/clear. Concurrent Claude sessions in one worktree share last-writer-wins attribution; without hook state the fallback is `claude/<user>@<host>`.
+- **Commands** namespaced by the plugin: `/audit-trail:audit-start`, `/audit-trail:audit-status`, `/audit-trail:audit-review`, `/audit-trail:audit-publish`, `/audit-trail:audit-close`.
+- **Guidance injection**: the `SessionStart` hook adds the active-audit instructions as additional context whenever the worktree has an active audit.
+- **A write guard**: a `PreToolUse` hook denies `Write`/`Edit` of the TSV, provenance, and `active.json`, failing closed over `.audit/` when audit state is unreadable.
+
+`audit_review` runs the reviewer through non-interactive `claude -p` with a read-only tool allowlist, `--strict-mcp-config` (the reviewer cannot reach this or any MCP server), and no session persistence. Claude-run reviewers are Anthropic models, so pass the reviewer as `anthropic/<model-id>` and record `cross-model` or `same-model` truthfully — the `/audit-trail:audit-review` command encodes this. The hook-captured session transcript is included in the review when readable; otherwise the review falls back to the TSV, Git diff, and repository.
+
+Trust implications: enabling the plugin means Claude Code runs the plugin's hook commands at session start and before `Write`/`Edit` calls, and starts the bundled MCP server, all with your user privileges from the linked package. MCP tool calls remain subject to Claude Code's per-server permission approval (pre-authorize `mcp__plugin_audit-trail_audit-trail` in allowed tools for headless use).
 
 ## OpenCode
 
