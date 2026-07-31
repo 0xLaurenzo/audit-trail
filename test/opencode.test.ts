@@ -7,7 +7,7 @@ import test from "node:test";
 import {
 	AuditTrailPlugin,
 	listOpencodeModels,
-	selectOpencodeReviewer,
+	selectOpencodeReviewerCandidates,
 	type ReviewModelRef,
 } from "../src/adapters/opencode.ts";
 import { opencodeInstaller } from "../src/install/installers.ts";
@@ -124,48 +124,57 @@ test("unreadable active state fails closed for .audit writes", async () => {
 	}
 });
 
-test("reviewer selection prefers cross-provider, then cross-model, then the working model", () => {
+test("reviewer candidates cover cross-provider, then cross-model, then the working model", () => {
 	const working: ReviewModelRef = { provider: "anthropic", id: "claude-opus-4-8" };
 	const catalog: ReviewModelRef[] = [
 		{ provider: "anthropic", id: "claude-opus-4-8" },
 		{ provider: "anthropic", id: "claude-fable-5" },
 		{ provider: "openai", id: "gpt-5.6-sol" },
+		{ provider: "zai", id: "glm-5" },
 	];
 
-	const cross = selectOpencodeReviewer(catalog, working);
-	assert.deepEqual(cross, { model: { provider: "openai", id: "gpt-5.6-sol" }, mode: "cross-provider" });
+	// Automatic selection returns the full tier ordering so runtime failures
+	// can fall through every candidate.
+	assert.deepEqual(selectOpencodeReviewerCandidates(catalog, working), [
+		{ model: "openai/gpt-5.6-sol", mode: "cross-provider" },
+		{ model: "zai/glm-5", mode: "cross-provider" },
+		{ model: "anthropic/claude-fable-5", mode: "cross-model" },
+		{ model: "anthropic/claude-opus-4-8", mode: "same-model" },
+	]);
 
-	const sameProvider = selectOpencodeReviewer(
-		catalog.filter((model) => model.provider === "anthropic"),
-		working,
+	assert.deepEqual(
+		selectOpencodeReviewerCandidates(
+			catalog.filter((model) => model.provider === "anthropic"),
+			working,
+		),
+		[
+			{ model: "anthropic/claude-fable-5", mode: "cross-model" },
+			{ model: "anthropic/claude-opus-4-8", mode: "same-model" },
+		],
 	);
-	assert.deepEqual(sameProvider, { model: { provider: "anthropic", id: "claude-fable-5" }, mode: "cross-model" });
-
-	const onlyWorking = selectOpencodeReviewer([working], working);
-	assert.deepEqual(onlyWorking, { model: working, mode: "same-model" });
 
 	// Empty catalog falls back to the working model itself. Missing working
 	// metadata must fail instead of inventing an independence mode.
-	assert.deepEqual(selectOpencodeReviewer([], working), { model: working, mode: "same-model" });
-	assert.throws(() => selectOpencodeReviewer([], undefined), /Working model metadata is unavailable/);
-	assert.throws(() => selectOpencodeReviewer(catalog, undefined), /Working model metadata is unavailable/);
+	assert.deepEqual(selectOpencodeReviewerCandidates([], working), [
+		{ model: "anthropic/claude-opus-4-8", mode: "same-model" },
+	]);
+	assert.throws(() => selectOpencodeReviewerCandidates([], undefined), /Working model metadata is unavailable/);
+	assert.throws(() => selectOpencodeReviewerCandidates(catalog, undefined), /Working model metadata is unavailable/);
 	assert.throws(
-		() => selectOpencodeReviewer(catalog, undefined, "openai/gpt-5.6-sol"),
+		() => selectOpencodeReviewerCandidates(catalog, undefined, "openai/gpt-5.6-sol"),
 		/Working model metadata is unavailable/,
 	);
 
-	// Explicit requests: honored when known, rejected when the catalog disagrees,
-	// trusted verbatim when no catalog is available.
-	assert.deepEqual(selectOpencodeReviewer(catalog, working, "openai/gpt-5.6-sol"), {
-		model: { provider: "openai", id: "gpt-5.6-sol" },
-		mode: "cross-provider",
-	});
-	assert.throws(() => selectOpencodeReviewer(catalog, working, "zai/glm-5"), /unavailable/);
-	assert.deepEqual(selectOpencodeReviewer([], working, "zai/glm-5"), {
-		model: { provider: "zai", id: "glm-5" },
-		mode: "cross-provider",
-	});
-	assert.throws(() => selectOpencodeReviewer(catalog, working, "not-a-model"), /provider\/model/);
+	// Explicit requests stay pinned to a single candidate: honored when known,
+	// rejected when the catalog disagrees, trusted verbatim without a catalog.
+	assert.deepEqual(selectOpencodeReviewerCandidates(catalog, working, "openai/gpt-5.6-sol"), [
+		{ model: "openai/gpt-5.6-sol", mode: "cross-provider" },
+	]);
+	assert.throws(() => selectOpencodeReviewerCandidates(catalog, working, "mistral/large-3"), /unavailable/);
+	assert.deepEqual(selectOpencodeReviewerCandidates([], working, "zai/glm-5"), [
+		{ model: "zai/glm-5", mode: "cross-provider" },
+	]);
+	assert.throws(() => selectOpencodeReviewerCandidates(catalog, working, "not-a-model"), /provider\/model/);
 });
 
 test("model listing tolerates SDK data envelopes and bare payloads", async () => {

@@ -207,8 +207,8 @@ export class McpAuditServer {
 				const review = await runIndependentReview({
 					workflow: this.workflow,
 					reviewer: this.reviewer,
-					model,
-					mode,
+					// Explicitly requested model and mode: pinned, no fallback candidates.
+					candidates: [{ model, mode }],
 					// The review artifact names the harness that served this call.
 					harnessName: (await this.session()).harness,
 					transcriptPath: await this.reviewTranscriptPath?.(),
