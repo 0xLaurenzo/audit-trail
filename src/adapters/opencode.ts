@@ -105,6 +105,13 @@ const z = tool.schema;
 interface OpencodePluginInput {
 	client: OpencodeClientLike;
 	directory: string;
+	/**
+	 * Command runner override. Production loads use the process runner;
+	 * conformance tests inject a simulated runner so reviewer behavior can be
+	 * exercised through the real plugin tool boundary without spawning the
+	 * opencode CLI.
+	 */
+	runner?: CommandRunner;
 }
 
 interface OpencodeToolContext {
@@ -119,8 +126,8 @@ interface OpencodeToolContext {
  * CLI and MCP surfaces, while review adds OpenCode model discovery, transcript
  * export, and an `opencode run` reviewer runtime.
  */
-export const AuditTrailPlugin = async ({ client, directory }: OpencodePluginInput) => {
-	const runner = processRunner(directory);
+export const AuditTrailPlugin = async ({ client, directory, runner: runnerOverride }: OpencodePluginInput) => {
+	const runner = runnerOverride ?? processRunner(directory);
 	let workflowPromise: Promise<AuditWorkflow> | undefined;
 	const workflow = (): Promise<AuditWorkflow> => {
 		workflowPromise ??= resolveWorktreeRoot(runner, directory).then((root) => new AuditWorkflow(root, runner));

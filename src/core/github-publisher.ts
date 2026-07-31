@@ -260,14 +260,14 @@ export function buildRawGitHubComments(state: AuditState, rows: AuditRow[], rawT
 	do {
 		const part = chunks.length + 1;
 		const chunkRows: AuditRow[] = [];
-		let chunkRaw = part === 1 ? rawLines[0] : "";
+		let chunkRaw = part === 1 ? (rawLines[0] ?? "") : "";
 		const baseBody = renderAuditComment(state, rows, { rows: chunkRows, rawTsv: chunkRaw }, part, sizingTotal);
 		if (Buffer.byteLength(baseBody, "utf8") > SAFE_GITHUB_COMMENT_BYTES) {
 			throw new Error(`Audit overview exceeds the ${SAFE_GITHUB_COMMENT_BYTES}-byte safe GitHub comment limit`);
 		}
 		while (cursor < rows.length) {
 			const candidateRows = [...chunkRows, rows[cursor]];
-			const candidateRaw = `${chunkRaw}${rawLines[cursor + 1]}`;
+			const candidateRaw = `${chunkRaw}${rawLines[cursor + 1] ?? ""}`;
 			const candidate = renderAuditComment(state, rows, { rows: candidateRows, rawTsv: candidateRaw }, part, sizingTotal);
 			if (Buffer.byteLength(candidate, "utf8") > SAFE_GITHUB_COMMENT_BYTES) break;
 			chunkRows.push(rows[cursor]);
