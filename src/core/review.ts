@@ -57,6 +57,41 @@ export function parseReviewVerdict(output: string): ReviewVerdict | undefined {
 	return match?.[1].toLowerCase() as ReviewVerdict | undefined;
 }
 
+export interface ReviewFindingsExcerpt {
+	text: string;
+	truncated: boolean;
+}
+
+/** Strip the redundant terminal verdict without altering artifact content. */
+export function reviewFindingsBody(report: string): string {
+	const lines = report.trim().split(/\r?\n/);
+	if (/^VERDICT:\s*(approve|block)$/i.test(lines.at(-1)?.trim() ?? "")) lines.pop();
+	return lines.join("\n").trim();
+}
+
+/**
+ * Render the reviewer's report body for inline feedback. The terminal verdict
+ * is already represented by the surrounding result and is deliberately
+ * excluded. Truncation prefers a line boundary; an exceptionally long first
+ * line is cut only to enforce the bound and is always accompanied by an
+ * explicit truncation notice from formatBlockingReviewMessage.
+ */
+export function reviewFindingsExcerpt(report: string, maxChars: number): ReviewFindingsExcerpt {
+	if (!Number.isInteger(maxChars) || maxChars < 1) throw new Error("maxChars must be a positive integer");
+	const findings = reviewFindingsBody(report);
+	if (findings.length <= maxChars) return { text: findings, truncated: false };
+	const boundary = findings.lastIndexOf("\n", maxChars);
+	const end = boundary > 0 ? boundary : maxChars;
+	return { text: findings.slice(0, end).trimEnd(), truncated: true };
+}
+
+export function formatBlockingReviewMessage(report: string, reviewPath: string, maxChars: number): string {
+	const excerpt = reviewFindingsExcerpt(report, maxChars);
+	const findings = excerpt.text || "(The reviewer supplied no findings text.)";
+	const trailer = excerpt.truncated ? "\n\nInline findings were truncated; see the review artifact for the full report." : "";
+	return `Review blocked the audit: ${reviewPath} — publish and close stay gated until findings are addressed and it is re-reviewed.\n\nReviewer findings:\n${findings}${trailer}`;
+}
+
 export function writeReviewArtifact(
 	reviewPath: string,
 	document: string,

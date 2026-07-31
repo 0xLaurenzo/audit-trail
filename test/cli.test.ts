@@ -123,8 +123,11 @@ test("CLI review records a blocking verdict and exits 1", async () => {
 			}),
 			1,
 		);
-		assert.match(io.stdout.join("\n"), /verdict: block/);
-		assert.match(io.stderr.join("\n"), /reviewer blocked this audit/);
+		const feedback = io.stderr.join("\n");
+		assert.match(feedback, /Review blocked the audit/);
+		assert.match(feedback, /Reviewer findings:\nFinding\./);
+		assert.match(feedback, /\.review\..*\.md/);
+		assert.doesNotMatch(feedback, /VERDICT:/);
 		assert.equal((await readActiveAudit(root))?.review?.verdict, "block");
 	} finally {
 		await rm(root, { recursive: true, force: true });

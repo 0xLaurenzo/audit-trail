@@ -4,7 +4,7 @@ import { sha256Hex } from "./active-state.ts";
 import { parseRows } from "./audit-store.ts";
 import type { ReviewerPort } from "./ports.ts";
 import type { ReviewCandidate } from "./reviewer-candidates.ts";
-import { buildReviewDocument, buildReviewPrompt, parseReviewVerdict, writeReviewArtifact } from "./review.ts";
+import { buildReviewDocument, buildReviewPrompt, parseReviewVerdict, reviewFindingsBody, writeReviewArtifact } from "./review.ts";
 import type { ReviewMode, ReviewVerdict } from "./types.ts";
 import type { AuditWorkflow } from "./workflow.ts";
 
@@ -35,6 +35,8 @@ export interface IndependentReviewResult {
 	model: string;
 	/** The completed reviewer's truthful relation to the working model. */
 	mode: ReviewMode;
+	/** Full raw reviewer output; callers render a bounded findings excerpt. */
+	report: string;
 }
 
 /**
@@ -118,6 +120,12 @@ export async function runIndependentReview(input: IndependentReviewInput): Promi
 			input.onAttemptFailure?.(candidate, summary);
 			continue;
 		}
+		if (verdict === "block" && !reviewFindingsBody(output)) {
+			const summary = "blocking reviewer output had no findings";
+			failures.push({ candidate, error: summary });
+			input.onAttemptFailure?.(candidate, summary);
+			continue;
+		}
 		const stamp = new Date().toISOString().replace(/[:.]/g, "-");
 		const reviewPath = resolve(workflow.root, ".audit", `${state.task}.review.${stamp}.md`);
 		const document = buildReviewDocument({
@@ -133,7 +141,7 @@ export async function runIndependentReview(input: IndependentReviewInput): Promi
 		});
 		await writeReviewArtifact(reviewPath, document);
 		await workflow.recordReview({ path: reviewPath, mode, model, expectedSha256: reviewedSha256, verdict });
-		return { reviewPath, rowCount: rows.length, verdict, model, mode };
+		return { reviewPath, rowCount: rows.length, verdict, model, mode, report: output };
 	}
 	throw new Error(
 		`All reviewer candidates failed:\n${failures

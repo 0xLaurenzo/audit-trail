@@ -7,6 +7,7 @@ import { sha256Hex } from "../core/active-state.ts";
 import { publishRawAudit } from "../core/github-publisher.ts";
 import { runIndependentReview } from "../core/independent-review.ts";
 import { displayPath } from "../core/paths.ts";
+import { formatBlockingReviewMessage } from "../core/review.ts";
 import type { CommandRunner, ReviewerPort, SessionIdentity } from "../core/ports.ts";
 import { formatStatusLines } from "../core/status.ts";
 import { reviewBlocker } from "../core/validation.ts";
@@ -218,11 +219,12 @@ async function commandReview(
 		candidates: [{ model, mode }],
 		harnessName: "cli",
 	});
-	io.out(`Review saved: ${displayPath(review.reviewPath, workflow.root)} (verdict: ${review.verdict})`);
+	const reviewPath = displayPath(review.reviewPath, workflow.root);
 	if (review.verdict === "block") {
-		io.err("The reviewer blocked this audit; publish and close stay gated until findings are addressed and it is re-reviewed");
+		io.err(formatBlockingReviewMessage(review.report, reviewPath, 6_000));
 		return 1;
 	}
+	io.out(`Review saved: ${reviewPath} (verdict: approve)`);
 	return 0;
 }
 

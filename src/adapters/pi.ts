@@ -11,6 +11,7 @@ import {
 	buildReviewerCandidates,
 	resolveWorktreeRoot,
 	displayPath,
+	formatBlockingReviewMessage,
 	formatStatusLines,
 	publishRawAudit,
 	runIndependentReview,
@@ -297,7 +298,7 @@ export default function auditTrailExtension(pi: ExtensionAPI) {
 				});
 				if (review.verdict === "block") {
 					ctx.ui.notify(
-						`Review blocked the audit: ${displayPath(review.reviewPath, ctx.cwd)} — address its findings and re-review`,
+						formatBlockingReviewMessage(review.report, displayPath(review.reviewPath, ctx.cwd), 2_000),
 						"warning",
 					);
 				} else {

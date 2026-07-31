@@ -6,7 +6,7 @@ import test from "node:test";
 import { readActiveAudit, writeActiveAudit } from "../src/core/active-state.ts";
 import { runIndependentReview, summarizeReviewerFailure } from "../src/core/independent-review.ts";
 import type { CommandRunner, ReviewerPort } from "../src/core/ports.ts";
-import { parseReviewVerdict } from "../src/core/review.ts";
+import { formatBlockingReviewMessage, parseReviewVerdict, reviewFindingsExcerpt } from "../src/core/review.ts";
 import { formatStatusLines } from "../src/core/status.ts";
 import type { NewAuditRow } from "../src/core/types.ts";
 import { AuditWorkflow } from "../src/core/workflow.ts";
@@ -46,6 +46,23 @@ test("parseReviewVerdict accepts only an exact final-line verdict, case-insensit
 	assert.equal(parseReviewVerdict("no verdict at all"), undefined);
 });
 
+test("blocking review feedback strips the verdict and makes truncation explicit", () => {
+	assert.deepEqual(reviewFindingsExcerpt("First finding.\nSecond finding.\nVERDICT: block\n", 1_000), {
+		text: "First finding.\nSecond finding.",
+		truncated: false,
+	});
+	const message = formatBlockingReviewMessage(
+		"First complete finding.\nSecond finding is beyond the bound.\nVERDICT: block",
+		".audit/review.md",
+		25,
+	);
+	assert.match(message, /First complete finding\./);
+	assert.doesNotMatch(message, /Second finding|VERDICT:/);
+	assert.match(message, /truncated; see the review artifact/);
+	assert.match(message, /\.audit\/review\.md/);
+	assert.throws(() => reviewFindingsExcerpt("Finding\nVERDICT: block", 0), /positive integer/);
+});
+
 test("an approving review records the verdict and unblocks close", async () => {
 	const root = await mkdtemp(join(tmpdir(), "audit-review-test-"));
 	try {
@@ -79,6 +96,9 @@ test("a blocking review keeps close gated and is visible in status", async () =>
 			harnessName: "cli",
 		});
 		assert.equal(result.verdict, "block");
+		assert.equal(result.report, "D0001 overstates verification.\nVERDICT: block\n");
+		const artifact = await readFile(result.reviewPath, "utf8");
+		assert.match(artifact, /D0001 overstates verification\.\nVERDICT: block\n$/);
 		const closed = await workflow.close();
 		assert.equal(closed.closed, false);
 		assert.match(closed.blockers.join("\n"), /the last review did not approve this audit/);
@@ -86,6 +106,36 @@ test("a blocking review keeps close gated and is visible in status", async () =>
 		assert.ok(state);
 		const status = formatStatusLines(state, await workflow.rows(state), await workflow.currentSha(state), root);
 		assert.match(status.join("\n"), /blocked/);
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+test("an empty blocking report is invalid and falls back without recording the empty block", async () => {
+	const root = await mkdtemp(join(tmpdir(), "audit-review-test-"));
+	try {
+		const workflow = await startedWorkflow(root);
+		const attempted: string[] = [];
+		const failures: string[] = [];
+		const result = await runIndependentReview({
+			workflow,
+			reviewer: {
+				review: async (request) => {
+					attempted.push(request.model);
+					return request.model === "provider/empty-block" ? "\nVERDICT: block\n" : "No flags\nVERDICT: approve\n";
+				},
+			},
+			candidates: [
+				{ model: "provider/empty-block", mode: "cross-model" },
+				{ model: "provider/fallback", mode: "same-model" },
+			],
+			harnessName: "mcp",
+			onAttemptFailure: (_candidate, error) => failures.push(error),
+		});
+		assert.deepEqual(attempted, ["provider/empty-block", "provider/fallback"]);
+		assert.deepEqual(failures, ["blocking reviewer output had no findings"]);
+		assert.equal(result.verdict, "approve");
+		assert.equal((await readdir(join(root, ".audit"))).filter((name) => name.includes(".review.")).length, 1);
 	} finally {
 		await rm(root, { recursive: true, force: true });
 	}
