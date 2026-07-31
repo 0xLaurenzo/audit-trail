@@ -56,12 +56,69 @@ export interface OperationOutcome {
 	message: string;
 }
 
+/**
+ * Scripted Git + GitHub externals for publish-path contract tests. Disabled
+ * by default so most tests run provenance-less; enable before `start` so the
+ * audit captures provenance and publish can validate against the scripted PR.
+ */
+export interface GitHubStub {
+	enabled: boolean;
+	/** PR head OID reported by the scripted gh; diverge it to test head validation. */
+	prHeadOid: string;
+	handle(command: string, args: string[]): ExecResult | undefined;
+}
+
+export function createGitHubStub(root: string): GitHubStub {
+	const ok = (stdout: string): ExecResult => ({ code: 0, stdout: `${stdout}\n`, stderr: "" });
+	const stub: GitHubStub = {
+		enabled: false,
+		prHeadOid: "head-contract",
+		handle(command, args) {
+			if (!stub.enabled) return undefined;
+			if (command === "git") {
+				if (args[0] === "rev-parse" && args[1] === "--show-toplevel") return ok(root);
+				if (args[0] === "remote") return ok("git@github.com:owner/repo.git");
+				if (args[0] === "branch") return ok("feature/contract");
+				if (args[0] === "rev-parse") return ok("head-contract");
+				return ok("");
+			}
+			if (command !== "gh") return undefined;
+			if (args[0] === "pr") {
+				return ok(
+					JSON.stringify({
+						number: 7,
+						url: "https://github.com/owner/repo/pull/7",
+						title: "Contract",
+						headRefName: "feature/contract",
+						headRefOid: stub.prHeadOid,
+						headRepository: { nameWithOwner: "owner/repo" },
+						isCrossRepository: false,
+						baseRefName: "main",
+					}),
+				);
+			}
+			if (args.some((arg) => arg.includes("/compare/"))) return ok("ahead");
+			if (args[1] === "user") return ok("reviewer");
+			if (args.some((arg) => arg.includes("comments?per_page=100"))) return ok(JSON.stringify([]));
+			const method = args[args.indexOf("--method") + 1];
+			if (method === "POST" || method === "PATCH") {
+				return ok(JSON.stringify({ html_url: "https://github.com/owner/repo/pull/7#issuecomment-1" }));
+			}
+			if (method === "DELETE") return ok("");
+			return { code: 1, stdout: "", stderr: `unexpected gh call: ${args.join(" ")}` };
+		},
+	};
+	return stub;
+}
+
 export interface HarnessDriver {
 	readonly harness: ShippedHarness;
 	/** Explicit reviewer accepted by this harness's pinned-review path. */
 	readonly explicitReviewModel: string;
 	/** Mutable script: reviewer behavior per `provider/model`. */
 	readonly reviewerScript: Record<string, ReviewerBehavior>;
+	/** Scripted Git/GitHub externals for publish-path tests. */
+	readonly github: GitHubStub;
 	start(task: string): Promise<void>;
 	decide(overrides?: Partial<DecisionInput>): Promise<void>;
 	status(): Promise<string>;
@@ -104,10 +161,11 @@ export const createPiDriver: DriverFactory = async (root) => {
 	const notifications: { message: string; level: string }[] = [];
 	const attempted: string[] = [];
 	const reviewerScript: Record<string, ReviewerBehavior> = {};
+	const github = createGitHubStub(root);
 	let catalog: ReviewModel[] = [...DEFAULT_CATALOG];
 
 	const exec = async (command: string, args: string[]): Promise<ExecResult> => {
-		if (command !== "pi") return failGit;
+		if (command !== "pi") return github.handle(command, args) ?? failGit;
 		if (args[0] === "--version") return { code: 0, stdout: "0.0.0-contract", stderr: "" };
 		const model = args[args.indexOf("--model") + 1];
 		attempted.push(model);
@@ -167,6 +225,7 @@ export const createPiDriver: DriverFactory = async (root) => {
 		harness: "pi",
 		explicitReviewModel: "openai/gpt-5.6-sol",
 		reviewerScript,
+		github,
 		async start(task) {
 			const result = await runCommand("audit-start", task);
 			if (result.level === "error") throw new Error(result.message);
@@ -218,6 +277,7 @@ export const createPiDriver: DriverFactory = async (root) => {
 export const createOpencodeDriver: DriverFactory = async (root) => {
 	const attempted: string[] = [];
 	const reviewerScript: Record<string, ReviewerBehavior> = {};
+	const github = createGitHubStub(root);
 	let providers: { id: string; models: Record<string, object> }[] = [];
 	const toCatalog = (models: ReviewModel[]) => {
 		const grouped = new Map<string, Record<string, object>>();
@@ -230,7 +290,7 @@ export const createOpencodeDriver: DriverFactory = async (root) => {
 
 	const runner: CommandRunner = {
 		exec: async (command, args) => {
-			if (command !== "opencode") return failGit;
+			if (command !== "opencode") return github.handle(command, args) ?? failGit;
 			if (args[0] === "--version") return { code: 0, stdout: "0.0.0-contract", stderr: "" };
 			if (args[0] === "export") return { code: 1, stdout: "", stderr: "export unavailable" };
 			const model = args[args.indexOf("-m") + 1];
@@ -255,6 +315,7 @@ export const createOpencodeDriver: DriverFactory = async (root) => {
 		harness: "opencode",
 		explicitReviewModel: "openai/gpt-5.6-sol",
 		reviewerScript,
+		github,
 		async start(task) {
 			await hooks.tool.audit_start.execute({ task }, context);
 		},
@@ -299,7 +360,8 @@ export const createClaudeDriver: DriverFactory = async (root) => {
 	const env = { XDG_STATE_HOME: stateHome } as NodeJS.ProcessEnv;
 	const attempted: string[] = [];
 	const reviewerScript: Record<string, ReviewerBehavior> = {};
-	const gitRunner: CommandRunner = { exec: async () => failGit };
+	const github = createGitHubStub(root);
+	const gitRunner: CommandRunner = { exec: async (command, args) => github.handle(command, args) ?? failGit };
 	const claudeRunner: CommandRunner = {
 		exec: async (command, args) => {
 			if (command !== "claude") return failGit;
@@ -337,6 +399,7 @@ export const createClaudeDriver: DriverFactory = async (root) => {
 		harness: "claude",
 		explicitReviewModel: "anthropic/claude-fable-5",
 		reviewerScript,
+		github,
 		async start(task) {
 			await server.call("audit_start", { task });
 		},

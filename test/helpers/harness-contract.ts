@@ -67,6 +67,15 @@ export function registerHarnessConformance({ harness, capabilities, createDriver
 		assert.equal(rows.length, 2, "resume must not truncate or duplicate rows");
 	});
 
+	contract("rejects invalid decision enum values at the append boundary", async (driver, root) => {
+		await driver.start(TASK);
+		await assert.rejects(() => driver.decide({ origin: "vibes" }), /origin/i);
+		await assert.rejects(() => driver.decide({ confidence: "certain" }), /confidence/i);
+		await assert.rejects(() => driver.decide({ result: "done" }), /result/i);
+		const rows = await tsvRows(root);
+		assert.equal(rows.length, 1, "rejected decisions must not reach the TSV");
+	});
+
 	contract("attributes decisions to the harness session", async (driver, root) => {
 		await driver.start(TASK);
 		await driver.decide();
@@ -158,6 +167,16 @@ export function registerHarnessConformance({ harness, capabilities, createDriver
 		assert.equal(close.completed, true, close.message);
 	});
 
+	contract("close is rejected when rows were appended after the last review", async (driver) => {
+		await driver.start(TASK);
+		await driver.decide();
+		driver.reviewerScript[driver.explicitReviewModel] = "approve";
+		await driver.review(driver.explicitReviewModel);
+		await driver.decide({ decision: "A decision the review never saw" });
+		const close = await driver.close();
+		assert.equal(close.completed, false, "rows appended after the review must gate close");
+	});
+
 	contract("close is rejected while decisions are unresolved", async (driver) => {
 		await driver.start(TASK);
 		await driver.decide({ result: "open", decision: "An unresolved decision" });
@@ -173,6 +192,42 @@ export function registerHarnessConformance({ harness, capabilities, createDriver
 		const outcome = await driver.publish();
 		assert.equal(outcome.completed, false);
 		assert.match(outcome.message, /provenance/i);
+	});
+
+	contract("publishes the reviewed audit to the matching branch PR", async (driver) => {
+		driver.github.enabled = true;
+		await driver.start(TASK);
+		await driver.decide();
+		driver.reviewerScript[driver.explicitReviewModel] = "approve";
+		const review = await driver.review(driver.explicitReviewModel);
+		assert.equal(review.completed, true, review.message);
+		const outcome = await driver.publish();
+		assert.equal(outcome.completed, true, outcome.message);
+		assert.match(outcome.message, /PR #7/);
+	});
+
+	contract("publish is rejected when rows were appended after the last review", async (driver) => {
+		driver.github.enabled = true;
+		await driver.start(TASK);
+		await driver.decide();
+		driver.reviewerScript[driver.explicitReviewModel] = "approve";
+		await driver.review(driver.explicitReviewModel);
+		await driver.decide({ decision: "A decision the review never saw" });
+		const outcome = await driver.publish();
+		assert.equal(outcome.completed, false, "stale review bytes must gate publish");
+		assert.match(outcome.message, /review/i);
+	});
+
+	contract("publish is rejected when the PR head does not match the checkout", async (driver) => {
+		driver.github.enabled = true;
+		await driver.start(TASK);
+		await driver.decide();
+		driver.reviewerScript[driver.explicitReviewModel] = "approve";
+		await driver.review(driver.explicitReviewModel);
+		driver.github.prHeadOid = "divergent-head";
+		const outcome = await driver.publish();
+		assert.equal(outcome.completed, false, "a diverged PR head must gate publish");
+		assert.match(outcome.message, /does not match current checkout/);
 	});
 }
 

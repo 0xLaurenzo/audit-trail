@@ -260,14 +260,22 @@ export function buildRawGitHubComments(state: AuditState, rows: AuditRow[], rawT
 	do {
 		const part = chunks.length + 1;
 		const chunkRows: AuditRow[] = [];
-		let chunkRaw = part === 1 ? (rawLines[0] ?? "") : "";
+		// The row-count check above guarantees a header line plus one line per
+		// row; assert the invariant instead of silently substituting content.
+		const headerLine = rawLines[0];
+		if (headerLine === undefined) throw new Error("Canonical audit TSV is missing its header line");
+		let chunkRaw = part === 1 ? headerLine : "";
 		const baseBody = renderAuditComment(state, rows, { rows: chunkRows, rawTsv: chunkRaw }, part, sizingTotal);
 		if (Buffer.byteLength(baseBody, "utf8") > SAFE_GITHUB_COMMENT_BYTES) {
 			throw new Error(`Audit overview exceeds the ${SAFE_GITHUB_COMMENT_BYTES}-byte safe GitHub comment limit`);
 		}
 		while (cursor < rows.length) {
 			const candidateRows = [...chunkRows, rows[cursor]];
-			const candidateRaw = `${chunkRaw}${rawLines[cursor + 1] ?? ""}`;
+			const sourceLine = rawLines[cursor + 1];
+			if (sourceLine === undefined) {
+				throw new Error(`Canonical audit TSV is missing the source line for decision ${rows[cursor].id}`);
+			}
+			const candidateRaw = `${chunkRaw}${sourceLine}`;
 			const candidate = renderAuditComment(state, rows, { rows: candidateRows, rawTsv: candidateRaw }, part, sizingTotal);
 			if (Buffer.byteLength(candidate, "utf8") > SAFE_GITHUB_COMMENT_BYTES) break;
 			chunkRows.push(rows[cursor]);

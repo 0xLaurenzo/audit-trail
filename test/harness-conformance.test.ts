@@ -22,10 +22,10 @@ test("every shipped harness has a capability declaration and a conformance drive
 });
 
 test("every real installer harness is shipped, and every shipped harness has an installer", () => {
-	// Planned installers are placeholders for future issues; a harness with a
-	// real installer must declare capabilities and join the contract suite.
+	// Planned installers carry an explicit flag; a harness with a real
+	// installer must declare capabilities and join the contract suite.
 	const realInstallers = installers
-		.filter((installer) => !/support ships in issue/.test(installer.description))
+		.filter((installer) => !installer.planned)
 		.map((installer) => installer.harness)
 		.sort();
 	assert.deepEqual(realInstallers, [...SHIPPED_HARNESSES].sort());
