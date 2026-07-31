@@ -1,12 +1,15 @@
 import { lstat, mkdir, readFile, readlink, symlink, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { CommandRunner } from "../core/ports.ts";
 
 export interface InstallContext {
 	/** Home directory whose harness configuration is modified. */
 	home: string;
 	/** Root of the installed audit-trail package. */
 	packageRoot: string;
+	/** External command runner; required by installers that invoke a harness CLI. */
+	runner?: CommandRunner;
 }
 
 export interface InstallResult {
@@ -232,6 +235,107 @@ export const claudeInstaller: HarnessInstaller = {
 	},
 };
 
+const CODEX_PLUGIN_ENTRY = {
+	name: "audit-trail",
+	source: { source: "local", path: "./plugins/audit-trail" },
+	policy: { installation: "AVAILABLE", authentication: "ON_INSTALL" },
+	category: "Developer Tools",
+};
+
+/** Install the package as a local Codex plugin through the personal marketplace. */
+export const codexInstaller: HarnessInstaller = {
+	harness: "codex",
+	description: "Install the Codex plugin through the personal local marketplace",
+	async install(ctx) {
+		if (!ctx.runner) throw new Error("Codex installation requires a command runner");
+		const manifestPath = join(ctx.packageRoot, ".codex-plugin", "plugin.json");
+		let manifest: any;
+		try {
+			manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+		} catch (error: any) {
+			throw new Error(`Package is missing a readable Codex plugin manifest at ${manifestPath}: ${error?.message ?? error}`);
+		}
+		if (manifest?.name !== "audit-trail") throw new Error(`Unexpected plugin name in ${manifestPath}: ${String(manifest?.name)}`);
+
+		const probe = await ctx.runner.exec("codex", ["--version"], { timeout: 15_000 });
+		if (probe.code !== 0) throw new Error(`codex CLI is unavailable: ${probe.stderr.trim() || `exit ${probe.code}`}`);
+
+		const linkPath = join(ctx.home, "plugins", "audit-trail");
+		const marketplacePath = join(ctx.home, ".agents", "plugins", "marketplace.json");
+		let linkChanged = false;
+		let existingLink;
+		try {
+			existingLink = await lstat(linkPath);
+		} catch (error: any) {
+			if (error?.code !== "ENOENT") throw error;
+		}
+		if (existingLink) {
+			if (!existingLink.isSymbolicLink()) {
+				throw new Error(`Refusing to replace ${linkPath}: it is not a symlink managed by audit-trail.`);
+			}
+			const target = resolve(dirname(linkPath), await readlink(linkPath));
+			if (target !== resolve(ctx.packageRoot)) {
+				throw new Error(`Refusing to replace ${linkPath}: it points at a different target (${target}).`);
+			}
+		} else {
+			linkChanged = true;
+		}
+
+		let marketplace: any = {
+			name: "personal",
+			interface: { displayName: "Personal" },
+			plugins: [],
+		};
+		let marketplaceExists = false;
+		try {
+			marketplace = JSON.parse(await readFile(marketplacePath, "utf8"));
+			marketplaceExists = true;
+		} catch (error: any) {
+			if (error?.code !== "ENOENT") throw new Error(`Cannot read ${marketplacePath}: ${error?.message ?? error}`);
+		}
+		if (typeof marketplace?.name !== "string" || !marketplace.name || !Array.isArray(marketplace.plugins)) {
+			throw new Error(`Unexpected personal marketplace structure in ${marketplacePath}`);
+		}
+		const existingEntry = marketplace.plugins.find((entry: any) => entry?.name === "audit-trail");
+		if (
+			existingEntry &&
+			(existingEntry?.source?.source !== CODEX_PLUGIN_ENTRY.source.source ||
+				existingEntry?.source?.path !== CODEX_PLUGIN_ENTRY.source.path)
+		) {
+			throw new Error(`Refusing to replace the unrelated audit-trail entry in ${marketplacePath}`);
+		}
+		const marketplaceChanged = !existingEntry || JSON.stringify(existingEntry) !== JSON.stringify(CODEX_PLUGIN_ENTRY);
+		const nextMarketplace = marketplaceChanged
+			? {
+					...marketplace,
+					plugins: [
+						...marketplace.plugins.filter((entry: any) => entry?.name !== "audit-trail"),
+						CODEX_PLUGIN_ENTRY,
+					],
+				}
+			: marketplace;
+
+		// All ownership and structure checks complete before the first write.
+		if (linkChanged) {
+			await mkdir(dirname(linkPath), { recursive: true });
+			await symlink(ctx.packageRoot, linkPath, "dir");
+		}
+		if (marketplaceChanged || !marketplaceExists) {
+			await mkdir(dirname(marketplacePath), { recursive: true });
+			await writeFile(marketplacePath, `${JSON.stringify(nextMarketplace, null, 2)}\n`, "utf8");
+		}
+		const added = await ctx.runner.exec("codex", ["plugin", "add", `audit-trail@${marketplace.name}`], {
+			timeout: 60_000,
+		});
+		if (added.code !== 0) throw new Error(added.stderr.trim() || `codex plugin add exited ${added.code}`);
+		return {
+			harness: "codex",
+			changed: linkChanged || marketplaceChanged,
+			message: `${linkChanged || marketplaceChanged ? "installed" : "already installed"} audit-trail@${marketplace.name}; start a new Codex thread, open /hooks, and trust the plugin hooks`,
+		};
+	},
+};
+
 function plannedInstaller(harness: string, issue: string): HarnessInstaller {
 	return {
 		harness,
@@ -247,7 +351,7 @@ function plannedInstaller(harness: string, issue: string): HarnessInstaller {
 export const installers: readonly HarnessInstaller[] = [
 	piInstaller,
 	claudeInstaller,
-	plannedInstaller("codex", "issue #8"),
+	codexInstaller,
 	opencodeInstaller,
 ];
 
