@@ -214,8 +214,8 @@ async function commandReview(
 	const review = await runIndependentReview({
 		workflow,
 		reviewer: dependencies.createReviewer(processRunner(workflow.root)),
-		model,
-		mode,
+		// The CLI pins the explicitly requested model: no fallback candidates.
+		candidates: [{ model, mode }],
 		harnessName: "cli",
 	});
 	io.out(`Review saved: ${displayPath(review.reviewPath, workflow.root)} (verdict: ${review.verdict})`);

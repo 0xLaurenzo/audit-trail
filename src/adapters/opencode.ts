@@ -17,10 +17,7 @@ import {
 } from "../core/index.ts";
 import { McpAuditServer } from "../mcp/server.ts";
 import { createOpencodeSubprocessReviewer } from "./opencode-reviewer.ts";
-
-/// Reviewer preference, most advanced first. Applied within each review tier
-/// (cross-provider, then cross-model, then the working model itself).
-const REVIEW_MODEL_PREFERENCE = [/fable/i, /opus-4-8/i, /gpt-5\.6-sol/i];
+import { buildReviewerCandidates, type ReviewCandidate } from "../core/reviewer-candidates.ts";
 
 export interface ReviewModelRef {
 	provider: string;
@@ -28,25 +25,26 @@ export interface ReviewModelRef {
 }
 
 /**
- * Choose the reviewer and truthfully derive its relation to the working
- * model. Preference order: cross-provider, then cross-model, then the working
- * model itself (also the fallback when model discovery yields nothing).
+ * Build the ordered reviewer candidate list with truthful modes. An explicit
+ * request pins exactly one candidate (strict, no fallback); automatic
+ * selection returns every cross-provider model, then every same-provider
+ * different-model candidate, then the working model itself, so runtime
+ * failures can advance through the tiers.
  */
-export function selectOpencodeReviewer(
+export function selectOpencodeReviewerCandidates(
 	available: ReviewModelRef[],
 	working: ReviewModelRef | undefined,
 	requested?: string,
-): { model: ReviewModelRef; mode: ReviewMode } {
+): ReviewCandidate[] {
 	// The checkpoint's mode is a durable independence claim. OpenCode declares
 	// chat.message.model optional, so fail rather than comparing a reviewer to
 	// undefined and falsely recording cross-provider.
 	if (!working) {
 		throw new Error("Working model metadata is unavailable; cannot determine a truthful review mode");
 	}
-	let model: ReviewModelRef | undefined;
 	if (requested) {
 		if (!requested.includes("/")) throw new Error(`Review model must be provider/model: ${requested}`);
-		model = available.find((candidate) => `${candidate.provider}/${candidate.id}` === requested);
+		let model = available.find((candidate) => `${candidate.provider}/${candidate.id}` === requested);
 		if (!model) {
 			// With a populated catalog an unknown model is a typo; without one
 			// (offline/config failure) trust the explicit request.
@@ -54,19 +52,11 @@ export function selectOpencodeReviewer(
 			const slash = requested.indexOf("/");
 			model = { provider: requested.slice(0, slash), id: requested.slice(slash + 1) };
 		}
-	} else {
-		const prefer = (models: ReviewModelRef[]) =>
-			REVIEW_MODEL_PREFERENCE.map((pattern) => models.find((candidate) => pattern.test(candidate.id))).find(Boolean) ??
-			models[0];
-		model =
-			prefer(available.filter((candidate) => candidate.provider !== working.provider)) ??
-			prefer(available.filter((candidate) => candidate.provider === working.provider && candidate.id !== working.id)) ??
-			working;
-		if (!model) throw new Error("No model is available for review; pass model as provider/model");
+		const mode: ReviewMode =
+			model.provider !== working.provider ? "cross-provider" : model.id !== working.id ? "cross-model" : "same-model";
+		return [{ model: `${model.provider}/${model.id}`, mode }];
 	}
-	const mode: ReviewMode =
-		model.provider !== working.provider ? "cross-provider" : model.id !== working.id ? "cross-model" : "same-model";
-	return { model, mode };
+	return buildReviewerCandidates(available, working);
 }
 
 export interface OpencodeClientLike {
@@ -260,18 +250,17 @@ export const AuditTrailPlugin = async ({ client, directory }: OpencodePluginInpu
 					const state = await wf.active();
 					if (!state) throw new Error("No audit is active in this worktree.");
 					const available = await listOpencodeModels(client).catch(() => []);
-					const { model, mode } = selectOpencodeReviewer(available, workingModels.get(context.sessionID), args.model);
+					const candidates = selectOpencodeReviewerCandidates(available, workingModels.get(context.sessionID), args.model);
 					const transcriptPath = await exportTranscript(runner, wf.root, state.task, context.sessionID);
 					const review = await runIndependentReview({
 						workflow: wf,
 						reviewer,
-						model: `${model.provider}/${model.id}`,
-						mode,
+						candidates,
 						harnessName: "opencode",
 						transcriptPath,
 					});
 					const lines = [
-						`Review saved: ${review.reviewPath} (${review.rowCount} rows reviewed, verdict: ${review.verdict})`,
+						`Review saved: ${review.reviewPath} (${review.model}, ${review.mode}; ${review.rowCount} rows reviewed, verdict: ${review.verdict})`,
 					];
 					if (review.verdict === "block") {
 						lines.push(

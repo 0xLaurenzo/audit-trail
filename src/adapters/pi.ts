@@ -8,29 +8,43 @@ import {
 	ORIGIN_VALUES,
 	activeStatePath,
 	buildActiveAuditGuidance,
+	buildReviewerCandidates,
 	resolveWorktreeRoot,
-	buildReviewDocument,
-	buildReviewPrompt,
 	displayPath,
 	formatStatusLines,
-	parseRows,
 	publishRawAudit,
+	runIndependentReview,
 	sha256Hex,
 	summarize,
-	writeReviewArtifact,
 	type AuditRow,
 	type AuditState,
 	type CommandRunner,
+	type ReviewCandidate,
 	type ReviewMode,
-	parseReviewVerdict,
+	type ReviewModel,
 	reviewBlocker,
 	type SessionIdentity,
 } from "../core/index.ts";
 import { createPiSubprocessReviewer } from "./pi-reviewer.ts";
 
-/// Reviewer preference, most advanced first. Applied within each review tier
-/// (cross-provider, then cross-model, then the working model itself).
-const REVIEW_MODEL_PREFERENCE = [/fable/i, /opus-4-8/i, /gpt-5\.6-sol/i];
+/**
+ * Build Pi's reviewer candidates. Explicit requests stay pinned to one known
+ * model, but still require working-model metadata so the durable independence
+ * mode is truthful.
+ */
+export function selectPiReviewerCandidates(
+	available: ReviewModel[],
+	working: ReviewModel | undefined,
+	requested?: string,
+): ReviewCandidate[] {
+	if (!working) throw new Error("Working model metadata is unavailable; cannot determine a truthful review mode");
+	if (!requested) return buildReviewerCandidates(available, working);
+	const model = available.find((candidate) => `${candidate.provider}/${candidate.id}` === requested);
+	if (!model) throw new Error(`Review model unavailable: ${requested}`);
+	const mode: ReviewMode =
+		model.provider !== working.provider ? "cross-provider" : model.id !== working.id ? "cross-model" : "same-model";
+	return [{ model: requested, mode }];
+}
 
 const Origin = StringEnum(ORIGIN_VALUES, {
 	description:
@@ -256,86 +270,41 @@ export default function auditTrailExtension(pi: ExtensionAPI) {
 			const requested = args.trim();
 			const available = await ctx.modelRegistry.getAvailable();
 			const current = ctx.model;
-			const prefer = (models: typeof available) =>
-				REVIEW_MODEL_PREFERENCE.map((pattern) => models.find((model) => pattern.test(model.id))).find(Boolean) ??
-				models[0];
 
-			let reviewModel: (typeof available)[number] | undefined;
-			if (requested) {
-				reviewModel = available.find((model) => `${model.provider}/${model.id}` === requested);
-				if (!reviewModel) {
-					ctx.ui.notify(`Review model unavailable: ${requested}`, "error");
-					return;
-				}
-			} else {
-				reviewModel =
-					prefer(available.filter((model) => model.provider !== current?.provider)) ??
-					prefer(available.filter((model) => model.provider === current?.provider && model.id !== current?.id)) ??
-					(current ? available.find((model) => model.provider === current.provider && model.id === current.id) : undefined);
-				if (!reviewModel) {
-					ctx.ui.notify("No model is available for review; pass /audit-review provider/model", "error");
-					return;
-				}
-			}
-			const mode: ReviewMode =
-				reviewModel.provider !== current?.provider
-					? "cross-provider"
-					: reviewModel.id !== current?.id
-						? "cross-model"
-						: "same-model";
-
-			// Snapshot the exact bytes under review before the reviewer starts;
-			// the checkpoint is recorded against this hash so decisions appended
-			// while the reviewer runs cannot be blessed by a review that never
-			// saw them.
-			const reviewedTsv = await readFile(state.logPath, "utf8");
-			const reviewedSha256 = sha256Hex(reviewedTsv);
-			const rows = parseRows(reviewedTsv, state.logPath);
-			const reviewerPrompt = buildReviewPrompt({
-				logPath: state.logPath,
-				transcriptPath: sessionPath,
-				workingDirectory: ctx.cwd,
-				harnessName: "pi",
-			});
-			const reviewer = createPiSubprocessReviewer({ exec: (command, cmdArgs, options) => pi.exec(command, cmdArgs, options) });
-			ctx.ui.notify(`Reviewing with ${reviewModel.provider}/${reviewModel.id} (${mode})...`, "info");
+			let candidates: ReviewCandidate[];
 			try {
-				const output = await reviewer.review({
-					prompt: reviewerPrompt,
-					model: `${reviewModel.provider}/${reviewModel.id}`,
-					mode,
-					workingDirectory: ctx.cwd,
-				});
-				// Fail closed: a review without an explicit verdict certifies nothing.
-				const verdict = parseReviewVerdict(output) ?? "block";
-				const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-				const reviewPath = resolve(ctx.cwd, ".audit", `${state.task}.review.${stamp}.md`);
-				const reviewDocument = buildReviewDocument({
-					model: `${reviewModel.provider}/${reviewModel.id}`,
-					reviewMode: mode,
-					logPath: state.logPath,
-					transcriptPath: sessionPath,
-					workingDirectory: ctx.cwd,
-					rowCount: rows.length,
-					output,
+				candidates = selectPiReviewerCandidates(
+					available,
+					current ? { provider: current.provider, id: current.id } : undefined,
+					requested || undefined,
+				);
+			} catch (selectionError: any) {
+				ctx.ui.notify(selectionError?.message ?? String(selectionError), "error");
+				return;
+			}
+
+			const reviewer = createPiSubprocessReviewer({ exec: (command, cmdArgs, options) => pi.exec(command, cmdArgs, options) });
+			try {
+				const review = await runIndependentReview({
+					workflow: wf,
+					reviewer,
+					candidates,
 					harnessName: "pi",
-					verdict,
+					transcriptPath: sessionPath,
+					onAttempt: (candidate) => ctx.ui.notify(`Reviewing with ${candidate.model} (${candidate.mode})...`, "info"),
+					onAttemptFailure: (candidate, failure) =>
+						ctx.ui.notify(`Reviewer ${candidate.model} failed: ${failure} — trying the next candidate`, "warning"),
 				});
-				await writeReviewArtifact(reviewPath, reviewDocument);
-				await wf.recordReview({
-					path: reviewPath,
-					mode,
-					model: `${reviewModel.provider}/${reviewModel.id}`,
-					expectedSha256: reviewedSha256,
-					verdict,
-				});
-				if (verdict === "block") {
+				if (review.verdict === "block") {
 					ctx.ui.notify(
-						`Review blocked the audit: ${displayPath(reviewPath, ctx.cwd)} — address its findings and re-review`,
+						`Review blocked the audit: ${displayPath(review.reviewPath, ctx.cwd)} — address its findings and re-review`,
 						"warning",
 					);
 				} else {
-					ctx.ui.notify(`Review saved: ${displayPath(reviewPath, ctx.cwd)} (verdict: approve)`, "info");
+					ctx.ui.notify(
+						`Review saved: ${displayPath(review.reviewPath, ctx.cwd)} (${review.model}, ${review.mode}; verdict: approve)`,
+						"info",
+					);
 				}
 			} catch (error: any) {
 				ctx.ui.notify(`Audit review failed: ${error?.message ?? error}`, "error");

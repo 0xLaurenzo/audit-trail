@@ -8,6 +8,7 @@ export * from "./paths.ts";
 export * from "./ports.ts";
 export * from "./provenance.ts";
 export * from "./review.ts";
+export * from "./reviewer-candidates.ts";
 export * from "./status.ts";
 export * from "./types.ts";
 export * from "./validation.ts";

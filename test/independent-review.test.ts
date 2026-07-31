@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { readActiveAudit, writeActiveAudit } from "../src/core/active-state.ts";
-import { runIndependentReview } from "../src/core/independent-review.ts";
+import { runIndependentReview, summarizeReviewerFailure } from "../src/core/independent-review.ts";
 import type { CommandRunner, ReviewerPort } from "../src/core/ports.ts";
 import { parseReviewVerdict } from "../src/core/review.ts";
 import { formatStatusLines } from "../src/core/status.ts";
@@ -53,12 +53,13 @@ test("an approving review records the verdict and unblocks close", async () => {
 		const result = await runIndependentReview({
 			workflow,
 			reviewer: reviewerReturning("No flags\nVERDICT: approve\n"),
-			model: "provider/reviewer",
-			mode: "cross-model",
+			candidates: [{ model: "provider/reviewer", mode: "cross-model" }],
 			harnessName: "cli",
 		});
 		assert.equal(result.verdict, "approve");
 		assert.equal(result.rowCount, 1);
+		assert.equal(result.model, "provider/reviewer");
+		assert.equal(result.mode, "cross-model");
 		assert.match(await readFile(result.reviewPath, "utf8"), /- Verdict: approve/);
 		const closed = await workflow.close();
 		assert.equal(closed.closed, true);
@@ -74,8 +75,7 @@ test("a blocking review keeps close gated and is visible in status", async () =>
 		const result = await runIndependentReview({
 			workflow,
 			reviewer: reviewerReturning("D0001 overstates verification.\nVERDICT: block\n"),
-			model: "provider/reviewer",
-			mode: "cross-model",
+			candidates: [{ model: "provider/reviewer", mode: "cross-model" }],
 			harnessName: "cli",
 		});
 		assert.equal(result.verdict, "block");
@@ -91,23 +91,65 @@ test("a blocking review keeps close gated and is visible in status", async () =>
 	}
 });
 
-test("a review without an explicit verdict fails closed to block", async () => {
+test("a review without an explicit verdict falls back without recording an artifact", async () => {
 	const root = await mkdtemp(join(tmpdir(), "audit-review-test-"));
 	try {
 		const workflow = await startedWorkflow(root);
+		const attempted: string[] = [];
 		const result = await runIndependentReview({
 			workflow,
-			reviewer: reviewerReturning("Looks fine to me.\n"),
-			model: "provider/reviewer",
-			mode: "same-model",
+			reviewer: {
+				review: async (request) => {
+					attempted.push(request.model);
+					return request.model === "provider/invalid" ? "Looks fine to me.\n" : "No flags\nVERDICT: approve\n";
+				},
+			},
+			candidates: [
+				{ model: "provider/invalid", mode: "cross-model" },
+				{ model: "provider/fallback", mode: "same-model" },
+			],
 			harnessName: "mcp",
 		});
-		assert.equal(result.verdict, "block");
-		const closed = await workflow.close();
-		assert.equal(closed.closed, false);
+		assert.deepEqual(attempted, ["provider/invalid", "provider/fallback"]);
+		assert.equal(result.model, "provider/fallback");
+		assert.equal(result.verdict, "approve");
+		const artifacts = (await readdir(join(root, ".audit"))).filter((name) => name.includes(".review."));
+		assert.equal(artifacts.length, 1, "only the completed fallback writes an artifact");
 	} finally {
 		await rm(root, { recursive: true, force: true });
 	}
+});
+
+test("a pinned review with an invalid verdict fails directly and records nothing", async () => {
+	const root = await mkdtemp(join(tmpdir(), "audit-review-test-"));
+	try {
+		const workflow = await startedWorkflow(root);
+		await assert.rejects(
+			() =>
+				runIndependentReview({
+					workflow,
+					reviewer: reviewerReturning("VERDICT: approve with caveats\n"),
+					candidates: [{ model: "provider/pinned", mode: "cross-provider" }],
+					harnessName: "cli",
+				}),
+			/no valid terminal verdict/,
+		);
+		const state = await workflow.active();
+		assert.equal(state?.review, undefined);
+		const artifacts = (await readdir(join(root, ".audit"))).filter((name) => name.includes(".review."));
+		assert.deepEqual(artifacts, []);
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+test("review failure summaries classify errors without copying credentials or provider metadata", () => {
+	const raw = "401 Unauthorized api_key=sk-secret request_id=req_private account=acct_private";
+	const summary = summarizeReviewerFailure(new Error(raw));
+	assert.equal(summary, "reviewer authentication failed");
+	for (const secret of ["sk-secret", "req_private", "acct_private"]) assert.doesNotMatch(summary, new RegExp(secret));
+	assert.equal(summarizeReviewerFailure(new Error("429 request req_private")), "reviewer was rate limited");
+	assert.equal(summarizeReviewerFailure(new Error("unknown detail token=secret")), "reviewer execution failed");
 });
 
 test("a legacy verdict-less snapshot fails closed and requires re-review", async () => {
@@ -149,11 +191,154 @@ test("a failing reviewer runtime records no checkpoint", async () => {
 			},
 		};
 		await assert.rejects(
-			() => runIndependentReview({ workflow, reviewer, model: "provider/reviewer", mode: "cross-model", harnessName: "cli" }),
-			/reviewer runtime but is unavailable/,
+			() =>
+				runIndependentReview({
+					workflow,
+					reviewer,
+					candidates: [{ model: "provider/reviewer", mode: "cross-model" }],
+					harnessName: "cli",
+				}),
+			/reviewer runtime is unavailable/,
 		);
 		const state = await workflow.active();
 		assert.equal(state?.review, undefined, "no checkpoint without a completed review");
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+test("a failed candidate falls back to the next one, which records truthful model and mode", async () => {
+	const root = await mkdtemp(join(tmpdir(), "audit-review-test-"));
+	try {
+		const workflow = await startedWorkflow(root);
+		const attempted: string[] = [];
+		const reviewer: ReviewerPort = {
+			review: async (request) => {
+				attempted.push(request.model);
+				if (request.model === "openai/gpt-5.6-sol") throw new Error("usage limit reached");
+				return "No flags\nVERDICT: approve\n";
+			},
+		};
+		const failures: string[] = [];
+		const result = await runIndependentReview({
+			workflow,
+			reviewer,
+			candidates: [
+				{ model: "openai/gpt-5.6-sol", mode: "cross-provider" },
+				{ model: "anthropic/claude-fable-5", mode: "cross-model" },
+			],
+			harnessName: "cli",
+			onAttemptFailure: (candidate, error) => failures.push(`${candidate.model}: ${error}`),
+		});
+		assert.deepEqual(attempted, ["openai/gpt-5.6-sol", "anthropic/claude-fable-5"]);
+		assert.deepEqual(failures, ["openai/gpt-5.6-sol: reviewer usage or quota limit reached"]);
+		assert.equal(result.model, "anthropic/claude-fable-5");
+		assert.equal(result.mode, "cross-model");
+		const artifact = await readFile(result.reviewPath, "utf8");
+		assert.match(artifact, /anthropic\/claude-fable-5/);
+		assert.match(artifact, /cross-model/);
+		const state = await workflow.active();
+		assert.equal(state?.review?.model, "anthropic/claude-fable-5");
+		assert.equal(state?.review?.mode, "cross-model");
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+test("a blocking verdict is terminal and never triggers fallback", async () => {
+	const root = await mkdtemp(join(tmpdir(), "audit-review-test-"));
+	try {
+		const workflow = await startedWorkflow(root);
+		const attempted: string[] = [];
+		const reviewer: ReviewerPort = {
+			review: async (request) => {
+				attempted.push(request.model);
+				return "D0001 overstates verification.\nVERDICT: block\n";
+			},
+		};
+		const result = await runIndependentReview({
+			workflow,
+			reviewer,
+			candidates: [
+				{ model: "openai/gpt-5.6-sol", mode: "cross-provider" },
+				{ model: "anthropic/claude-fable-5", mode: "cross-model" },
+			],
+			harnessName: "cli",
+		});
+		assert.deepEqual(attempted, ["openai/gpt-5.6-sol"], "a completed blocking review must not retry");
+		assert.equal(result.verdict, "block");
+		assert.equal(result.model, "openai/gpt-5.6-sol");
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+test("when every candidate fails, the error names each attempt and nothing is written", async () => {
+	const root = await mkdtemp(join(tmpdir(), "audit-review-test-"));
+	try {
+		const workflow = await startedWorkflow(root);
+		const reviewer: ReviewerPort = {
+			review: async (request) => {
+				throw new Error(request.model === "openai/gpt-5.6-sol" ? "usage limit reached" : "rate limited");
+			},
+		};
+		await assert.rejects(
+			() =>
+				runIndependentReview({
+					workflow,
+					reviewer,
+					candidates: [
+						{ model: "openai/gpt-5.6-sol", mode: "cross-provider" },
+						{ model: "anthropic/claude-fable-5", mode: "cross-model" },
+						{ model: "anthropic/claude-opus-4-8", mode: "same-model" },
+					],
+					harnessName: "cli",
+				}),
+			(error: Error) => {
+				assert.match(error.message, /All reviewer candidates failed/);
+				assert.match(error.message, /openai\/gpt-5\.6-sol \(cross-provider\): reviewer usage or quota limit reached/);
+				assert.match(error.message, /anthropic\/claude-fable-5 \(cross-model\): reviewer was rate limited/);
+				assert.match(error.message, /anthropic\/claude-opus-4-8 \(same-model\): reviewer was rate limited/);
+				return true;
+			},
+		);
+		const state = await workflow.active();
+		assert.equal(state?.review, undefined, "no checkpoint when every candidate fails");
+		const artifacts = (await readdir(join(root, ".audit"))).filter((name) => name.includes(".review."));
+		assert.deepEqual(artifacts, [], "failed attempts must not create review artifacts");
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+test("the checkpoint hash reflects the bytes the successful attempt saw, not the first attempt's", async () => {
+	const root = await mkdtemp(join(tmpdir(), "audit-review-test-"));
+	try {
+		const workflow = await startedWorkflow(root);
+		let first = true;
+		const reviewer: ReviewerPort = {
+			review: async () => {
+				if (first) {
+					first = false;
+					// A row lands while the first reviewer is running, then that reviewer fails.
+					await workflow.append({ harness: "pi", id: "session" }, resolvedRow);
+					throw new Error("provider outage");
+				}
+				return "No flags\nVERDICT: approve\n";
+			},
+		};
+		const result = await runIndependentReview({
+			workflow,
+			reviewer,
+			candidates: [
+				{ model: "openai/gpt-5.6-sol", mode: "cross-provider" },
+				{ model: "anthropic/claude-fable-5", mode: "cross-model" },
+			],
+			harnessName: "cli",
+		});
+		assert.equal(result.rowCount, 2, "the second attempt reviews the appended row too");
+		const closed = await workflow.close();
+		assert.equal(closed.closed, true, "the checkpoint covers the exact bytes the successful reviewer saw");
 	} finally {
 		await rm(root, { recursive: true, force: true });
 	}
