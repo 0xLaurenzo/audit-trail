@@ -257,7 +257,7 @@ test("Codex plugin bundle is internally consistent", async () => {
 	assert.match(skill, /audit_start/);
 	const hooks = JSON.parse(await readFile(join(root, "hooks", "hooks.json"), "utf8"));
 	assert.match(hooks.hooks.SessionStart[0].matcher, /startup.*resume.*clear.*compact/);
-	assert.equal(hooks.hooks.PreToolUse[0].matcher, "Edit|Write");
+	assert.equal(hooks.hooks.PreToolUse[0].matcher, "apply_patch|Edit|Write");
 	for (const event of ["SessionStart", "PreToolUse"]) {
 		assert.match(hooks.hooks[event][0].hooks[0].command, /\$\{PLUGIN_ROOT\}\/bin\/audit-trail.*codex-hook/);
 	}
