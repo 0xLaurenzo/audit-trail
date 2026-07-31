@@ -148,6 +148,9 @@ export function registerHarnessConformance({ harness, capabilities, createDriver
 		driver.reviewerScript[driver.explicitReviewModel] = "block";
 		const outcome = await driver.review(driver.explicitReviewModel);
 		assert.equal(outcome.completed, true, "a blocking review is a completed review, not a failure");
+		assert.match(outcome.message, /D0001 overstates verification\./, "blocking findings must be surfaced inline");
+		assert.doesNotMatch(outcome.message, /VERDICT:\s*block/i, "the redundant terminal verdict must be stripped");
+		assert.match(outcome.message, /\.review\..*\.md/, "the canonical artifact path remains visible");
 		const recorded = await checkpoint(root);
 		assert.equal(recorded?.verdict, "block");
 		assert.equal(recorded?.model, driver.explicitReviewModel);

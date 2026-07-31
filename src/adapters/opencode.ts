@@ -9,6 +9,7 @@ import {
 	RESULT_VALUES,
 	activeStatePath,
 	buildActiveAuditGuidance,
+	formatBlockingReviewMessage,
 	resolveWorktreeRoot,
 	runIndependentReview,
 	type AuditState,
@@ -266,15 +267,10 @@ export const AuditTrailPlugin = async ({ client, directory, runner: runnerOverri
 						harnessName: "opencode",
 						transcriptPath,
 					});
-					const lines = [
-						`Review saved: ${review.reviewPath} (${review.model}, ${review.mode}; ${review.rowCount} rows reviewed, verdict: ${review.verdict})`,
-					];
 					if (review.verdict === "block") {
-						lines.push(
-							"The reviewer blocked this audit; publish and close stay gated until findings are addressed and it is re-reviewed.",
-						);
+						return formatBlockingReviewMessage(review.report, review.reviewPath, 6_000);
 					}
-					return lines.join("\n");
+					return `Review saved: ${review.reviewPath} (${review.model}, ${review.mode}; ${review.rowCount} rows reviewed, verdict: approve)`;
 				},
 			}),
 			audit_publish: tool({

@@ -4,6 +4,7 @@ import { sha256Hex } from "../core/active-state.ts";
 import { publishRawAudit } from "../core/github-publisher.ts";
 import { runIndependentReview } from "../core/independent-review.ts";
 import type { CommandRunner, ReviewerPort, SessionIdentity } from "../core/ports.ts";
+import { formatBlockingReviewMessage } from "../core/review.ts";
 import { formatStatusLines } from "../core/status.ts";
 import { reviewBlocker } from "../core/validation.ts";
 import {
@@ -213,11 +214,10 @@ export class McpAuditServer {
 					harnessName: (await this.session()).harness,
 					transcriptPath: await this.reviewTranscriptPath?.(),
 				});
-				const lines = [`Review saved: ${review.reviewPath} (${review.rowCount} rows reviewed, verdict: ${review.verdict})`];
 				if (review.verdict === "block") {
-					lines.push("The reviewer blocked this audit; publish and close stay gated until findings are addressed and it is re-reviewed.");
+					return formatBlockingReviewMessage(review.report, review.reviewPath, 6_000);
 				}
-				return lines.join("\n");
+				return `Review saved: ${review.reviewPath} (${review.rowCount} rows reviewed, verdict: approve)`;
 			}
 			case "audit_publish": {
 				const state = await this.workflow.active();

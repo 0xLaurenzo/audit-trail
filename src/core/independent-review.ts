@@ -35,6 +35,8 @@ export interface IndependentReviewResult {
 	model: string;
 	/** The completed reviewer's truthful relation to the working model. */
 	mode: ReviewMode;
+	/** Full raw reviewer output; callers render a bounded findings excerpt. */
+	report: string;
 }
 
 /**
@@ -133,7 +135,7 @@ export async function runIndependentReview(input: IndependentReviewInput): Promi
 		});
 		await writeReviewArtifact(reviewPath, document);
 		await workflow.recordReview({ path: reviewPath, mode, model, expectedSha256: reviewedSha256, verdict });
-		return { reviewPath, rowCount: rows.length, verdict, model, mode };
+		return { reviewPath, rowCount: rows.length, verdict, model, mode, report: output };
 	}
 	throw new Error(
 		`All reviewer candidates failed:\n${failures

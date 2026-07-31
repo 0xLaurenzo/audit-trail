@@ -125,7 +125,10 @@ test("MCP publish rejects a blocking review before invoking GitHub", async () =>
 			confidence: "high", evidence: "test", result: "verified",
 		});
 		const review = await server.call("audit_review", { model: "provider/model", mode: "cross-model" });
-		assert.match(review, /verdict: block/);
+		assert.match(review, /Review blocked the audit/);
+		assert.match(review, /Reviewer findings:\nFinding\./);
+		assert.match(review, /\.review\..*\.md/);
+		assert.doesNotMatch(review, /VERDICT:/);
 		await assert.rejects(() => server.call("audit_publish", { selector: "22" }), /last review did not approve/);
 		assert.equal(githubCalled, false);
 	} finally {
