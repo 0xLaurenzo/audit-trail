@@ -111,6 +111,36 @@ test("a blocking review keeps close gated and is visible in status", async () =>
 	}
 });
 
+test("an empty blocking report is invalid and falls back without recording the empty block", async () => {
+	const root = await mkdtemp(join(tmpdir(), "audit-review-test-"));
+	try {
+		const workflow = await startedWorkflow(root);
+		const attempted: string[] = [];
+		const failures: string[] = [];
+		const result = await runIndependentReview({
+			workflow,
+			reviewer: {
+				review: async (request) => {
+					attempted.push(request.model);
+					return request.model === "provider/empty-block" ? "\nVERDICT: block\n" : "No flags\nVERDICT: approve\n";
+				},
+			},
+			candidates: [
+				{ model: "provider/empty-block", mode: "cross-model" },
+				{ model: "provider/fallback", mode: "same-model" },
+			],
+			harnessName: "mcp",
+			onAttemptFailure: (_candidate, error) => failures.push(error),
+		});
+		assert.deepEqual(attempted, ["provider/empty-block", "provider/fallback"]);
+		assert.deepEqual(failures, ["blocking reviewer output had no findings"]);
+		assert.equal(result.verdict, "approve");
+		assert.equal((await readdir(join(root, ".audit"))).filter((name) => name.includes(".review.")).length, 1);
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
 test("a review without an explicit verdict falls back without recording an artifact", async () => {
 	const root = await mkdtemp(join(tmpdir(), "audit-review-test-"));
 	try {

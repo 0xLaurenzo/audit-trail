@@ -4,7 +4,7 @@ import { sha256Hex } from "./active-state.ts";
 import { parseRows } from "./audit-store.ts";
 import type { ReviewerPort } from "./ports.ts";
 import type { ReviewCandidate } from "./reviewer-candidates.ts";
-import { buildReviewDocument, buildReviewPrompt, parseReviewVerdict, writeReviewArtifact } from "./review.ts";
+import { buildReviewDocument, buildReviewPrompt, parseReviewVerdict, reviewFindingsBody, writeReviewArtifact } from "./review.ts";
 import type { ReviewMode, ReviewVerdict } from "./types.ts";
 import type { AuditWorkflow } from "./workflow.ts";
 
@@ -116,6 +116,12 @@ export async function runIndependentReview(input: IndependentReviewInput): Promi
 		const verdict = parseReviewVerdict(output);
 		if (!verdict) {
 			const summary = "reviewer output had no valid terminal verdict";
+			failures.push({ candidate, error: summary });
+			input.onAttemptFailure?.(candidate, summary);
+			continue;
+		}
+		if (verdict === "block" && !reviewFindingsBody(output)) {
+			const summary = "blocking reviewer output had no findings";
 			failures.push({ candidate, error: summary });
 			input.onAttemptFailure?.(candidate, summary);
 			continue;

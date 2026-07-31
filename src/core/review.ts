@@ -62,6 +62,13 @@ export interface ReviewFindingsExcerpt {
 	truncated: boolean;
 }
 
+/** Strip the redundant terminal verdict without altering artifact content. */
+export function reviewFindingsBody(report: string): string {
+	const lines = report.trim().split(/\r?\n/);
+	if (/^VERDICT:\s*(approve|block)$/i.test(lines.at(-1)?.trim() ?? "")) lines.pop();
+	return lines.join("\n").trim();
+}
+
 /**
  * Render the reviewer's report body for inline feedback. The terminal verdict
  * is already represented by the surrounding result and is deliberately
@@ -71,9 +78,7 @@ export interface ReviewFindingsExcerpt {
  */
 export function reviewFindingsExcerpt(report: string, maxChars: number): ReviewFindingsExcerpt {
 	if (!Number.isInteger(maxChars) || maxChars < 1) throw new Error("maxChars must be a positive integer");
-	const lines = report.trim().split(/\r?\n/);
-	if (/^VERDICT:\s*(approve|block)$/i.test(lines.at(-1)?.trim() ?? "")) lines.pop();
-	const findings = lines.join("\n").trim();
+	const findings = reviewFindingsBody(report);
 	if (findings.length <= maxChars) return { text: findings, truncated: false };
 	const boundary = findings.lastIndexOf("\n", maxChars);
 	const end = boundary > 0 ? boundary : maxChars;
