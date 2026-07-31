@@ -21,10 +21,30 @@ import {
 	type CommandRunner,
 	type ReviewCandidate,
 	type ReviewMode,
+	type ReviewModel,
 	reviewBlocker,
 	type SessionIdentity,
 } from "../core/index.ts";
 import { createPiSubprocessReviewer } from "./pi-reviewer.ts";
+
+/**
+ * Build Pi's reviewer candidates. Explicit requests stay pinned to one known
+ * model, but still require working-model metadata so the durable independence
+ * mode is truthful.
+ */
+export function selectPiReviewerCandidates(
+	available: ReviewModel[],
+	working: ReviewModel | undefined,
+	requested?: string,
+): ReviewCandidate[] {
+	if (!working) throw new Error("Working model metadata is unavailable; cannot determine a truthful review mode");
+	if (!requested) return buildReviewerCandidates(available, working);
+	const model = available.find((candidate) => `${candidate.provider}/${candidate.id}` === requested);
+	if (!model) throw new Error(`Review model unavailable: ${requested}`);
+	const mode: ReviewMode =
+		model.provider !== working.provider ? "cross-provider" : model.id !== working.id ? "cross-model" : "same-model";
+	return [{ model: requested, mode }];
+}
 
 const Origin = StringEnum(ORIGIN_VALUES, {
 	description:
@@ -252,28 +272,15 @@ export default function auditTrailExtension(pi: ExtensionAPI) {
 			const current = ctx.model;
 
 			let candidates: ReviewCandidate[];
-			if (requested) {
-				const reviewModel = available.find((model) => `${model.provider}/${model.id}` === requested);
-				if (!reviewModel) {
-					ctx.ui.notify(`Review model unavailable: ${requested}`, "error");
-					return;
-				}
-				const mode: ReviewMode =
-					reviewModel.provider !== current?.provider
-						? "cross-provider"
-						: reviewModel.id !== current?.id
-							? "cross-model"
-							: "same-model";
-				// Explicitly requested model: pinned, no fallback candidates.
-				candidates = [{ model: requested, mode }];
-			} else {
-				// The checkpoint's mode is a durable independence claim; without
-				// working-model metadata every mode would be a guess.
-				if (!current) {
-					ctx.ui.notify("The working model is unknown; pass /audit-review provider/model", "error");
-					return;
-				}
-				candidates = buildReviewerCandidates(available, { provider: current.provider, id: current.id });
+			try {
+				candidates = selectPiReviewerCandidates(
+					available,
+					current ? { provider: current.provider, id: current.id } : undefined,
+					requested || undefined,
+				);
+			} catch (selectionError: any) {
+				ctx.ui.notify(selectionError?.message ?? String(selectionError), "error");
+				return;
 			}
 
 			const reviewer = createPiSubprocessReviewer({ exec: (command, cmdArgs, options) => pi.exec(command, cmdArgs, options) });

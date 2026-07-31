@@ -78,7 +78,7 @@ test("transcript-less review prompt and document target the TSV, diff, and repos
 	assert.match(prompt, /decision IDs and repository evidence/);
 	assert.match(prompt, /"VERDICT: approve"/);
 	assert.match(prompt, /"VERDICT: block"/);
-	assert.match(prompt, /A missing verdict is treated as block/);
+	assert.match(prompt, /A missing or malformed verdict makes this review attempt invalid/);
 	assert.doesNotMatch(prompt, /session transcript|session: /);
 	const document = buildReviewDocument({
 		model: "openai/reviewer",

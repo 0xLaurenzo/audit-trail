@@ -21,7 +21,7 @@ export function buildReviewPrompt(input: ReviewPromptInput): string {
 	const sessionLine = input.transcriptPath
 		? `\n${harness === "pi" ? "Pi session" : `${harness} session`}: ${input.transcriptPath}`
 		: "";
-	return `You are an independent decision-trail reviewer. Do not redo a general line-by-line code review. Read ${sources}, then report only what a human should scrutinize. Check that logged rows map to real actions, evidence supports claims, consequential forks or pivots were not omitted, verification was not overstated, and choices are general rather than merely sufficient for the observed case. Flag weak evidence, skipped verification, symptom patches, unjustified assumptions, scope creep, and unresolved uncertainty. Point to exact decision IDs and ${evidenceAnchor}. A concise "No flags" is valid. Never modify files.\n\nEnd your report with a verdict on its own final line: "VERDICT: approve" if the audit is trustworthy enough to publish and close, or "VERDICT: block" if any finding must be addressed and re-reviewed first. A missing verdict is treated as block.\n\nAudit log: ${input.logPath}${sessionLine}\nWorking directory: ${input.workingDirectory}`;
+	return `You are an independent decision-trail reviewer. Do not redo a general line-by-line code review. Read ${sources}, then report only what a human should scrutinize. Check that logged rows map to real actions, evidence supports claims, consequential forks or pivots were not omitted, verification was not overstated, and choices are general rather than merely sufficient for the observed case. Flag weak evidence, skipped verification, symptom patches, unjustified assumptions, scope creep, and unresolved uncertainty. Point to exact decision IDs and ${evidenceAnchor}. A concise "No flags" is valid. Never modify files.\n\nEnd your report with a verdict on its own final line: "VERDICT: approve" if the audit is trustworthy enough to publish and close, or "VERDICT: block" if any finding must be addressed and re-reviewed first. A missing or malformed verdict makes this review attempt invalid and causes another reviewer to be tried when fallback candidates are available.\n\nAudit log: ${input.logPath}${sessionLine}\nWorking directory: ${input.workingDirectory}`;
 }
 
 export interface ReviewDocumentInput {
@@ -46,9 +46,9 @@ export function buildReviewDocument(input: ReviewDocumentInput): string {
 
 /**
  * Extract the reviewer's explicit verdict only when it is the final non-empty
- * line and contains nothing except `VERDICT: approve|block`. Callers fail
- * closed when this returns undefined: embedded, ambiguous, or trailing-text
- * verdicts do not satisfy the prompt's certification contract.
+ * line and contains nothing except `VERDICT: approve|block`. Embedded,
+ * ambiguous, missing, or trailing-text verdicts return undefined; callers
+ * treat that as an invalid attempt and may advance to a fallback.
  */
 export function parseReviewVerdict(output: string): ReviewVerdict | undefined {
 	const finalLine = output.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).at(-1);

@@ -1,7 +1,24 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createPiSubprocessReviewer, extractFinalAssistantOutput } from "../src/adapters/pi-reviewer.ts";
+import { selectPiReviewerCandidates } from "../src/adapters/pi.ts";
 import type { CommandRunner } from "../src/core/ports.ts";
+
+test("Pi candidate selection requires working metadata even for an explicit model", () => {
+	const available = [
+		{ provider: "anthropic", id: "claude-opus-4-8" },
+		{ provider: "openai", id: "gpt-5.6-sol" },
+	];
+	assert.throws(
+		() => selectPiReviewerCandidates(available, undefined, "openai/gpt-5.6-sol"),
+		/Working model metadata is unavailable/,
+	);
+	assert.deepEqual(
+		selectPiReviewerCandidates(available, available[0], "openai/gpt-5.6-sol"),
+		[{ model: "openai/gpt-5.6-sol", mode: "cross-provider" }],
+		"explicit selection remains pinned to exactly one candidate",
+	);
+});
 
 test("Pi reviewer fails fast when the runtime is unavailable", async () => {
 	const calls: string[][] = [];

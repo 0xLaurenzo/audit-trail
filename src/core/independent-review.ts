@@ -37,28 +37,46 @@ export interface IndependentReviewResult {
 	mode: ReviewMode;
 }
 
-/** Single-line, bounded failure summary; never includes environment or credentials. */
-function sanitizeFailure(error: unknown): string {
-	const message = String((error as any)?.message ?? error).replace(/\s+/g, " ").trim();
-	return message.length > 300 ? `${message.slice(0, 300)}…` : message;
+/**
+ * Reduce arbitrary provider/runtime errors to safe diagnostic categories.
+ * Reviewer ports may include raw stderr in thrown errors, so never copy the
+ * original message into the aggregate where credentials, account metadata,
+ * request IDs, or other sensitive provider details could be exposed.
+ */
+export function summarizeReviewerFailure(error: unknown): string {
+	const message = String((error as any)?.message ?? error).toLowerCase();
+	if (/rate[ -]?limit|too many requests|\b429\b/.test(message)) return "reviewer was rate limited";
+	if (/quota|usage[ -]?limit|credit|billing|insufficient funds/.test(message)) return "reviewer usage or quota limit reached";
+	if (/timed? ?out|timeout|deadline exceeded|\betimedout\b/.test(message)) return "reviewer timed out";
+	if (/unauthori[sz]ed|forbidden|authentication|api[ _-]?key|credential|\b401\b|\b403\b/.test(message)) {
+		return "reviewer authentication failed";
+	}
+	if (/enoent|not found|is required.*unavailable|cannot find/.test(message)) return "reviewer runtime is unavailable";
+	if (/no (?:final assistant )?output|produced no output/.test(message)) return "reviewer produced no output";
+	if (/before agent_settled|incomplete|truncated|unexpected end/.test(message)) return "reviewer terminal output was incomplete";
+	if (/network|transport|connection|connect|socket|websocket|outage|unavailable|provider/.test(message)) {
+		return "reviewer provider or transport failed";
+	}
+	const exitCode = /(?:exited|exit) with code (\d+)/.exec(message)?.[1];
+	return exitCode ? `reviewer execution failed (exit ${exitCode})` : "reviewer execution failed";
 }
 
 /**
  * Independent review: the reviewer reads the TSV, the Git diff and repository
  * (or a harness transcript when one is supplied), and its explicit verdict is
  * recorded in the audit's review
- * checkpoint. A blocking verdict (or a missing one, which fails closed to
- * block) keeps publish and close gated until findings are addressed and the
- * audit is re-reviewed.
+ * checkpoint. A blocking verdict keeps publish and close gated until findings
+ * are addressed and the audit is re-reviewed; a missing or malformed verdict
+ * is an invalid attempt that advances to the next candidate.
  *
  * Candidates are attempted in order, at most once each. An attempt fails
- * exactly when the reviewer runtime throws (quota/rate limits, provider or
- * transport errors, timeouts, empty or incomplete terminal output — the
- * reviewer ports raise all of these); the next candidate is then tried, and
+ * when the reviewer runtime throws (quota/rate limits, provider or transport
+ * errors, timeouts, empty or incomplete terminal output) or returns output
+ * without a valid terminal verdict; the next candidate is then tried, and
  * failed attempts write no artifact and record no checkpoint. A completed
- * review is terminal regardless of verdict: `VERDICT: block` never triggers
- * fallback. If every candidate fails, the error summarizes each attempted
- * model and its sanitized failure.
+ * review with an explicit verdict is terminal regardless of verdict:
+ * `VERDICT: block` never triggers fallback. If every candidate fails, the
+ * error summarizes each attempted model using a safe failure category.
  */
 export async function runIndependentReview(input: IndependentReviewInput): Promise<IndependentReviewResult> {
 	const { workflow, reviewer, candidates } = input;
@@ -85,13 +103,21 @@ export async function runIndependentReview(input: IndependentReviewInput): Promi
 		try {
 			output = await reviewer.review({ prompt, model, mode, workingDirectory: workflow.root });
 		} catch (error) {
-			const sanitized = sanitizeFailure(error);
-			failures.push({ candidate, error: sanitized });
-			input.onAttemptFailure?.(candidate, sanitized);
+			const summary = summarizeReviewerFailure(error);
+			failures.push({ candidate, error: summary });
+			input.onAttemptFailure?.(candidate, summary);
 			continue;
 		}
-		// Fail closed: a review without an explicit verdict certifies nothing.
-		const verdict = parseReviewVerdict(output) ?? "block";
+		// A verdict is the terminal-output contract. Missing or malformed
+		// verdicts are invalid/incomplete attempts and must fall back; only an
+		// explicit block is a completed blocking review.
+		const verdict = parseReviewVerdict(output);
+		if (!verdict) {
+			const summary = "reviewer output had no valid terminal verdict";
+			failures.push({ candidate, error: summary });
+			input.onAttemptFailure?.(candidate, summary);
+			continue;
+		}
 		const stamp = new Date().toISOString().replace(/[:.]/g, "-");
 		const reviewPath = resolve(workflow.root, ".audit", `${state.task}.review.${stamp}.md`);
 		const document = buildReviewDocument({
