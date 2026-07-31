@@ -18,6 +18,13 @@ export interface InstallResult {
 export interface HarnessInstaller {
 	harness: string;
 	description: string;
+	/**
+	 * True for placeholder entries whose adapter has not shipped yet. Shipped
+	 * harnesses (the default) must declare capabilities and register a
+	 * conformance driver; the registry-completeness test enforces this flag,
+	 * not description wording.
+	 */
+	planned?: boolean;
 	install(ctx: InstallContext): Promise<InstallResult>;
 }
 
@@ -229,6 +236,7 @@ function plannedInstaller(harness: string, issue: string): HarnessInstaller {
 	return {
 		harness,
 		description: `${harness} support ships in ${issue}`,
+		planned: true,
 		async install() {
 			return { harness, changed: false, message: `${harness} support ships in ${issue}; nothing installed` };
 		},

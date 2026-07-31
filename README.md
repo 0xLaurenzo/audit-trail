@@ -48,13 +48,31 @@ pi -e /path/to/audit-trail
 
 ## Development
 
-Run the dependency-free core test suite with Node.js 22 or newer:
+Run the full check (syntax checks plus every test suite) with Node.js 22 or newer:
 
 ```bash
-npm test
+npm run typecheck   # full static type-check (tsc --noEmit)
+npm run check       # syntax checks + npm test
+npm test            # all test suites
 ```
 
-The core modules depend only on Node.js and explicit ports from `src/core/ports.ts`; they do not import Pi packages. Adapter-specific behavior belongs under `src/adapters/`.
+The core modules depend only on Node.js and explicit ports from `src/core/ports.ts`; they do not import Pi packages. Adapter-specific behavior belongs under `src/adapters/`. CI (`.github/workflows/ci.yml`) runs install, type-check, and all tests on every pull request; make that workflow a required branch-protection check.
+
+### Testing model
+
+Testing happens in two layers:
+
+- **Core unit tests** (`test/audit-store.test.ts`, `test/workflow.test.ts`, `test/independent-review.test.ts`, ...) exercise the shared, harness-neutral behavior once: storage, locking, review fallback, publication, gating.
+- **Harness conformance tests** (`test/harness-conformance.test.ts`) run one shared behavior contract against every shipped harness through its real adapter boundary — registered Pi commands/tools/hooks, OpenCode plugin tools/hooks, and Claude hooks plus the MCP server. Only external systems (Git, GitHub, reviewer CLIs) are simulated. A second capability-gated contract covers catalog-driven reviewer fallback for harnesses that support model discovery.
+
+Each shipped harness declares its capabilities in `src/harness/capabilities.ts`. A capability is either backed by passing contract tests or declared unsupported, in which case its contract tests are *skipped with a visible reason* — never silently omitted. Harness-specific suites (JSON stream parsing, installers, packaging smoke tests) remain separate because they test genuinely platform-specific behavior.
+
+### Adding a new harness
+
+1. Implement the adapter under `src/adapters/` and its installer in `src/install/installers.ts`.
+2. Declare its capabilities in `src/harness/capabilities.ts` (`SHIPPED_HARNESSES` + `HARNESS_CAPABILITIES`). Declare only what the harness truthfully supports.
+3. Add a conformance driver in `test/helpers/harness-drivers.ts` (`CONFORMANCE_DRIVERS`) that drives the real adapter boundary with simulated externals.
+4. Run `npm run check` — the registry-completeness test fails until capabilities, driver, and installer agree, and the contract suite then runs your adapter automatically.
 
 ## Shared worktree state
 

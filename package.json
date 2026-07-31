@@ -19,6 +19,7 @@
   },
   "scripts": {
     "test": "node --experimental-strip-types --test test/*.test.ts",
+    "typecheck": "tsc --noEmit",
     "check": "node --experimental-strip-types --check src/adapters/pi.ts && node --experimental-strip-types --check src/adapters/opencode.ts && node --experimental-strip-types --check src/cli/main.ts && npm test"
   },
   "dependencies": {
@@ -30,13 +31,26 @@
     "typebox": "*"
   },
   "peerDependenciesMeta": {
-    "@earendil-works/pi-ai": { "optional": true },
-    "@earendil-works/pi-coding-agent": { "optional": true },
-    "typebox": { "optional": true }
+    "@earendil-works/pi-ai": {
+      "optional": true
+    },
+    "@earendil-works/pi-coding-agent": {
+      "optional": true
+    },
+    "typebox": {
+      "optional": true
+    }
   },
   "pi": {
     "extensions": [
       "./src/adapters/pi.ts"
     ]
+  },
+  "devDependencies": {
+    "@earendil-works/pi-ai": "0.82.1",
+    "@earendil-works/pi-coding-agent": "0.82.1",
+    "@types/node": "^26.1.2",
+    "typebox": "1.1.38",
+    "typescript": "^7.0.2"
   }
 }

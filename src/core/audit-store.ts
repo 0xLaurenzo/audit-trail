@@ -5,7 +5,9 @@ import { cleanCell } from "./paths.ts";
 import { directMutationQueue, type MutationQueue } from "./ports.ts";
 import {
 	AUDIT_HEADER,
+	CONFIDENCE_VALUES,
 	ORIGIN_VALUES,
+	RESULT_VALUES,
 	type AuditRow,
 	type ConfidenceValue,
 	type NewAuditRow,
@@ -114,6 +116,19 @@ export class AuditStore {
 
 	appendRow(logPath: string, row: NewAuditRow): Promise<AuditRow> {
 		return this.mutationQueue(logPath, async () => {
+			// Enum fields are validated at this single chokepoint so every harness
+			// boundary shares the same rejection: a row that bypassed harness-side
+			// schema validation would otherwise poison the TSV and make every
+			// subsequent parseRows read fail.
+			if (!(ORIGIN_VALUES as readonly string[]).includes(row.origin)) {
+				throw new Error(`Invalid decision origin: ${row.origin}. Expected one of: ${ORIGIN_VALUES.join(", ")}`);
+			}
+			if (!(CONFIDENCE_VALUES as readonly string[]).includes(row.confidence)) {
+				throw new Error(`Invalid decision confidence: ${row.confidence}. Expected one of: ${CONFIDENCE_VALUES.join(", ")}`);
+			}
+			if (!(RESULT_VALUES as readonly string[]).includes(row.result)) {
+				throw new Error(`Invalid decision result: ${row.result}. Expected one of: ${RESULT_VALUES.join(", ")}`);
+			}
 			await mkdir(dirname(logPath), { recursive: true });
 			const rows = await readRows(logPath);
 			if (row.supersedes && !rows.some((candidate) => candidate.id === row.supersedes)) {
