@@ -26,7 +26,8 @@ test("AuditStore creates the canonical header and appends compatible rows", asyn
 	try {
 		const path = join(dir, "audit.tsv");
 		const store = new AuditStore(undefined, () => new Date("2026-01-02T03:04:05.000Z"));
-		await store.ensureLog(path);
+		await store.createLog(path);
+		await assert.rejects(() => store.createLog(path), /already exists/);
 		const first = await store.appendRow(path, { ...baseRow, decision: "=unsafe\tvalue\ncontinued" });
 		const second = await store.appendRow(path, { ...baseRow, decision: "Replacement", supersedes: first.id });
 

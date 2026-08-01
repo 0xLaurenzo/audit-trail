@@ -112,22 +112,6 @@ export class AuditStore {
 		});
 	}
 
-	ensureLog(logPath: string): Promise<void> {
-		return this.mutationQueue(logPath, async () => {
-			await mkdir(dirname(logPath), { recursive: true });
-			let existing = "";
-			try {
-				existing = await readFile(logPath, "utf8");
-			} catch (error: any) {
-				if (error?.code !== "ENOENT") throw error;
-			}
-			if (!existing) await writeFileAtomic(logPath, `${AUDIT_HEADER}\n`);
-			else if (existing.split(/\r?\n/, 1)[0] !== AUDIT_HEADER) {
-				throw new Error(`Unexpected audit header in ${logPath}`);
-			}
-		});
-	}
-
 	appendRow(logPath: string, row: NewAuditRow): Promise<AuditRow> {
 		return this.mutationQueue(logPath, async () => {
 			// Enum fields are validated at this single chokepoint so every harness

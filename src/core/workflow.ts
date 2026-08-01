@@ -141,6 +141,12 @@ export class AuditWorkflow {
 		return { task: safeSlug(taskName, this.now()), taskName };
 	}
 
+	private collisionError(taskName: string, existingName: string, task: string): Error {
+		return new Error(
+			`Task name collision: ${JSON.stringify(taskName)} and ${JSON.stringify(existingName)} both map to ${task}.`,
+		);
+	}
+
 	private assertTaskIdentity(file: ActiveAuditFile, task: string, taskName: string, operation: string): void {
 		if (file.task !== task) {
 			throw new Error(`Cannot ${operation} ${taskName}: the audit task is ${file.taskName ?? file.task}.`);
@@ -148,11 +154,7 @@ export class AuditWorkflow {
 		if (!file.taskName) {
 			throw new Error(`Cannot ${operation} legacy audit ${file.task}: its original task name was not recorded.`);
 		}
-		if (file.taskName !== taskName) {
-			throw new Error(
-				`Task name collision: ${JSON.stringify(taskName)} and ${JSON.stringify(file.taskName)} both map to ${task}.`,
-			);
-		}
+		if (file.taskName !== taskName) throw this.collisionError(taskName, file.taskName, task);
 	}
 
 	private async retryProvenance(
@@ -176,13 +178,14 @@ export class AuditWorkflow {
 		return this.lock(async () => {
 			const existing = await readActiveAudit(this.root);
 			if (existing) {
-				if (existing.task === task && existing.taskName && existing.taskName !== taskName) {
-					this.assertTaskIdentity(existing, task, taskName, "start");
+				if (existing.task === task && existing.taskName === taskName) {
+					throw new Error(`Audit ${JSON.stringify(taskName)} is already active. Use resume instead of start.`);
+				}
+				if (existing.task === task && existing.taskName) {
+					throw this.collisionError(taskName, existing.taskName, task);
 				}
 				throw new Error(
-					existing.task === task && existing.taskName === taskName
-						? `Audit ${JSON.stringify(taskName)} is already active. Use resume instead of start.`
-						: `Another audit is already active in this worktree: ${existing.taskName ?? existing.task}. Close it before starting ${taskName}.`,
+					`Another audit is already active in this worktree: ${existing.taskName ?? existing.task}. Close it before starting ${taskName}.`,
 				);
 			}
 
@@ -211,13 +214,9 @@ export class AuditWorkflow {
 			} catch (error: any) {
 				provenanceError = String(error?.message ?? error);
 			}
-			try {
-				await this.store.createLog(this.absolute(logRel));
-			} catch (error) {
-				// Provenance may have been captured immediately before a racing log
-				// appeared. Leave both artifacts visible and fail rather than attach.
-				throw error;
-			}
+			// If a racing log appeared after the orphan check, createLog fails and
+			// leaves both artifacts visible rather than attaching to them.
+			await this.store.createLog(this.absolute(logRel));
 			const file: ActiveAuditFile = {
 				version: 2,
 				task,
