@@ -344,6 +344,12 @@ test("staged Codex plugin launches the installed audit-trail binary without chec
 			await cp(join(checkout, path), join(packageRoot, path), { recursive: true });
 		}
 		for (const file of ["package.json", ".mcp.json"]) await cp(join(checkout, file), join(packageRoot, file));
+		// Stage only the declared runtime dependency needed by the shared CLI
+		// import graph; never fall back to checkout node_modules.
+		await mkdir(join(packageRoot, "node_modules"), { recursive: true });
+		await cp(join(checkout, "node_modules", "jsonc-parser"), join(packageRoot, "node_modules", "jsonc-parser"), {
+			recursive: true,
+		});
 		await codexInstaller.install({ home, packageRoot, runner: codexCliRunner() });
 		const linkedRoot = resolve(join(home, "plugins"), await readlink(join(home, "plugins", "audit-trail")));
 		const mcp = JSON.parse(await readFile(join(linkedRoot, ".mcp.json"), "utf8"));

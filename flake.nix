@@ -26,7 +26,7 @@
             pname = "pi-audit-trail";
             version = packageJson.version;
             src = self;
-            npmDepsHash = "sha256-c3tSPyi07/MycXS46rU5oGs1v5YEBwrySSgOcD5ERRM=";
+            npmDepsHash = "sha256-pOZan3fyaL9RRRUfA0dC1k8at90nJ4EWW2HwI1DT5j8=";
             npmInstallFlags = [ "--omit=dev" ];
 
             dontNpmBuild = true;
@@ -43,11 +43,13 @@
               cp -R hooks "$out/share/pi-audit-trail/hooks"
               cp -R skills "$out/share/pi-audit-trail/skills"
               cp .mcp.json "$out/share/pi-audit-trail/.mcp.json"
-              # The OpenCode adapter's runtime graph is the plugin tool helper
-              # plus zod. Keep these beside package.json so Bun's file-plugin
-              # import resolves from the immutable installed package root.
+              # Keep declared runtime dependencies beside package.json so
+              # immutable CLI/plugin entry points resolve without the checkout.
+              # OpenCode needs its plugin helper plus zod; the Pi installer uses
+              # jsonc-parser for localized settings edits.
               cp -R node_modules/@opencode-ai/plugin "$out/share/pi-audit-trail/node_modules/@opencode-ai/plugin"
               cp -R node_modules/zod "$out/share/pi-audit-trail/node_modules/zod"
+              cp -R node_modules/jsonc-parser "$out/share/pi-audit-trail/node_modules/jsonc-parser"
               find "$out/share/pi-audit-trail/src" "$out/share/pi-audit-trail/node_modules" \
                 "$out/share/pi-audit-trail/.claude-plugin" "$out/share/pi-audit-trail/claude" \
                 "$out/share/pi-audit-trail/.codex-plugin" "$out/share/pi-audit-trail/hooks" \
