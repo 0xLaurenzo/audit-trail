@@ -11,7 +11,7 @@
  */
 
 /** Harnesses with shipped adapters; planned harnesses are excluded until they ship. */
-export const SHIPPED_HARNESSES = ["pi", "opencode", "claude"] as const;
+export const SHIPPED_HARNESSES = ["pi", "opencode", "claude", "codex"] as const;
 
 export type ShippedHarness = (typeof SHIPPED_HARNESSES)[number];
 
@@ -56,6 +56,16 @@ export const HARNESS_CAPABILITIES: Record<ShippedHarness, HarnessCapabilities> =
 		// The claude CLI reviewer only runs anthropic/<model-id> models and
 		// rejects cross-provider mode, so catalog-driven tier fallback cannot
 		// be implemented truthfully; reviews are explicit model + mode.
+		automaticReviewerSelection: false,
+		modelDiscovery: false,
+		transcriptSupport: true,
+		systemPromptInjection: true,
+		managedFileGuard: true,
+	},
+	codex: {
+		version: 1,
+		// Codex exec can use the captured OpenAI working model or an explicit
+		// OpenAI model, but exposes no provider/model catalog for tiered fallback.
 		automaticReviewerSelection: false,
 		modelDiscovery: false,
 		transcriptSupport: true,

@@ -1,6 +1,6 @@
-# Audit trail extension
+# Audit trail
 
-A pi extension for reviewing consequential agent choices instead of reconstructing them from a large diff. Harness-neutral audit behavior lives under `src/core/`; the Pi lifecycle, commands, tools, and UI are isolated in `src/adapters/pi.ts`, which is the package entry point.
+A cross-harness extension for reviewing consequential agent choices instead of reconstructing them from a large diff. Harness-neutral audit behavior lives under `src/core/`; Pi, Claude Code, Codex, and OpenCode adapters expose the same worktree workflow through their native extension, plugin, hook, skill, and MCP surfaces.
 
 ## Install with Nix
 
@@ -63,7 +63,7 @@ The core modules depend only on Node.js and explicit ports from `src/core/ports.
 Testing happens in two layers:
 
 - **Core unit tests** (`test/audit-store.test.ts`, `test/workflow.test.ts`, `test/independent-review.test.ts`, ...) exercise the shared, harness-neutral behavior once: storage, locking, review fallback, publication, gating.
-- **Harness conformance tests** (`test/harness-conformance.test.ts`) run one shared behavior contract against every shipped harness through its real adapter boundary — registered Pi commands/tools/hooks, OpenCode plugin tools/hooks, and Claude hooks plus the MCP server. Only external systems (Git, GitHub, reviewer CLIs) are simulated. A second capability-gated contract covers catalog-driven reviewer fallback for harnesses that support model discovery.
+- **Harness conformance tests** (`test/harness-conformance.test.ts`) run one shared behavior contract against every shipped harness through its real adapter boundary — registered Pi commands/tools/hooks, OpenCode plugin tools/hooks, and Claude/Codex hooks plus the MCP server. Only external systems (Git, GitHub, reviewer CLIs) are simulated. A second capability-gated contract covers catalog-driven reviewer fallback for harnesses that support model discovery.
 
 Each shipped harness declares its capabilities in `src/harness/capabilities.ts`. A capability is either backed by passing contract tests or declared unsupported, in which case its contract tests are *skipped with a visible reason* — never silently omitted. Harness-specific suites (JSON stream parsing, installers, packaging smoke tests) remain separate because they test genuinely platform-specific behavior.
 
@@ -110,7 +110,7 @@ CLI rows are attributed as `cli/<user>@<host>` in the TSV `session` cell. `audit
 
 ## Installer
 
-`audit-trail install <pi|claude|codex|opencode|all>` configures harnesses idempotently from a registry. Today `pi` registers the extension entry point in `~/.pi/agent/settings.json` (stale audit-trail entries — including pre-0.4 `index.ts` paths — are replaced rather than duplicated, and unrelated settings are preserved), `claude` links the Claude Code plugin described below, and `opencode` installs the plugin shim and `/audit-*` commands described below; `codex` is a registry placeholder until its adapter issue lands. Declaratively managed settings (for example home-manager) fail with a clear error — add the extension path in your Nix configuration instead.
+`audit-trail install <pi|claude|codex|opencode|all>` configures harnesses idempotently from a registry. `pi` registers the extension entry point in `~/.pi/agent/settings.json`, `claude` links the Claude Code plugin, `codex` installs the Codex plugin through the personal local marketplace, and `opencode` installs its plugin shim and `/audit-*` commands. Installers preserve unrelated configuration and reject same-name paths or entries they cannot prove they own. Declaratively managed settings (for example home-manager) fail with a clear error — add equivalent declarations in your configuration instead.
 
 ## Claude Code
 
@@ -132,6 +132,24 @@ The plugin provides:
 `audit_review` runs the reviewer through non-interactive `claude -p` with a read-only tool allowlist, `--strict-mcp-config` (the reviewer cannot reach this or any MCP server), and no session persistence. Claude-run reviewers are Anthropic models, so pass the reviewer as `anthropic/<model-id>` and record `cross-model` or `same-model` truthfully — the `/audit-trail:audit-review` command encodes this. The hook-captured session transcript is included in the review when readable; otherwise the review falls back to the TSV, Git diff, and repository.
 
 Trust implications: enabling the plugin means Claude Code runs the plugin's hook commands at session start and before `Write`/`Edit` calls, and starts the bundled MCP server, all with your user privileges from the linked package. MCP tool calls remain subject to Claude Code's per-server permission approval (pre-authorize `mcp__plugin_audit-trail_audit-trail` in allowed tools for headless use).
+
+## Codex
+
+The package is also a Codex plugin: `.codex-plugin/plugin.json` bundles the `$audit-trail` Agent Skill, `hooks/hooks.json`, and `.mcp.json`. Install it with:
+
+```bash
+audit-trail install codex
+```
+
+The installer validates the manifest, manages only `~/plugins/audit-trail` and the `audit-trail` entry in `~/.agents/plugins/marketplace.json`, then runs `codex plugin add audit-trail@<marketplace>`. Reinstalling the same package path is idempotent and preserves unrelated marketplace metadata and plugin entries. A different symlink target, non-symlink path, or same-name marketplace entry with another source is rejected rather than replaced.
+
+Start a **new Codex thread** after installation. Open `/hooks`, inspect the plugin source, and trust the `SessionStart` and `PreToolUse` definitions; installing or enabling a plugin never grants hook trust automatically, and changed hook definitions require approval again. Project-local `.codex/` hooks additionally require project trust, although audit-trail's hooks are plugin-bundled. Use `/skills` or `$audit-trail` for explicit skill invocation; Codex can also activate the skill from its description.
+
+The plugin provides the shared `audit_start`, `audit_decision`, `audit_status`, `audit_review`, `audit_publish`, and `audit_close` MCP tools. `SessionStart` records `{session ID, optional transcript path, model, worktree}` under `$XDG_STATE_HOME/audit-trail/codex/`, injects guidance for an active audit, and attributes decisions as `codex/<session-id>`. The transcript path is supplementary only: Codex does not promise a stable transcript format, and missing or unreadable transcripts fall back to TSV, Git diff, and repository evidence. Concurrent sessions in one worktree use last-writer-wins attribution. Session state has no expiry or cleanup: if a later `SessionStart` hook is untrusted, skipped, or fails to run, its predecessor's session ID and model may be reused indefinitely. Only absent or unreadable state falls back to `codex/<user>@<host>` attribution; review without captured model metadata fails instead of guessing a mode.
+
+A `PreToolUse` hook protects extension-managed audit files from direct `apply_patch`/`Edit`/`Write` changes and fails closed over `.audit/` when state is unreadable. This is a guardrail for direct edit tools, not a shell sandbox. Plugin hooks and the local MCP server run with your user privileges, so inspect the linked package and approve MCP tools according to your Codex policy.
+
+`audit_review` runs an isolated child through `codex exec --ignore-user-config --ephemeral --sandbox read-only`. Omitting `model` uses the hook-captured working model and records `same-model`; specifying a different OpenAI model records `cross-model` and remains pinned if it fails. Codex does not claim cross-provider review or catalog-driven model discovery. If `SessionStart` did not capture a model, review fails clearly rather than guessing provenance.
 
 ## OpenCode
 

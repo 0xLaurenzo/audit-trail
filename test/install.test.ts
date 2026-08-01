@@ -70,14 +70,12 @@ test("pi installer creates settings from scratch", async () => {
 	}
 });
 
-test("harness registry resolves targets and rejects unknown ones", async () => {
+test("harness registry resolves shipped targets and rejects unknown ones", () => {
 	assert.deepEqual(
 		selectInstallers("all").map((installer) => installer.harness),
 		["pi", "claude", "codex", "opencode"],
 	);
 	assert.equal(selectInstallers("claude")[0].harness, "claude");
-	const planned = await selectInstallers("codex")[0].install({ home: "/none", packageRoot: "/none" });
-	assert.equal(planned.changed, false);
-	assert.match(planned.message, /issue #8/);
+	assert.equal(selectInstallers("codex")[0].planned, undefined, "Codex is a shipped installer, not a placeholder");
 	assert.throws(() => selectInstallers("zed"), /Unknown harness: zed/);
 });

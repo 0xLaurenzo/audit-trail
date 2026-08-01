@@ -3,10 +3,13 @@
   "version": "0.3.0",
   "private": true,
   "type": "module",
-  "description": "Append-only decision auditing and independent review for the pi coding agent",
+  "description": "Cross-harness append-only decision auditing and independent review for coding agents",
   "keywords": [
     "pi-package",
     "pi-coding-agent",
+    "codex",
+    "claude-code",
+    "opencode",
     "audit-trail",
     "decision-log"
   ],

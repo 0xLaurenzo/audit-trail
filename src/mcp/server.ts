@@ -5,6 +5,7 @@ import { publishRawAudit } from "../core/github-publisher.ts";
 import { runIndependentReview } from "../core/independent-review.ts";
 import type { CommandRunner, ReviewerPort, SessionIdentity } from "../core/ports.ts";
 import { formatBlockingReviewMessage } from "../core/review.ts";
+import type { ReviewCandidate } from "../core/reviewer-candidates.ts";
 import { formatStatusLines } from "../core/status.ts";
 import { reviewBlocker } from "../core/validation.ts";
 import {
@@ -30,6 +31,11 @@ interface JsonRpcMessage {
 
 interface ToolDefinition {
 	name: string;
+	description: string;
+	inputSchema: object;
+}
+
+export interface ReviewToolDefinition {
 	description: string;
 	inputSchema: object;
 }
@@ -137,6 +143,10 @@ export interface McpServerOptions {
 	session: SessionIdentity | (() => Promise<SessionIdentity>);
 	/** Optional harness transcript for audit_review; omit for transcript-less review. */
 	reviewTranscriptPath?: () => Promise<string | undefined>;
+	/** Harness-specific truthful candidate derivation; default requires explicit model + mode. */
+	reviewCandidates?: (args: Record<string, unknown>) => Promise<ReviewCandidate[]>;
+	/** Matching audit_review schema when reviewCandidates changes the default arguments. */
+	reviewTool?: ReviewToolDefinition;
 	version?: string;
 }
 
@@ -150,6 +160,8 @@ export class McpAuditServer {
 	private readonly reviewer: ReviewerPort;
 	private readonly sessionSource: SessionIdentity | (() => Promise<SessionIdentity>);
 	private readonly reviewTranscriptPath?: () => Promise<string | undefined>;
+	private readonly reviewCandidates?: (args: Record<string, unknown>) => Promise<ReviewCandidate[]>;
+	private readonly tools: ToolDefinition[];
 	private readonly version: string;
 
 	constructor(options: McpServerOptions) {
@@ -158,6 +170,12 @@ export class McpAuditServer {
 		this.reviewer = options.reviewer;
 		this.sessionSource = options.session;
 		this.reviewTranscriptPath = options.reviewTranscriptPath;
+		this.reviewCandidates = options.reviewCandidates;
+		this.tools = options.reviewTool
+			? TOOLS.map((tool) =>
+					tool.name === "audit_review" ? { name: tool.name, ...options.reviewTool! } : tool,
+				)
+			: TOOLS;
 		this.version = options.version ?? "0.0.0";
 	}
 
@@ -199,17 +217,22 @@ export class McpAuditServer {
 				return formatStatusLines(state, rows, sha, this.workflow.root).join("\n");
 			}
 			case "audit_review": {
-				const model = requireString(args, "model");
-				if (!model.includes("/")) throw new Error("model must be provider/model");
-				// No default: the server cannot verify the reviewer's relation to the
-				// working model, and a guessed mode would record false independence
-				// claims in the checkpoint (mirrors the CLI's required --mode).
-				const mode = oneOf(REVIEW_MODES, requireString(args, "mode"), "mode") as ReviewMode;
+				let candidates: ReviewCandidate[];
+				if (this.reviewCandidates) {
+					candidates = await this.reviewCandidates(args);
+					if (!candidates.length) throw new Error("No reviewer candidates are available.");
+				} else {
+					const model = requireString(args, "model");
+					if (!model.includes("/")) throw new Error("model must be provider/model");
+					// No default: the generic server cannot verify the reviewer's relation
+					// to the working model, so the caller must state it explicitly.
+					const mode = oneOf(REVIEW_MODES, requireString(args, "mode"), "mode") as ReviewMode;
+					candidates = [{ model, mode }];
+				}
 				const review = await runIndependentReview({
 					workflow: this.workflow,
 					reviewer: this.reviewer,
-					// Explicitly requested model and mode: pinned, no fallback candidates.
-					candidates: [{ model, mode }],
+					candidates,
 					// The review artifact names the harness that served this call.
 					harnessName: (await this.session()).harness,
 					transcriptPath: await this.reviewTranscriptPath?.(),
@@ -275,7 +298,7 @@ export class McpAuditServer {
 				case "ping":
 					return { jsonrpc: "2.0", id, result: {} };
 				case "tools/list":
-					return { jsonrpc: "2.0", id, result: { tools: TOOLS } };
+					return { jsonrpc: "2.0", id, result: { tools: this.tools } };
 				case "tools/call": {
 					const name = params?.name;
 					if (typeof name !== "string") {

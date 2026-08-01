@@ -1,0 +1,31 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${PLUGIN_ROOT}/bin/audit-trail\" codex-hook",
+            "timeout": 15,
+            "statusMessage": "Recording audit-trail session state...",
+            "additionalContextLimit": 2000
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "apply_patch|Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${PLUGIN_ROOT}/bin/audit-trail\" codex-hook",
+            "timeout": 15,
+            "statusMessage": "Protecting audit-trail managed files..."
+          }
+        ]
+      }
+    ]
+  }
+}

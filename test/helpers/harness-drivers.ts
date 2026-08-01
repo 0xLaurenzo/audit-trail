@@ -11,6 +11,8 @@ import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { handleClaudeHook } from "../../src/adapters/claude-hook.ts";
 import { createClaudeSubprocessReviewer } from "../../src/adapters/claude-reviewer.ts";
+import { handleCodexHook } from "../../src/adapters/codex-hook.ts";
+import { codexMcpOptions } from "../../src/adapters/codex-mcp.ts";
 import { AuditTrailPlugin } from "../../src/adapters/opencode.ts";
 import auditTrailExtension from "../../src/adapters/pi.ts";
 import type { CommandRunner, ExecResult, ReviewModel } from "../../src/core/ports.ts";
@@ -445,6 +447,101 @@ export const createClaudeDriver: DriverFactory = async (root) => {
 	};
 };
 
+/** Codex driver: shipped hooks plus the Codex-specialized MCP boundary. */
+export const createCodexDriver: DriverFactory = async (root) => {
+	const stateHome = await mkdtemp(join(tmpdir(), "audit-codex-contract-state-"));
+	const env = { XDG_STATE_HOME: stateHome } as NodeJS.ProcessEnv;
+	const attempted: string[] = [];
+	const reviewerScript: Record<string, ReviewerBehavior> = {};
+	const github = createGitHubStub(root);
+	const gitRunner: CommandRunner = { exec: async (command, args) => github.handle(command, args) ?? failGit };
+	const codexRunner: CommandRunner = {
+		exec: async (command, args) => {
+			if (command !== "codex") return failGit;
+			if (args[0] === "--version") return { code: 0, stdout: "0.0.0-contract", stderr: "" };
+			const model = `openai/${args[args.indexOf("--model") + 1]}`;
+			attempted.push(model);
+			const behavior = reviewerScript[model] ?? "fail";
+			if (behavior === "fail") return { code: 1, stdout: "", stderr: SENSITIVE_STDERR };
+			const outputPath = args[args.indexOf("--output-last-message") + 1];
+			await writeFile(outputPath, `${behaviorText(behavior)}\n`, "utf8");
+			return { code: 0, stdout: "", stderr: "" };
+		},
+	};
+	const workflow = new AuditWorkflow(root, gitRunner);
+	const server = new McpAuditServer({
+		workflow,
+		runner: gitRunner,
+		...codexMcpOptions(root, codexRunner, "codex-contract-fallback", env),
+	});
+	const hook = (payload: object) => handleCodexHook(JSON.stringify(payload), () => gitRunner, env);
+	await hook({
+		hook_event_name: "SessionStart",
+		session_id: "codex-contract-session",
+		model: "gpt-5.6-sol",
+		cwd: root,
+	});
+	const outcome = async (operation: () => Promise<string>): Promise<OperationOutcome> => {
+		try {
+			return { completed: true, message: await operation() };
+		} catch (error: any) {
+			return { completed: false, message: String(error?.message ?? error) };
+		}
+	};
+
+	return {
+		harness: "codex",
+		explicitReviewModel: "openai/gpt-5.6-sol",
+		reviewerScript,
+		github,
+		async start(task) {
+			await server.call("audit_start", { task });
+		},
+		async decide(overrides) {
+			await server.call("audit_decision", { ...DEFAULT_DECISION, ...overrides });
+		},
+		async status() {
+			return server.call("audit_status", {});
+		},
+		review: (model) => outcome(() => server.call("audit_review", { model: model ?? "" })),
+		publish: () => outcome(() => server.call("audit_publish", {})),
+		close: () => outcome(() => server.call("audit_close", {})),
+		async guidance() {
+			const result = await hook({
+				hook_event_name: "SessionStart",
+				session_id: "codex-contract-session",
+				model: "gpt-5.6-sol",
+				cwd: root,
+			});
+			if (!result.output) return undefined;
+			return JSON.parse(result.output).hookSpecificOutput?.additionalContext as string | undefined;
+		},
+		async attemptWrite(path) {
+			const result = await hook({
+				hook_event_name: "PreToolUse",
+				tool_name: "apply_patch",
+				tool_input: { command: `*** Begin Patch\n*** Update File: ${path}\n*** End Patch` },
+				cwd: root,
+			});
+			if (!result.output) return { blocked: false };
+			const decision = JSON.parse(result.output).hookSpecificOutput;
+			return decision?.permissionDecision === "deny"
+				? { blocked: true, reason: decision.permissionDecisionReason }
+				: { blocked: false };
+		},
+		attemptedModels: () => [...attempted],
+		async setWorkingModel() {
+			throw new Error("codex does not support model discovery");
+		},
+		async setCatalog() {
+			throw new Error("codex does not support model discovery");
+		},
+		async dispose() {
+			await rm(stateHome, { recursive: true, force: true });
+		},
+	};
+};
+
 /**
  * Conformance driver registry. The registry-completeness test fails when a
  * shipped harness has no driver here, so new adapters cannot ship without
@@ -454,6 +551,7 @@ export const CONFORMANCE_DRIVERS: Record<ShippedHarness, DriverFactory> = {
 	pi: createPiDriver,
 	opencode: createOpencodeDriver,
 	claude: createClaudeDriver,
+	codex: createCodexDriver,
 };
 
 /** Corrupt the active-audit state to exercise fail-closed guard behavior. */

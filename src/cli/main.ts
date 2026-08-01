@@ -24,6 +24,8 @@ import { AuditWorkflow, resolveWorktreeRoot } from "../core/workflow.ts";
 import { handleClaudeHook } from "../adapters/claude-hook.ts";
 import { createClaudeSubprocessReviewer } from "../adapters/claude-reviewer.ts";
 import { readClaudeSessionState } from "../adapters/claude-session.ts";
+import { handleCodexHook } from "../adapters/codex-hook.ts";
+import { codexMcpOptions } from "../adapters/codex-mcp.ts";
 import { createPiSubprocessReviewer } from "../adapters/pi-reviewer.ts";
 import { packageRootFromModule, selectInstallers } from "../install/installers.ts";
 import { McpAuditServer, serveStdio, type McpServerOptions } from "../mcp/server.ts";
@@ -40,8 +42,9 @@ Commands:
   publish [pr]       Create or update readable audit comments with canonical TSV
   close              Close the audit once resolved and reviewed
   mcp                Serve the audit tools as a local MCP server on stdio
-                     (--harness claude attributes rows from Claude hook state)
+                     (--harness claude|codex uses that harness's hook state)
   claude-hook        Handle a Claude Code hook payload on stdin (plugin use)
+  codex-hook         Handle a Codex hook payload on stdin (plugin use)
   install <target>   Configure a harness: pi | claude | codex | opencode | all
   help               Show this help
 
@@ -239,7 +242,10 @@ async function commandMcp(
 	const { values } = parseArgs({ args, options: { harness: { type: "string" } }, strict: true });
 	const harness = values.harness ?? "mcp";
 	const runner = processRunner(workflow.root);
-	let options: Pick<McpServerOptions, "session" | "reviewer" | "reviewTranscriptPath">;
+	let options: Pick<
+		McpServerOptions,
+		"session" | "reviewer" | "reviewTranscriptPath" | "reviewCandidates" | "reviewTool"
+	>;
 	if (harness === "claude") {
 		// Claude Code passes session metadata only to hooks; the SessionStart
 		// hook records it and this long-lived server re-reads it per call so a
@@ -262,13 +268,15 @@ async function commandMcp(
 				}
 			},
 		};
+	} else if (harness === "codex") {
+		options = codexMcpOptions(workflow.root, runner, cliSession().id);
 	} else if (harness === "mcp") {
 		options = {
 			session: { harness: "mcp", id: cliSession().id },
 			reviewer: dependencies.createReviewer(runner),
 		};
 	} else {
-		io.err(`Unknown --harness: ${harness}. Expected one of: mcp, claude`);
+		io.err(`Unknown --harness: ${harness}. Expected one of: mcp, claude, codex`);
 		return 1;
 	}
 	const server = new McpAuditServer({ workflow, runner, ...options });
@@ -277,10 +285,12 @@ async function commandMcp(
 	return 0;
 }
 
-async function commandClaudeHook(io: CliIo): Promise<number> {
+async function commandHook(harness: "claude" | "codex", io: CliIo): Promise<number> {
 	const chunks: Buffer[] = [];
 	for await (const chunk of process.stdin) chunks.push(chunk as Buffer);
-	const result = await handleClaudeHook(Buffer.concat(chunks).toString("utf8"), processRunner);
+	const input = Buffer.concat(chunks).toString("utf8");
+	const result =
+		harness === "claude" ? await handleClaudeHook(input, processRunner) : await handleCodexHook(input, processRunner);
 	if (result.output) io.out(result.output);
 	if (result.error) io.err(result.error);
 	return result.exitCode;
@@ -291,7 +301,7 @@ async function commandInstall(target: string, io: CliIo): Promise<number> {
 		io.err("Usage: audit-trail install <pi|claude|codex|opencode|all>");
 		return 1;
 	}
-	const ctx = { home: homedir(), packageRoot: packageRootFromModule(import.meta.url) };
+	const ctx = { home: homedir(), packageRoot: packageRootFromModule(import.meta.url), runner: processRunner() };
 	let failed = false;
 	for (const installer of selectInstallers(target)) {
 		try {
@@ -366,10 +376,10 @@ export async function runCli(
 		io.out(HELP);
 		return 0;
 	}
-	if (command === "claude-hook") {
+	if (command === "claude-hook" || command === "codex-hook") {
 		// Hooks must not require an existing workflow; they run in any repo.
 		try {
-			return await commandClaudeHook(io);
+			return await commandHook(command === "claude-hook" ? "claude" : "codex", io);
 		} catch (error: any) {
 			io.err(`Error: ${error?.message ?? error}`);
 			return 1;

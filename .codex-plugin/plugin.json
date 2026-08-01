@@ -1,0 +1,28 @@
+{
+  "name": "audit-trail",
+  "version": "0.3.0",
+  "description": "Append-only decision auditing with independent review, shared across coding-agent harnesses per Git worktree",
+  "author": {
+    "name": "0xLaurenzo",
+    "url": "https://github.com/0xLaurenzo"
+  },
+  "homepage": "https://github.com/0xLaurenzo/audit-trail",
+  "repository": "https://github.com/0xLaurenzo/audit-trail",
+  "keywords": ["audit-trail", "decision-log", "code-review"],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "Audit Trail",
+    "shortDescription": "Record and independently review consequential engineering decisions",
+    "longDescription": "Maintain an append-only decision audit shared across coding-agent sessions, independently review it, and publish the canonical trail to a pull request.",
+    "developerName": "0xLaurenzo",
+    "category": "Developer Tools",
+    "capabilities": ["Interactive", "Read", "Write"],
+    "websiteURL": "https://github.com/0xLaurenzo/audit-trail",
+    "defaultPrompt": [
+      "Start an audit for this implementation",
+      "Show the active decision audit status",
+      "Review and publish the current audit"
+    ]
+  }
+}

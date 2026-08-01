@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "audit-trail": {
+      "command": "./bin/audit-trail",
+      "args": ["mcp", "--harness", "codex"],
+      "cwd": "."
+    }
+  }
+}
