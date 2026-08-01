@@ -57,7 +57,16 @@ test("mcp server initializes, lists tools, and drives the audit workflow", async
 		const tools = resultOf(await server.handle(request(2, "tools/list"))).tools;
 		assert.deepEqual(
 			tools.map((tool: any) => tool.name),
-			["audit_start", "audit_decision", "audit_status", "audit_review", "audit_publish", "audit_close"],
+			[
+				"audit_start",
+				"audit_resume",
+				"audit_reopen",
+				"audit_decision",
+				"audit_status",
+				"audit_review",
+				"audit_publish",
+				"audit_close",
+			],
 		);
 
 		const started = resultOf(
@@ -86,7 +95,7 @@ test("mcp server initializes, lists tools, and drives the audit workflow", async
 		assert.equal(rows[0].session, "mcp/tester@host");
 
 		const status = resultOf(await server.handle(request(5, "tools/call", { name: "audit_status", arguments: {} })));
-		assert.match(textOf(status), /mcp-task: 1 rows \(1 active\)/);
+		assert.match(textOf(status), /MCP Task: 1 rows \(1 active\)/);
 		assert.match(textOf(status), /review: not run/);
 
 		const close = resultOf(await server.handle(request(6, "tools/call", { name: "audit_close", arguments: {} })));
@@ -174,7 +183,7 @@ test("stdio transport frames responses and tolerates garbage lines", async () =>
 		assert.equal(lines.length, 2, "garbage, blank, and notification lines produce no responses");
 		assert.deepEqual(lines[0], { jsonrpc: "2.0", id: 1, result: {} });
 		assert.equal(lines[1].id, 2);
-		assert.equal(lines[1].result.tools.length, 6);
+		assert.equal(lines[1].result.tools.length, 8);
 	} finally {
 		await rm(root, { recursive: true, force: true });
 	}

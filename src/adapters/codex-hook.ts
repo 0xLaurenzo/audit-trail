@@ -4,6 +4,7 @@ import {
 	AuditWorkflow,
 	activeStatePath,
 	buildActiveAuditGuidance,
+	isClosedStatePath,
 	resolveWorktreeRoot,
 	type AuditState,
 	type CommandRunner,
@@ -136,6 +137,9 @@ export async function handleCodexHook(
 				return deny(`Audit state is unreadable (${lookup.error}); refusing writes under .audit/.`);
 			}
 			return { exitCode: 0 };
+		}
+		if (targets.some((target) => isClosedStatePath(dirname(auditRoot), target))) {
+			return deny("Closed audit lifecycle state is extension-managed; use audit_reopen.");
 		}
 		if (!lookup.state) return { exitCode: 0 };
 		const protectedPaths = [lookup.state.logPath, lookup.state.provenancePath, activeStatePath(lookup.root)].filter(

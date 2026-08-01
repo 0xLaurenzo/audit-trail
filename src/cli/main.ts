@@ -35,7 +35,9 @@ const HELP = `audit-trail — append-only decision auditing for one Git worktree
 Usage: audit-trail [-C <dir>] <command> [options]
 
 Commands:
-  start <task>       Start or resume the worktree's decision audit
+  start <task>       Create a new worktree decision audit
+  resume <task>      Explicitly join the matching active audit
+  reopen <task>      Explicitly restore the matching closed audit
   decision           Append one decision row (see options below)
   status             Show audit status and unresolved decision IDs
   review <model>     Run an independent review with <provider/model>
@@ -129,18 +131,24 @@ async function requireActive(workflow: AuditWorkflow): Promise<AuditState> {
 	return state;
 }
 
-async function commandStart(workflow: AuditWorkflow, task: string, io: CliIo): Promise<number> {
+async function commandLifecycle(
+	workflow: AuditWorkflow,
+	operation: "start" | "resume" | "reopen",
+	task: string,
+	io: CliIo,
+): Promise<number> {
 	if (!task) {
-		io.err("Usage: audit-trail start <task>");
+		io.err(`Usage: audit-trail ${operation} <task>`);
 		return 1;
 	}
-	const result = await workflow.start(task, cliSession());
+	const result = await workflow[operation](task, cliSession());
 	if (result.provenanceError) {
 		io.err(`Audit will remain local because GitHub provenance could not be captured: ${result.provenanceError}`);
 	}
 	const provenance = result.state.provenance;
+	const verb = operation === "start" ? "Started" : operation === "resume" ? "Resumed" : "Reopened";
 	io.out(
-		`${result.resumed ? "Resumed" : "Started"} decision audit: ${displayPath(result.state.logPath, workflow.root)}${provenance ? ` (${provenance.repository}@${provenance.branch})` : ""}`,
+		`${verb} decision audit: ${displayPath(result.state.logPath, workflow.root)}${provenance ? ` (${provenance.repository}@${provenance.branch})` : ""}`,
 	);
 	return 0;
 }
@@ -391,7 +399,9 @@ export async function runCli(
 		const workflow = new AuditWorkflow(root, runner);
 		switch (command) {
 			case "start":
-				return await commandStart(workflow, args.join(" ").trim(), io);
+			case "resume":
+			case "reopen":
+				return await commandLifecycle(workflow, command, args.join(" ").trim(), io);
 			case "decision":
 				return await commandDecision(workflow, args, io);
 			case "status":

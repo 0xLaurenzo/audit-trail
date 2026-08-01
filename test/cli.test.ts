@@ -47,7 +47,9 @@ test("cli start, decision, status, and close blockers share worktree state", asy
 		assert.match(io.stdout.join("\n"), /Started decision audit: .audit\/cli-task\.tsv/);
 		assert.match(io.stderr.join("\n"), /provenance could not be captured/);
 
-		assert.equal(await runCli(["-C", root, "start", "CLI Task"], io), 0);
+		assert.equal(await runCli(["-C", root, "start", "CLI Task"], io), 1);
+		assert.match(io.stderr.at(-1)!, /Use resume instead of start/);
+		assert.equal(await runCli(["-C", root, "resume", "CLI Task"], io), 0);
 		assert.match(io.stdout.at(-1)!, /^Resumed decision audit/);
 
 		assert.equal(await runCli(["-C", root, ...decisionArgs], io), 0);
@@ -59,7 +61,7 @@ test("cli start, decision, status, and close blockers share worktree state", asy
 		const statusIo = capture();
 		assert.equal(await runCli(["-C", root, "status"], statusIo), 0);
 		const status = statusIo.stdout.join("\n");
-		assert.match(status, /cli-task: 1 rows \(1 active\)/);
+		assert.match(status, /CLI Task: 1 rows \(1 active\)/);
 		assert.match(status, /review: not run/);
 		assert.match(status, /origin: unavailable \(local audit\)/);
 
@@ -67,6 +69,31 @@ test("cli start, decision, status, and close blockers share worktree state", asy
 		assert.equal(await runCli(["-C", root, "close"], closeIo), 1);
 		assert.match(closeIo.stderr.join("\n"), /independent review not run/);
 		assert.ok(await readActiveAudit(root), "close blockers keep the audit active");
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+test("cli requires explicit reopen after close", async () => {
+	const root = await mkdtemp(join(tmpdir(), "audit-cli-test-"));
+	try {
+		assert.equal(await runCli(["-C", root, "start", "Lifecycle Task"], capture()), 0);
+		assert.equal(await runCli(["-C", root, ...decisionArgs], capture()), 0);
+		const reviewer: ReviewerPort = { review: async () => "No flags.\nVERDICT: approve\n" };
+		assert.equal(
+			await runCli(["-C", root, "review", "provider/model", "--mode", "cross-model"], capture(), {
+				createReviewer: () => reviewer,
+			}),
+			0,
+		);
+		assert.equal(await runCli(["-C", root, "close"], capture()), 0);
+		const startIo = capture();
+		assert.equal(await runCli(["-C", root, "start", "Lifecycle Task"], startIo), 1);
+		assert.match(startIo.stderr.join("\n"), /Use reopen instead of start/);
+		const reopenIo = capture();
+		assert.equal(await runCli(["-C", root, "reopen", "Lifecycle Task"], reopenIo), 0);
+		assert.match(reopenIo.stdout.join("\n"), /Reopened decision audit/);
+		assert.equal((await readActiveAudit(root))?.reopenCount, 1);
 	} finally {
 		await rm(root, { recursive: true, force: true });
 	}

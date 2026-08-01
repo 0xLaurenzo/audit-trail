@@ -76,7 +76,7 @@ Each shipped harness declares its capabilities in `src/harness/capabilities.ts`.
 
 ## Shared worktree state
 
-Exactly one audit may be active per Git worktree. The authoritative state lives in `.audit/active.json`, so any session in the same worktree — including concurrent ones — sees and contributes to the same audit; the audit survives session restarts and branch switches. Every mutation (start/resume, append, review checkpoint, close) runs under an atomic cross-process lock at `.audit/.lock`, so concurrent appends cannot lose rows or allocate duplicate decision IDs. Abandoned locks from crashed processes are reclaimed automatically.
+Exactly one audit may be active per Git worktree. The authoritative state lives in `.audit/active.json`, so any session in the same worktree — including concurrent ones — sees and contributes to the same audit; the audit survives session restarts and branch switches. Starting, resuming, and reopening are distinct operations: `start` only creates, `resume` requires the exact original name of the active audit, and `reopen` intentionally restores the exact matching `.audit/<slug>.closed.json` lifecycle. Different original names that normalize to the same slug are rejected. Audits closed before lifecycle versioning recorded original task names (version 1 state) can never be resumed or reopened — their identity cannot be proven — so reusing such a task name requires manually removing its `.audit/<slug>.closed.json` marker outside agent edit tools. Every mutation runs under an atomic cross-process lock at `.audit/.lock`, so concurrent appends cannot lose rows or allocate duplicate decision IDs. Abandoned locks from crashed processes are reclaimed automatically.
 
 The TSV `session` cell is harness-qualified (for example `pi/<session-id>`), keeping contributions attributable when multiple harnesses share one audit.
 
@@ -85,7 +85,9 @@ The TSV `session` cell is harness-qualified (for example `pi/<session-id>`), kee
 The same workflow is available outside any harness via `audit-trail` (installed to `bin/` by both npm-style and Nix installs). Because state is shared per worktree, CLI invocations and harness sessions interoperate on one audit:
 
 ```bash
-audit-trail start <task>
+audit-trail start <task>    # create only
+audit-trail resume <task>   # join the exact active task
+audit-trail reopen <task>   # restore the exact closed task
 audit-trail decision --phase core --origin "implementation discovery" \
   --decision "..." --why "..." --confidence high --evidence "file:1" --result verified
 audit-trail status
@@ -98,7 +100,7 @@ CLI rows are attributed as `cli/<user>@<host>` in the TSV `session` cell. `audit
 
 ## MCP server
 
-`audit-trail mcp` serves the same six operations as deterministic MCP tools over stdio — `audit_start`, `audit_decision`, `audit_status`, `audit_review`, `audit_publish`, `audit_close` — for harnesses that integrate via MCP rather than a native extension. Rows are attributed as `mcp/<user>@<host>`. Example client registration:
+`audit-trail mcp` serves the same eight operations as deterministic MCP tools over stdio — `audit_start`, `audit_resume`, `audit_reopen`, `audit_decision`, `audit_status`, `audit_review`, `audit_publish`, `audit_close` — for harnesses that integrate via MCP rather than a native extension. Rows are attributed as `mcp/<user>@<host>`. Example client registration:
 
 ```json
 {
@@ -125,9 +127,9 @@ This links `~/.claude/skills/audit-trail` to the installed package, which Claude
 The plugin provides:
 
 - **Tools** via the shared MCP server (`audit-trail mcp --harness claude`), exposed as `mcp__plugin_audit-trail_audit-trail__audit_*`. A `SessionStart` hook records `{session ID, transcript path, model, worktree}` under `$XDG_STATE_HOME/audit-trail/claude/`, and the server re-reads it on every call, so successful startup/resume/clear hooks refresh attribution to `claude/<session-id>`. Concurrent Claude sessions in one worktree share last-writer-wins attribution. Session state has no expiry or cleanup: if a later `SessionStart` hook fails or does not run, the previous session ID may be reused indefinitely until a successful refresh. Only absent or unreadable state falls back to `claude/<user>@<host>`.
-- **Commands** namespaced by the plugin: `/audit-trail:audit-start`, `/audit-trail:audit-status`, `/audit-trail:audit-review`, `/audit-trail:audit-publish`, `/audit-trail:audit-close`.
+- **Commands** namespaced by the plugin: `/audit-trail:audit-start`, `/audit-trail:audit-resume`, `/audit-trail:audit-reopen`, `/audit-trail:audit-status`, `/audit-trail:audit-review`, `/audit-trail:audit-publish`, `/audit-trail:audit-close`.
 - **Guidance injection**: the `SessionStart` hook adds the active-audit instructions as additional context whenever the worktree has an active audit.
-- **A write guard**: a `PreToolUse` hook denies `Write`/`Edit` of the TSV, provenance, and `active.json`, failing closed over `.audit/` when audit state is unreadable.
+- **A write guard**: a `PreToolUse` hook denies `Write`/`Edit` of the TSV, provenance, `active.json`, and closed lifecycle markers (including when no audit is active), failing closed over `.audit/` when audit state is unreadable.
 
 `audit_review` runs the reviewer through non-interactive `claude -p` with a read-only tool allowlist, `--strict-mcp-config` (the reviewer cannot reach this or any MCP server), and no session persistence. Claude-run reviewers are Anthropic models, so pass the reviewer as `anthropic/<model-id>` and record `cross-model` or `same-model` truthfully — the `/audit-trail:audit-review` command encodes this. The hook-captured session transcript is included in the review when readable; otherwise the review falls back to the TSV, Git diff, and repository.
 
@@ -145,15 +147,15 @@ The installer validates the manifest, manages only `~/plugins/audit-trail` and t
 
 Start a **new Codex thread** after installation. Open `/hooks`, inspect the plugin source, and trust the `SessionStart` and `PreToolUse` definitions; installing or enabling a plugin never grants hook trust automatically, and changed hook definitions require approval again. Project-local `.codex/` hooks additionally require project trust, although audit-trail's hooks are plugin-bundled. Use `/skills` or `$audit-trail` for explicit skill invocation; Codex can also activate the skill from its description.
 
-The plugin provides the shared `audit_start`, `audit_decision`, `audit_status`, `audit_review`, `audit_publish`, and `audit_close` MCP tools. `SessionStart` records `{session ID, optional transcript path, model, worktree}` under `$XDG_STATE_HOME/audit-trail/codex/`, injects guidance for an active audit, and attributes decisions as `codex/<session-id>`. The transcript path is supplementary only: Codex does not promise a stable transcript format, and missing or unreadable transcripts fall back to TSV, Git diff, and repository evidence. Concurrent sessions in one worktree use last-writer-wins attribution. Session state has no expiry or cleanup: if a later `SessionStart` hook is untrusted, skipped, or fails to run, its predecessor's session ID and model may be reused indefinitely. Only absent or unreadable state falls back to `codex/<user>@<host>` attribution; review without captured model metadata fails instead of guessing a mode.
+The plugin provides the shared `audit_start`, `audit_resume`, `audit_reopen`, `audit_decision`, `audit_status`, `audit_review`, `audit_publish`, and `audit_close` MCP tools. `SessionStart` records `{session ID, optional transcript path, model, worktree}` under `$XDG_STATE_HOME/audit-trail/codex/`, injects guidance for an active audit, and attributes decisions as `codex/<session-id>`. The transcript path is supplementary only: Codex does not promise a stable transcript format, and missing or unreadable transcripts fall back to TSV, Git diff, and repository evidence. Concurrent sessions in one worktree use last-writer-wins attribution. Session state has no expiry or cleanup: if a later `SessionStart` hook is untrusted, skipped, or fails to run, its predecessor's session ID and model may be reused indefinitely. Only absent or unreadable state falls back to `codex/<user>@<host>` attribution; review without captured model metadata fails instead of guessing a mode.
 
-A `PreToolUse` hook protects extension-managed audit files from direct `apply_patch`/`Edit`/`Write` changes and fails closed over `.audit/` when state is unreadable. This is a guardrail for direct edit tools, not a shell sandbox. Plugin hooks and the local MCP server run with your user privileges, so inspect the linked package and approve MCP tools according to your Codex policy.
+A `PreToolUse` hook protects extension-managed audit files, including closed lifecycle markers when no audit is active, from direct `apply_patch`/`Edit`/`Write` changes and fails closed over `.audit/` when state is unreadable. This is a guardrail for direct edit tools, not a shell sandbox. Plugin hooks and the local MCP server run with your user privileges, so inspect the linked package and approve MCP tools according to your Codex policy.
 
 `audit_review` runs an isolated child through `codex exec --ignore-user-config --ephemeral --sandbox read-only`. Omitting `model` uses the hook-captured working model and records `same-model`; specifying a different OpenAI model records `cross-model` and remains pinned if it fails. Codex does not claim cross-provider review or catalog-driven model discovery. If `SessionStart` did not capture a model, review fails clearly rather than guessing provenance.
 
 ## OpenCode
 
-`src/adapters/opencode.ts` is a native OpenCode plugin over the same shared worktree state, so Pi, CLI, MCP, and OpenCode sessions interoperate on one audit: an audit started in Pi can be resumed from OpenCode and vice versa. It registers all six operations as plugin tools (`audit_start`, `audit_decision`, `audit_status`, `audit_review`, `audit_publish`, `audit_close`), injects the active-audit guidance into the system prompt, and write-protects extension-managed audit files. Rows are attributed as `opencode/<session-id>` with the message ID as the entry.
+`src/adapters/opencode.ts` is a native OpenCode plugin over the same shared worktree state, so Pi, CLI, MCP, and OpenCode sessions interoperate on one audit: an audit started in Pi can be explicitly resumed from OpenCode and vice versa. It registers all eight operations as plugin tools (`audit_start`, `audit_resume`, `audit_reopen`, `audit_decision`, `audit_status`, `audit_review`, `audit_publish`, `audit_close`), injects the active-audit guidance into the system prompt, and write-protects extension-managed audit files. Rows are attributed as `opencode/<session-id>` with the message ID as the entry.
 
 Global activation:
 
@@ -161,7 +163,7 @@ Global activation:
 audit-trail install opencode
 ```
 
-This writes only files the package owns — a plugin shim at `~/.config/opencode/plugins/audit-trail.ts` re-exporting the adapter from the installed package, and five prompt-template commands (`/audit-start`, `/audit-status`, `/audit-review`, `/audit-publish`, `/audit-close`) under `~/.config/opencode/commands/` — and never touches `opencode.json` or other user files. Reinstalling is safe: unchanged files are left alone, managed files carry a stable ownership marker, and a stale shim from a previous install location is regenerated. If a target path already contains an unmarked file, installation fails before writing anything rather than overwriting potentially unrelated configuration.
+This writes only files the package owns — a plugin shim at `~/.config/opencode/plugins/audit-trail.ts` re-exporting the adapter from the installed package, and seven prompt-template commands (`/audit-start`, `/audit-resume`, `/audit-reopen`, `/audit-status`, `/audit-review`, `/audit-publish`, `/audit-close`) under `~/.config/opencode/commands/` — and never touches `opencode.json` or other user files. Reinstalling is safe: unchanged files are left alone, managed files carry a stable ownership marker, and a stale shim from a previous install location is regenerated. If a target path already contains an unmarked file, installation fails before writing anything rather than overwriting potentially unrelated configuration.
 
 For project-local activation, place the same shim in `.opencode/plugins/` inside the project:
 
@@ -174,7 +176,9 @@ export { AuditTrailPlugin } from "/path/to/audit-trail/src/adapters/opencode.ts"
 
 ## Commands
 
-- `/audit-start <task>` — start or resume the worktree audit at `.audit/<task>.tsv`; starting a different task while one is active fails
+- `/audit-start <task>` — create a new worktree audit; it never resumes or reopens existing state
+- `/audit-resume <task>` — explicitly join the active audit when its trimmed original task name matches exactly
+- `/audit-reopen <task>` — explicitly restore the exact matching closed lifecycle
 - `/audit-status` — show unresolved, low-confidence, and unsupported decisions, plus review freshness
 - `/audit-review [provider/model]` — review the log and pi session, preferring a cross-provider model
 - `/audit-publish [number-or-url]` — create or update reviewer-friendly audit comments with canonical TSV on the current checked-out branch's PR
@@ -246,4 +250,4 @@ Render deterministic reviewer-friendly decision cards.
 <sub><strong>History:</strong> No supersession links.</sub>
 ```
 
-The exact canonical TSV remains in a collapsed block beneath the cards. GitHub comments have a size limit, so large audits are split at decision-row boundaries based on the combined Markdown and TSV size. Each card stays with its exact source row; concatenating fenced TSV blocks in part order recovers the original file byte-for-byte. Hidden markers make publication idempotent: subsequent runs update each existing part and remove stale extra parts instead of creating duplicates. Publish before `/audit-close`; closing removes `.audit/active.json` for the worktree.
+The exact canonical TSV remains in a collapsed block beneath the cards. GitHub comments have a size limit, so large audits are split at decision-row boundaries based on the combined Markdown and TSV size. Each card stays with its exact source row; concatenating fenced TSV blocks in part order recovers the original file byte-for-byte. Hidden markers make publication idempotent: subsequent runs update each existing part and remove stale extra parts instead of creating duplicates. Publish before `/audit-close`; closing atomically moves `.audit/active.json` to `.audit/<slug>.closed.json`, preserving the lifecycle for an explicit reopen.

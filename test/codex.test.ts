@@ -187,7 +187,7 @@ test("Codex MCP resumes another harness audit, attributes rows, and derives trut
 			runner: noGit,
 			...codexMcpOptions(root, codexRunner, "fallback", env),
 		});
-		assert.match(await server.call("audit_start", { task: "shared" }), /Resumed/);
+		assert.match(await server.call("audit_resume", { task: "shared" }), /Resumed/);
 		await server.call("audit_decision", {
 			phase: "codex",
 			origin: "implementation discovery",

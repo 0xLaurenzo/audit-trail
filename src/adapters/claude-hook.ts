@@ -4,6 +4,7 @@ import {
 	AuditWorkflow,
 	activeStatePath,
 	buildActiveAuditGuidance,
+	isClosedStatePath,
 	resolveWorktreeRoot,
 	type AuditState,
 	type CommandRunner,
@@ -133,14 +134,17 @@ export async function handleClaudeHook(
 			exitCode: 0,
 		});
 		const lookup = await lookupActive(runner, cwd);
+		const auditRoot = await canonicalPath(resolve(lookup.root, ".audit"));
 		if (lookup.error) {
 			// Fail closed: with unreadable active-audit state, protect the whole
 			// .audit directory instead of silently disabling the guard.
-			const auditRoot = await canonicalPath(resolve(lookup.root, ".audit"));
 			if (target === auditRoot || target.startsWith(`${auditRoot}${sep}`)) {
 				return deny(`Audit state is unreadable (${lookup.error}); refusing writes under .audit/.`);
 			}
 			return { exitCode: 0 };
+		}
+		if (isClosedStatePath(dirname(auditRoot), target)) {
+			return deny("Closed audit lifecycle state is extension-managed; use audit_reopen.");
 		}
 		if (!lookup.state) return { exitCode: 0 };
 		const protectedPaths = [lookup.state.logPath, lookup.state.provenancePath, activeStatePath(lookup.root)].filter(

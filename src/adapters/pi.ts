@@ -13,6 +13,7 @@ import {
 	displayPath,
 	formatBlockingReviewMessage,
 	formatStatusLines,
+	isClosedStatePath,
 	publishRawAudit,
 	runIndependentReview,
 	sha256Hex,
@@ -151,6 +152,9 @@ export default function auditTrailExtension(pi: ExtensionAPI) {
 			}
 			return;
 		}
+		if (isClosedStatePath(wf.root, inputPath)) {
+			return { block: true, reason: "Closed audit lifecycle state is extension-managed; use audit_reopen." };
+		}
 		if (!state) return;
 		const protectedPaths = [state.logPath, state.provenancePath, activeStatePath(wf.root)].filter(
 			(path): path is string => Boolean(path),
@@ -198,35 +202,39 @@ export default function auditTrailExtension(pi: ExtensionAPI) {
 		},
 	});
 
-	pi.registerCommand("audit-start", {
-		description: "Start or resume the worktree's decision audit: /audit-start <task>",
-		handler: async (args, ctx) => {
-			const requested = args.trim();
-			if (!requested) {
-				ctx.ui.notify("Usage: /audit-start <task>", "error");
-				return;
-			}
-			try {
-				const wf = await workflow(ctx);
-				const result = await wf.start(requested, sessionIdentity(ctx));
-				if (result.provenanceError) {
-					ctx.ui.notify(
-						`Audit will remain local because GitHub provenance could not be captured: ${result.provenanceError}`,
-						"warning",
-					);
+	for (const operation of ["start", "resume", "reopen"] as const) {
+		const commandName = `audit-${operation}`;
+		pi.registerCommand(commandName, {
+			description: `${operation === "start" ? "Create" : operation === "resume" ? "Join" : "Restore"} the matching worktree decision audit: /${commandName} <task>`,
+			handler: async (args, ctx) => {
+				const requested = args.trim();
+				if (!requested) {
+					ctx.ui.notify(`Usage: /${commandName} <task>`, "error");
+					return;
 				}
-				const rows = await wf.rows(result.state);
-				updateStatus(ctx, result.state, rows);
-				const provenance = result.state.provenance;
-				ctx.ui.notify(
-					`${result.resumed ? "Resumed" : "Started"} decision audit: ${displayPath(result.state.logPath, ctx.cwd)}${provenance ? `\nGitHub: ${provenance.repository}@${provenance.branch}` : ""}`,
-					"info",
-				);
-			} catch (error: any) {
-				ctx.ui.notify(`Audit start failed: ${error?.message ?? error}`, "error");
-			}
-		},
-	});
+				try {
+					const wf = await workflow(ctx);
+					const result = await wf[operation](requested, sessionIdentity(ctx));
+					if (result.provenanceError) {
+						ctx.ui.notify(
+							`Audit will remain local because GitHub provenance could not be captured: ${result.provenanceError}`,
+							"warning",
+						);
+					}
+					const rows = await wf.rows(result.state);
+					updateStatus(ctx, result.state, rows);
+					const provenance = result.state.provenance;
+					const verb = operation === "start" ? "Started" : operation === "resume" ? "Resumed" : "Reopened";
+					ctx.ui.notify(
+						`${verb} decision audit: ${displayPath(result.state.logPath, ctx.cwd)}${provenance ? `\nGitHub: ${provenance.repository}@${provenance.branch}` : ""}`,
+						"info",
+					);
+				} catch (error: any) {
+					ctx.ui.notify(`Audit ${operation} failed: ${error?.message ?? error}`, "error");
+				}
+			},
+		});
+	}
 
 	pi.registerCommand("audit-status", {
 		description: "Show active decision-audit status and unresolved decision IDs",

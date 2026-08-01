@@ -98,18 +98,16 @@ export class AuditStore {
 		return readRows(logPath);
 	}
 
-	ensureLog(logPath: string): Promise<void> {
+	createLog(logPath: string): Promise<void> {
 		return this.mutationQueue(logPath, async () => {
 			await mkdir(dirname(logPath), { recursive: true });
-			let existing = "";
 			try {
-				existing = await readFile(logPath, "utf8");
+				await writeFile(logPath, `${AUDIT_HEADER}\n`, { encoding: "utf8", mode: 0o600, flag: "wx" });
 			} catch (error: any) {
-				if (error?.code !== "ENOENT") throw error;
-			}
-			if (!existing) await writeFileAtomic(logPath, `${AUDIT_HEADER}\n`);
-			else if (existing.split(/\r?\n/, 1)[0] !== AUDIT_HEADER) {
-				throw new Error(`Unexpected audit header in ${logPath}`);
+				if (error?.code === "EEXIST") {
+					throw new Error(`Audit log already exists without reusable lifecycle state: ${logPath}`);
+				}
+				throw error;
 			}
 		});
 	}

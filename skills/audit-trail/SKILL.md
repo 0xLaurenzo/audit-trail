@@ -1,6 +1,6 @@
 ---
 name: audit-trail
-description: Run append-only decision audits for implementation work. Use when starting, resuming, reviewing, publishing, or closing an audit, or whenever consequential product or engineering choices should be recorded for independent review.
+description: Run append-only decision audits for implementation work. Use when starting, resuming, reopening, reviewing, publishing, or closing an audit, or whenever consequential product or engineering choices should be recorded for independent review.
 ---
 
 # Audit Trail
@@ -10,7 +10,11 @@ Use the audit-trail MCP tools for all audit operations. Never create, edit, or r
 ## Workflow
 
 1. Call `audit_status` to see whether this worktree already has an active audit.
-2. Call `audit_start` with a concise task slug or issue-oriented name. Starting the same task resumes it; do not invent a different name to bypass an active audit.
+2. Choose the lifecycle operation explicitly and pass the exact original task name:
+   - call `audit_start` only to create a new audit;
+   - call `audit_resume` only to join the matching active audit;
+   - call `audit_reopen` only to restore the matching closed audit intentionally.
+   Never change the task's case or punctuation to bypass an identity error.
 3. During implementation, call `audit_decision` only for reviewer-relevant choices whose reasonable alternative would materially change behavior or code:
    - compatibility or migration policy
    - public API or schema behavior

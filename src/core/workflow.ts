@@ -1,8 +1,11 @@
-import { readFile } from "node:fs/promises";
+import { access, readFile } from "node:fs/promises";
 import { isAbsolute, join, relative } from "node:path";
 import {
-	clearActiveAudit,
+	closeActiveAudit,
+	closedStatePath,
 	readActiveAudit,
+	readClosedAudit,
+	reopenClosedAudit,
 	sha256Hex,
 	writeActiveAudit,
 	type ActiveAuditFile,
@@ -43,9 +46,8 @@ export async function resolveWorktreeRoot(runner: CommandRunner, fallback: strin
 	return fallback;
 }
 
-export interface StartAuditResult {
+export interface AuditLifecycleResult {
 	state: AuditState;
-	resumed: boolean;
 	provenanceError?: string;
 }
 
@@ -63,7 +65,7 @@ export interface CloseAuditResult {
 
 /**
  * Harness-neutral audit workflow over shared worktree state. Every mutation
- * (start/resume, append, review checkpoint, close) runs under the cross-process
+ * (start/resume/reopen, append, review checkpoint, close) runs under the cross-process
  * worktree lock so concurrent harness sessions cannot lose rows, allocate
  * duplicate IDs, or race active-state transitions. CLI, MCP, and harness
  * adapters all drive this same class.
@@ -97,7 +99,12 @@ export class AuditWorkflow {
 	}
 
 	private async stateFrom(file: ActiveAuditFile): Promise<AuditState> {
-		const state: AuditState = { task: file.task, logPath: this.absolute(file.logPath), review: file.review };
+		const state: AuditState = {
+			task: file.task,
+			taskName: file.taskName,
+			logPath: this.absolute(file.logPath),
+			review: file.review,
+		};
 		if (file.provenancePath) {
 			state.provenancePath = this.absolute(file.provenancePath);
 			try {
@@ -128,34 +135,77 @@ export class AuditWorkflow {
 		}
 	}
 
-	async start(taskInput: string, session: SessionIdentity): Promise<StartAuditResult> {
-		const task = safeSlug(taskInput, this.now());
+	private taskIdentity(taskInput: string): { task: string; taskName: string } {
+		const taskName = taskInput.trim();
+		if (!taskName) throw new Error("Task name must not be empty");
+		return { task: safeSlug(taskName, this.now()), taskName };
+	}
+
+	private collisionError(taskName: string, existingName: string, task: string): Error {
+		return new Error(
+			`Task name collision: ${JSON.stringify(taskName)} and ${JSON.stringify(existingName)} both map to ${task}.`,
+		);
+	}
+
+	private assertTaskIdentity(file: ActiveAuditFile, task: string, taskName: string, operation: string): void {
+		if (file.task !== task) {
+			throw new Error(`Cannot ${operation} ${taskName}: the audit task is ${file.taskName ?? file.task}.`);
+		}
+		if (!file.taskName) {
+			throw new Error(`Cannot ${operation} legacy audit ${file.task}: its original task name was not recorded.`);
+		}
+		if (file.taskName !== taskName) throw this.collisionError(taskName, file.taskName, task);
+	}
+
+	private async retryProvenance(
+		file: ActiveAuditFile,
+		session: SessionIdentity,
+	): Promise<{ file: ActiveAuditFile; provenanceError?: string }> {
+		if (file.provenancePath) return { file };
+		const provenanceRel = join(".audit", `${file.task}.provenance.json`);
+		try {
+			await ensureProvenance(this.runner, file.task, qualifiedSession(session), this.absolute(provenanceRel));
+			const updated = { ...file, provenancePath: provenanceRel };
+			await writeActiveAudit(this.root, updated);
+			return { file: updated };
+		} catch (error: any) {
+			return { file, provenanceError: String(error?.message ?? error) };
+		}
+	}
+
+	async start(taskInput: string, session: SessionIdentity): Promise<AuditLifecycleResult> {
+		const { task, taskName } = this.taskIdentity(taskInput);
 		return this.lock(async () => {
-			let existing = await readActiveAudit(this.root);
-			if (existing && existing.task !== task) {
+			const existing = await readActiveAudit(this.root);
+			if (existing) {
+				if (existing.task === task && existing.taskName === taskName) {
+					throw new Error(`Audit ${JSON.stringify(taskName)} is already active. Use resume instead of start.`);
+				}
+				if (existing.task === task && existing.taskName) {
+					throw this.collisionError(taskName, existing.taskName, task);
+				}
 				throw new Error(
-					`Another audit is already active in this worktree: ${existing.task}. Close it before starting ${task}.`,
+					`Another audit is already active in this worktree: ${existing.taskName ?? existing.task}. Close it before starting ${taskName}.`,
 				);
 			}
-			if (existing) {
-				// Retry provenance capture on resume so an audit started while Git or
-				// the network was unavailable does not stay local forever.
-				let provenanceError: string | undefined;
-				if (!existing.provenancePath) {
-					const provenanceRel = join(".audit", `${existing.task}.provenance.json`);
-					try {
-						await ensureProvenance(this.runner, existing.task, qualifiedSession(session), this.absolute(provenanceRel));
-						existing = { ...existing, provenancePath: provenanceRel };
-						await writeActiveAudit(this.root, existing);
-					} catch (error: any) {
-						provenanceError = String(error?.message ?? error);
-					}
-				}
-				return { state: await this.stateFrom(existing), resumed: true, provenanceError };
+
+			const closed = await readClosedAudit(this.root, task);
+			if (closed) {
+				this.assertTaskIdentity(closed, task, taskName, "start");
+				throw new Error(`Audit ${JSON.stringify(taskName)} is closed. Use reopen instead of start.`);
 			}
 
 			const logRel = join(".audit", `${task}.tsv`);
 			const provenanceRel = join(".audit", `${task}.provenance.json`);
+			for (const artifact of [logRel, provenanceRel]) {
+				try {
+					await access(this.absolute(artifact));
+					throw new Error(`Cannot start ${JSON.stringify(taskName)}: existing artifact has no lifecycle state: ${artifact}`);
+				} catch (error: any) {
+					if (error?.code !== "ENOENT") throw error;
+				}
+			}
+
 			let provenanceError: string | undefined;
 			let hasProvenance = false;
 			try {
@@ -164,16 +214,46 @@ export class AuditWorkflow {
 			} catch (error: any) {
 				provenanceError = String(error?.message ?? error);
 			}
-			await this.store.ensureLog(this.absolute(logRel));
+			// If a racing log appeared after the orphan check, createLog fails and
+			// leaves both artifacts visible rather than attaching to them.
+			await this.store.createLog(this.absolute(logRel));
 			const file: ActiveAuditFile = {
-				version: 1,
+				version: 2,
 				task,
+				taskName,
 				logPath: logRel,
 				provenancePath: hasProvenance ? provenanceRel : undefined,
 				startedAt: this.now().toISOString(),
 			};
 			await writeActiveAudit(this.root, file);
-			return { state: await this.stateFrom(file), resumed: false, provenanceError };
+			return { state: await this.stateFrom(file), provenanceError };
+		});
+	}
+
+	async resume(taskInput: string, session: SessionIdentity): Promise<AuditLifecycleResult> {
+		const { task, taskName } = this.taskIdentity(taskInput);
+		return this.lock(async () => {
+			const existing = await readActiveAudit(this.root);
+			if (!existing) throw new Error(`No audit is active. Start ${JSON.stringify(taskName)} instead.`);
+			this.assertTaskIdentity(existing, task, taskName, "resume");
+			const result = await this.retryProvenance(existing, session);
+			return { state: await this.stateFrom(result.file), provenanceError: result.provenanceError };
+		});
+	}
+
+	async reopen(taskInput: string, session: SessionIdentity): Promise<AuditLifecycleResult> {
+		const { task, taskName } = this.taskIdentity(taskInput);
+		return this.lock(async () => {
+			const active = await readActiveAudit(this.root);
+			if (active) {
+				throw new Error(`Cannot reopen ${JSON.stringify(taskName)} while ${active.taskName ?? active.task} is active.`);
+			}
+			const closed = await readClosedAudit(this.root, task);
+			if (!closed) throw new Error(`No closed audit found for ${JSON.stringify(taskName)}.`);
+			this.assertTaskIdentity(closed, task, taskName, "reopen");
+			const reopened = await reopenClosedAudit(this.root, closed, this.now().toISOString());
+			const result = await this.retryProvenance(reopened, session);
+			return { state: await this.stateFrom(result.file), provenanceError: result.provenanceError };
 		});
 	}
 
@@ -231,7 +311,10 @@ export class AuditWorkflow {
 			const rows = await readRows(state.logPath);
 			const blockers = closeBlockers(state, rows, await this.currentSha(state));
 			if (blockers.length) return { state, blockers, closed: false };
-			await clearActiveAudit(this.root);
+			if (await readClosedAudit(this.root, file.task)) {
+				throw new Error(`Closed lifecycle state already exists: ${closedStatePath(this.root, file.task)}`);
+			}
+			await closeActiveAudit(this.root, file, this.now().toISOString());
 			return { state, blockers: [], closed: true };
 		});
 	}

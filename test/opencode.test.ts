@@ -39,7 +39,11 @@ test("opencode plugin lifecycle: start, decision attribution, status, guidance, 
 
 		const started = await hooks.tool.audit_start.execute({ task: "OpenCode Adapter!" }, toolContext);
 		assert.match(started, /Started decision audit: .*opencode-adapter\.tsv/);
-		const resumed = await hooks.tool.audit_start.execute({ task: "opencode-adapter" }, toolContext);
+		await assert.rejects(
+			() => hooks.tool.audit_start.execute({ task: "opencode-adapter" }, toolContext),
+			/Task name collision/,
+		);
+		const resumed = await hooks.tool.audit_resume.execute({ task: "OpenCode Adapter!" }, toolContext);
 		assert.match(resumed, /Resumed decision audit/);
 
 		const logged = await hooks.tool.audit_decision.execute(
@@ -61,7 +65,7 @@ test("opencode plugin lifecycle: start, decision attribution, status, guidance, 
 		assert.equal(row[3], "msg_0001", "entry records the message ID");
 
 		const status = await hooks.tool.audit_status.execute({}, toolContext);
-		assert.match(status, /opencode-adapter: 1 rows \(1 active\)/);
+		assert.match(status, /OpenCode Adapter!: 1 rows \(1 active\)/);
 
 		// Active audit: guidance is injected into the system prompt.
 		const output = { system: [] as string[] };
@@ -202,7 +206,7 @@ test("opencode installer writes shim and commands idempotently without touching 
 		const shim = await readFile(join(configDir, "plugins", "audit-trail.ts"), "utf8");
 		assert.match(shim, /audit-trail-managed:v1/);
 		assert.match(shim, /export \{ AuditTrailPlugin \} from "\/opt\/audit-trail\/src\/adapters\/opencode\.ts"/);
-		for (const name of ["audit-start", "audit-status", "audit-review", "audit-publish", "audit-close"]) {
+		for (const name of ["audit-start", "audit-resume", "audit-reopen", "audit-status", "audit-review", "audit-publish", "audit-close"]) {
 			const command = await readFile(join(configDir, "commands", `${name}.md`), "utf8");
 			assert.match(command, /^---\ndescription: /, `${name} has frontmatter`);
 			assert.match(command, /audit-trail-managed:v1/, `${name} has an ownership marker`);

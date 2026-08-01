@@ -11,7 +11,7 @@ export function formatStatusLines(
 	const stats = summarize(rows);
 	const list = (items: { id: string }[]) => items.map((item) => item.id).join(", ") || "none";
 	return [
-		`${state.task}: ${stats.total} rows (${stats.active} active)`,
+		`${state.taskName ?? state.task}: ${stats.total} rows (${stats.active} active)`,
 		`unresolved: ${list(stats.unresolved)}`,
 		`low confidence: ${list(stats.lowConfidence)}`,
 		`missing evidence: ${list(stats.missingEvidence)}`,
