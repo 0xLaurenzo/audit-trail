@@ -59,12 +59,37 @@ export function registerHarnessConformance({ harness, capabilities, createDriver
 		contract(name, run);
 	};
 
-	contract("starts and resumes the audit, preserving rows", async (driver, root) => {
+	contract("requires explicit exact-name resume and preserves rows", async (driver, root) => {
 		await driver.start(TASK);
 		await driver.decide();
-		await driver.start(TASK);
+		await assert.rejects(() => driver.start(TASK), /resume/i);
+		await assert.rejects(() => driver.resume("Contract"), /collision/i);
+		await driver.resume(TASK);
 		const rows = await tsvRows(root);
 		assert.equal(rows.length, 2, "resume must not truncate or duplicate rows");
+	});
+
+	contract("requires explicit reopen and preserves closed lifecycle state", async (driver, root) => {
+		driver.github.enabled = true;
+		await driver.start(TASK);
+		await driver.decide();
+		driver.reviewerScript[driver.explicitReviewModel] = "approve";
+		assert.equal((await driver.review(driver.explicitReviewModel)).completed, true);
+		assert.equal((await driver.close()).completed, true);
+		const closedPath = join(root, ".audit", `${TASK}.closed.json`);
+		assert.ok(await readFile(closedPath, "utf8"));
+		assert.equal((await driver.attemptWrite(closedPath)).blocked, true, "closed lifecycle state remains managed");
+		await assert.rejects(() => driver.start(TASK), /reopen/i);
+		await driver.reopen(TASK);
+		const reopened = await readActiveAudit(root);
+		assert.equal(reopened?.reopenCount, 1);
+		assert.equal(reopened?.review?.verdict, "approve", "reopen preserves the review checkpoint");
+		assert.ok(reopened?.provenancePath, "reopen preserves provenance metadata");
+		assert.equal((await tsvRows(root)).length, 2, "reopen must preserve decision rows");
+		await driver.decide({ decision: "Changed after reopen" });
+		const staleClose = await driver.close();
+		assert.equal(staleClose.completed, false);
+		assert.match(staleClose.message, /changed after the last review|stale/i);
 	});
 
 	contract("rejects invalid decision enum values at the append boundary", async (driver, root) => {

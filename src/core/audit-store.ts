@@ -98,6 +98,20 @@ export class AuditStore {
 		return readRows(logPath);
 	}
 
+	createLog(logPath: string): Promise<void> {
+		return this.mutationQueue(logPath, async () => {
+			await mkdir(dirname(logPath), { recursive: true });
+			try {
+				await writeFile(logPath, `${AUDIT_HEADER}\n`, { encoding: "utf8", mode: 0o600, flag: "wx" });
+			} catch (error: any) {
+				if (error?.code === "EEXIST") {
+					throw new Error(`Audit log already exists without reusable lifecycle state: ${logPath}`);
+				}
+				throw error;
+			}
+		});
+	}
+
 	ensureLog(logPath: string): Promise<void> {
 		return this.mutationQueue(logPath, async () => {
 			await mkdir(dirname(logPath), { recursive: true });

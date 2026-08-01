@@ -10,6 +10,7 @@ import {
 	activeStatePath,
 	buildActiveAuditGuidance,
 	formatBlockingReviewMessage,
+	isClosedStatePath,
 	resolveWorktreeRoot,
 	runIndependentReview,
 	type AuditState,
@@ -193,6 +194,9 @@ export const AuditTrailPlugin = async ({ client, directory, runner: runnerOverri
 				}
 				return;
 			}
+			if (isClosedStatePath(wf.root, target)) {
+				throw new Error("Closed audit lifecycle state is extension-managed; use audit_reopen.");
+			}
 			if (!state) return;
 			const protectedPaths = [state.logPath, state.provenancePath, activeStatePath(wf.root)].filter(
 				(path): path is string => Boolean(path),
@@ -204,9 +208,19 @@ export const AuditTrailPlugin = async ({ client, directory, runner: runnerOverri
 
 		tool: {
 			audit_start: tool({
-				description: "Start or resume the append-only decision audit for this Git worktree.",
-				args: { task: z.string().describe("Task name; slugged to .audit/<task>.tsv") },
+				description: "Create a new append-only decision audit; never resumes existing state.",
+				args: { task: z.string().describe("Exact task name; also slugged for artifact paths") },
 				execute: async (args, context) => (await server(context)).call("audit_start", args),
+			}),
+			audit_resume: tool({
+				description: "Explicitly join the active audit whose original task name matches exactly.",
+				args: { task: z.string().describe("Exact original task name") },
+				execute: async (args, context) => (await server(context)).call("audit_resume", args),
+			}),
+			audit_reopen: tool({
+				description: "Explicitly restore the closed audit whose original task name matches exactly.",
+				args: { task: z.string().describe("Exact original task name") },
+				execute: async (args, context) => (await server(context)).call("audit_reopen", args),
 			}),
 			audit_decision: tool({
 				description:

@@ -122,6 +122,8 @@ export interface HarnessDriver {
 	/** Scripted Git/GitHub externals for publish-path tests. */
 	readonly github: GitHubStub;
 	start(task: string): Promise<void>;
+	resume(task: string): Promise<void>;
+	reopen(task: string): Promise<void>;
 	decide(overrides?: Partial<DecisionInput>): Promise<void>;
 	status(): Promise<string>;
 	review(model?: string): Promise<OperationOutcome>;
@@ -232,6 +234,14 @@ export const createPiDriver: DriverFactory = async (root) => {
 			const result = await runCommand("audit-start", task);
 			if (result.level === "error") throw new Error(result.message);
 		},
+		async resume(task) {
+			const result = await runCommand("audit-resume", task);
+			if (result.level === "error") throw new Error(result.message);
+		},
+		async reopen(task) {
+			const result = await runCommand("audit-reopen", task);
+			if (result.level === "error") throw new Error(result.message);
+		},
 		async decide(overrides) {
 			await tools.get("audit_decision").execute("call-1", { ...DEFAULT_DECISION, ...overrides }, undefined, undefined, ctx);
 		},
@@ -321,6 +331,12 @@ export const createOpencodeDriver: DriverFactory = async (root) => {
 		async start(task) {
 			await hooks.tool.audit_start.execute({ task }, context);
 		},
+		async resume(task) {
+			await hooks.tool.audit_resume.execute({ task }, context);
+		},
+		async reopen(task) {
+			await hooks.tool.audit_reopen.execute({ task }, context);
+		},
 		async decide(overrides) {
 			await hooks.tool.audit_decision.execute({ ...DEFAULT_DECISION, ...overrides }, context);
 		},
@@ -404,6 +420,12 @@ export const createClaudeDriver: DriverFactory = async (root) => {
 		github,
 		async start(task) {
 			await server.call("audit_start", { task });
+		},
+		async resume(task) {
+			await server.call("audit_resume", { task });
+		},
+		async reopen(task) {
+			await server.call("audit_reopen", { task });
 		},
 		async decide(overrides) {
 			await server.call("audit_decision", { ...DEFAULT_DECISION, ...overrides });
@@ -496,6 +518,12 @@ export const createCodexDriver: DriverFactory = async (root) => {
 		github,
 		async start(task) {
 			await server.call("audit_start", { task });
+		},
+		async resume(task) {
+			await server.call("audit_resume", { task });
+		},
+		async reopen(task) {
+			await server.call("audit_reopen", { task });
 		},
 		async decide(overrides) {
 			await server.call("audit_decision", { ...DEFAULT_DECISION, ...overrides });

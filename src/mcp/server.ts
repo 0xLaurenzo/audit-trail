@@ -43,10 +43,28 @@ export interface ReviewToolDefinition {
 const TOOLS: ToolDefinition[] = [
 	{
 		name: "audit_start",
-		description: "Start or resume the append-only decision audit for this Git worktree.",
+		description: "Create a new append-only decision audit for this Git worktree; never resumes existing state.",
 		inputSchema: {
 			type: "object",
-			properties: { task: { type: "string", description: "Task name; slugged to .audit/<task>.tsv" } },
+			properties: { task: { type: "string", description: "Exact task name; also slugged for artifact paths" } },
+			required: ["task"],
+		},
+	},
+	{
+		name: "audit_resume",
+		description: "Explicitly join the active audit whose original task name matches exactly.",
+		inputSchema: {
+			type: "object",
+			properties: { task: { type: "string", description: "Exact original task name" } },
+			required: ["task"],
+		},
+	},
+	{
+		name: "audit_reopen",
+		description: "Explicitly restore the closed audit whose original task name matches exactly.",
+		inputSchema: {
+			type: "object",
+			properties: { task: { type: "string", description: "Exact original task name" } },
 			required: ["task"],
 		},
 	},
@@ -185,11 +203,15 @@ export class McpAuditServer {
 
 	async call(name: string, args: Record<string, unknown>): Promise<string> {
 		switch (name) {
-			case "audit_start": {
-				const result = await this.workflow.start(requireString(args, "task"), await this.session());
+			case "audit_start":
+			case "audit_resume":
+			case "audit_reopen": {
+				const operation = name.slice("audit_".length) as "start" | "resume" | "reopen";
+				const result = await this.workflow[operation](requireString(args, "task"), await this.session());
 				const provenance = result.state.provenance;
+				const verb = operation === "start" ? "Started" : operation === "resume" ? "Resumed" : "Reopened";
 				const lines = [
-					`${result.resumed ? "Resumed" : "Started"} decision audit: ${result.state.logPath}${provenance ? ` (${provenance.repository}@${provenance.branch})` : ""}`,
+					`${verb} decision audit: ${result.state.logPath}${provenance ? ` (${provenance.repository}@${provenance.branch})` : ""}`,
 				];
 				if (result.provenanceError) lines.push(`Provenance unavailable: ${result.provenanceError}`);
 				return lines.join("\n");

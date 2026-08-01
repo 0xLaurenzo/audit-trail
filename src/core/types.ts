@@ -89,7 +89,10 @@ export interface GitProvenance {
 }
 
 export interface AuditState {
+	/** Filesystem-safe task slug. */
 	task: string;
+	/** Trimmed original task name when recorded by lifecycle-aware state. */
+	taskName?: string;
 	logPath: string;
 	provenancePath?: string;
 	provenance?: GitProvenance;

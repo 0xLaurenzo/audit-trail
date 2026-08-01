@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
-import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { basename, dirname, join, resolve } from "node:path";
 import type { ReviewSnapshot } from "./types.ts";
 
 /**
@@ -8,14 +8,22 @@ import type { ReviewSnapshot } from "./types.ts";
  * (Pi, Claude Code, Codex, OpenCode) read and write this file instead of
  * keeping session-private state. Paths are relative to the worktree root.
  */
-export interface ActiveAuditFile {
-	version: 1;
+interface AuditFileFields {
+	/** Filesystem-safe task slug. */
 	task: string;
 	logPath: string;
 	provenancePath?: string;
 	startedAt: string;
+	lastClosedAt?: string;
+	lastReopenedAt?: string;
+	reopenCount?: number;
 	review?: ReviewSnapshot;
 }
+
+/** Version 2 adds the exact user-facing task name and lifecycle metadata. */
+export type ActiveAuditFile =
+	| (AuditFileFields & { version: 1; taskName?: never })
+	| (AuditFileFields & { version: 2; /** Trimmed original task name. */ taskName: string });
 
 export function sha256Hex(text: string): string {
 	return createHash("sha256").update(text, "utf8").digest("hex");
@@ -25,29 +33,70 @@ export function activeStatePath(root: string): string {
 	return join(root, ".audit", "active.json");
 }
 
-export async function readActiveAudit(root: string): Promise<ActiveAuditFile | undefined> {
+export function closedStatePath(root: string, task: string): string {
+	return join(root, ".audit", `${task}.closed.json`);
+}
+
+export function isClosedStatePath(root: string, path: string): boolean {
+	return resolve(dirname(path)) === resolve(root, ".audit") && basename(path).endsWith(".closed.json");
+}
+
+async function readAuditState(path: string): Promise<ActiveAuditFile | undefined> {
 	let raw: string;
 	try {
-		raw = await readFile(activeStatePath(root), "utf8");
+		raw = await readFile(path, "utf8");
 	} catch (error: any) {
 		if (error?.code === "ENOENT") return undefined;
 		throw error;
 	}
 	const parsed = JSON.parse(raw) as ActiveAuditFile;
-	if (parsed?.version !== 1 || typeof parsed.task !== "string" || typeof parsed.logPath !== "string") {
-		throw new Error(`Unexpected active-audit state in ${activeStatePath(root)}`);
+	const knownVersion = parsed?.version === 1 || parsed?.version === 2;
+	const validTaskName = parsed?.version !== 2 || (typeof parsed.taskName === "string" && Boolean(parsed.taskName));
+	if (!knownVersion || typeof parsed.task !== "string" || typeof parsed.logPath !== "string" || !validTaskName) {
+		throw new Error(`Unexpected audit state in ${path}`);
 	}
 	return parsed;
 }
 
-export async function writeActiveAudit(root: string, file: ActiveAuditFile): Promise<void> {
-	const path = activeStatePath(root);
+async function writeAuditState(path: string, file: ActiveAuditFile): Promise<void> {
 	await mkdir(dirname(path), { recursive: true });
 	const temp = `${path}.tmp-${process.pid}`;
 	await writeFile(temp, `${JSON.stringify(file, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
 	await rename(temp, path);
 }
 
-export async function clearActiveAudit(root: string): Promise<void> {
-	await rm(activeStatePath(root), { force: true });
+export function readActiveAudit(root: string): Promise<ActiveAuditFile | undefined> {
+	return readAuditState(activeStatePath(root));
+}
+
+export function readClosedAudit(root: string, task: string): Promise<ActiveAuditFile | undefined> {
+	return readAuditState(closedStatePath(root, task));
+}
+
+export function writeActiveAudit(root: string, file: ActiveAuditFile): Promise<void> {
+	return writeAuditState(activeStatePath(root), file);
+}
+
+/**
+ * The same-directory rename is the authoritative active -> closed transition.
+ * Metadata is written first under the workflow lock; if rename fails, the
+ * audit remains active and a later close can retry safely.
+ */
+export async function closeActiveAudit(root: string, file: ActiveAuditFile, at: string): Promise<ActiveAuditFile> {
+	const closed = { ...file, lastClosedAt: at };
+	await writeActiveAudit(root, closed);
+	await rename(activeStatePath(root), closedStatePath(root, file.task));
+	return closed;
+}
+
+/** Atomic inverse of closeActiveAudit for an explicitly requested reopen. */
+export async function reopenClosedAudit(root: string, file: ActiveAuditFile, at: string): Promise<ActiveAuditFile> {
+	const reopened = {
+		...file,
+		lastReopenedAt: at,
+		reopenCount: (file.reopenCount ?? 0) + 1,
+	};
+	await writeAuditState(closedStatePath(root, file.task), reopened);
+	await rename(closedStatePath(root, file.task), activeStatePath(root));
+	return reopened;
 }

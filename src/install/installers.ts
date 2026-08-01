@@ -77,11 +77,25 @@ const OPENCODE_COMMAND_MARKER = `<!-- ${OPENCODE_MANAGED_MARKER} -->\n`;
 
 const OPENCODE_COMMANDS: Record<string, string> = {
 	"audit-start": `---
-description: Start or resume the worktree's decision audit
+description: Create a new worktree decision audit
 ---
 ${OPENCODE_COMMAND_MARKER}Call the audit_start tool with task: $ARGUMENTS
 
-Report the tool output verbatim. If it fails, report the error instead of retrying with a different task name.
+Report the tool output verbatim. If an audit already exists, do not silently resume or reopen it.
+`,
+	"audit-resume": `---
+description: Explicitly join the matching active worktree audit
+---
+${OPENCODE_COMMAND_MARKER}Call the audit_resume tool with task: $ARGUMENTS
+
+Report the tool output verbatim. Do not change the task name to bypass an identity error.
+`,
+	"audit-reopen": `---
+description: Explicitly restore the matching closed worktree audit
+---
+${OPENCODE_COMMAND_MARKER}Call the audit_reopen tool with task: $ARGUMENTS
+
+Report the tool output verbatim. Do not change the task name to bypass an identity error.
 `,
 	"audit-status": `---
 description: Show decision-audit status and unresolved decision IDs
