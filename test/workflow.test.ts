@@ -43,6 +43,8 @@ test("workflow start/resume/append/review/close over shared worktree state", asy
 		const started = await workflow.start("Portable State!", session);
 		assert.equal(started.state.task, "portable-state");
 		assert.equal(started.state.taskName, "Portable State!");
+		assert.match(started.state.auditId ?? "", /^[0-9a-f-]{36}$/, "start mints a stable audit identity");
+		assert.equal(await workflow.ensureAuditId(), started.state.auditId, "ensureAuditId returns the minted identity");
 		assert.ok(started.provenanceError, "provenance capture fails without git");
 		assert.ok(await readActiveAudit(root), "active.json exists");
 
@@ -110,6 +112,7 @@ test("workflow start/resume/append/review/close over shared worktree state", asy
 		await assert.rejects(() => workflow.reopen("portable-state", session), /Task name collision/);
 		const reopened = await workflow.reopen("Portable State!", session);
 		assert.equal(reopened.state.review?.sha256, closed.state.review?.sha256);
+		assert.equal(reopened.state.auditId, started.state.auditId, "identity survives close and reopen");
 		assert.equal((await readActiveAudit(root))?.reopenCount, 1);
 		assert.equal(await readClosedAudit(root, "portable-state"), undefined);
 	} finally {
@@ -147,6 +150,9 @@ test("legacy active state can finish but cannot be resumed or reopened by an inf
 		const workflow = new AuditWorkflow(root, noGit);
 		const session = { harness: "pi", id: "session-1" };
 		await assert.rejects(() => workflow.resume("legacy-task", session), /original task name was not recorded/);
+		const mintedId = await workflow.ensureAuditId();
+		assert.match(mintedId, /^[0-9a-f-]{36}$/, "legacy state gets an identity minted on demand");
+		assert.equal(await workflow.ensureAuditId(), mintedId, "the on-demand identity is persisted, not re-minted");
 		await workflow.append(session, decisionInput);
 		await workflow.recordReview({
 			path: join(root, ".audit", "legacy-task.review.md"),

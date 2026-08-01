@@ -93,6 +93,8 @@ export interface AuditState {
 	task: string;
 	/** Trimmed original task name when recorded by lifecycle-aware state. */
 	taskName?: string;
+	/** Stable per-audit identity; minted on demand for pre-identity state. */
+	auditId?: string;
 	logPath: string;
 	provenancePath?: string;
 	provenance?: GitProvenance;

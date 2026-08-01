@@ -11,6 +11,12 @@ import type { ReviewSnapshot } from "./types.ts";
 interface AuditFileFields {
 	/** Filesystem-safe task slug. */
 	task: string;
+	/**
+	 * Stable per-audit identity minted at start (or on demand for state created
+	 * before identities existed). Publication markers embed it so distinct
+	 * audits of the same task name can never claim each other's comments.
+	 */
+	auditId?: string;
 	logPath: string;
 	provenancePath?: string;
 	startedAt: string;
