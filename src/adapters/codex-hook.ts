@@ -54,7 +54,7 @@ function patchTargets(input: any, cwd: string): string[] {
 	if (typeof command !== "string") return [];
 	const targets: string[] = [];
 	for (const line of command.split(/\r?\n/)) {
-		const match = /^(?:\*\*\* (?:Add|Update|Delete) File:|\+\+\+|---)\s+(.+)$/.exec(line);
+		const match = /^(?:\*\*\* (?:Add|Update|Delete) File:|\*\*\* Move to:|\+\+\+|---)\s+(.+)$/.exec(line);
 		if (!match) continue;
 		let path = match[1].trim().replace(/^['"]|['"]$/g, "");
 		if (path === "/dev/null") continue;

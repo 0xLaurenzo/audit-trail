@@ -107,21 +107,22 @@ test("Codex SessionStart records metadata and injects active-audit guidance", as
 	}
 });
 
-test("Codex PreToolUse protects managed files, symlink aliases, and unreadable audit state", async () => {
+test("Codex PreToolUse protects managed files, renames, symlink aliases, and unreadable audit state", async () => {
 	const root = await mkdtemp(join(tmpdir(), "audit-codex-guard-"));
 	const stateHome = await mkdtemp(join(tmpdir(), "audit-codex-guard-state-"));
 	const env = { XDG_STATE_HOME: stateHome };
-	const hook = (path: string) =>
+	const hookCommand = (command: string) =>
 		handleCodexHook(
 			JSON.stringify({
 				hook_event_name: "PreToolUse",
 				tool_name: "apply_patch",
-				tool_input: { command: `*** Begin Patch\n*** Update File: ${path}\n*** End Patch` },
+				tool_input: { command },
 				cwd: root,
 			}),
 			() => noGit,
 			env,
 		);
+	const hook = (path: string) => hookCommand(`*** Begin Patch\n*** Update File: ${path}\n*** End Patch`);
 	try {
 		const { state } = await new AuditWorkflow(root, noGit).start("guard", { harness: "codex", id: "s" });
 		const denied = JSON.parse((await hook(state.logPath)).output!);
@@ -130,6 +131,17 @@ test("Codex PreToolUse protects managed files, symlink aliases, and unreadable a
 		await symlink(state.logPath, alias);
 		assert.equal(JSON.parse((await hook(alias)).output!).hookSpecificOutput.permissionDecision, "deny");
 		assert.equal((await hook(join(root, "src", "ok.ts"))).output, undefined);
+
+		// A rename destination is a write target: moving an innocent file onto
+		// the audit log must be denied, not slip past header parsing.
+		const renamed = JSON.parse(
+			(
+				await hookCommand(
+					`*** Begin Patch\n*** Update File: ${join(root, "src", "ok.ts")}\n*** Move to: ${state.logPath}\n*** End Patch`,
+				)
+			).output!,
+		);
+		assert.equal(renamed.hookSpecificOutput.permissionDecision, "deny");
 
 		await writeFile(join(root, ".audit", "active.json"), "{bad", "utf8");
 		const failClosed = JSON.parse((await hook(join(root, ".audit", "other.tsv"))).output!);
