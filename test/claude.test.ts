@@ -319,6 +319,8 @@ test("the shipped plugin manifest, hooks, MCP config, and commands are consisten
 	const packageRoot = join(import.meta.dirname, "..");
 	const manifest = JSON.parse(await readFile(join(packageRoot, ".claude-plugin", "plugin.json"), "utf8"));
 	assert.equal(manifest.name, "audit-trail");
+	const pkg = JSON.parse(await readFile(join(packageRoot, "package.json"), "utf8"));
+	assert.equal(manifest.version, pkg.version, "Claude manifest version must track package.json");
 
 	const hooks = JSON.parse(await readFile(join(packageRoot, manifest.hooks), "utf8"));
 	const hookCommands = [
