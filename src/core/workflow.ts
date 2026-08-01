@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { access, readFile } from "node:fs/promises";
 import { isAbsolute, join, relative } from "node:path";
 import {
@@ -102,6 +103,7 @@ export class AuditWorkflow {
 		const state: AuditState = {
 			task: file.task,
 			taskName: file.taskName,
+			auditId: file.auditId,
 			logPath: this.absolute(file.logPath),
 			review: file.review,
 		};
@@ -221,12 +223,29 @@ export class AuditWorkflow {
 				version: 2,
 				task,
 				taskName,
+				auditId: randomUUID(),
 				logPath: logRel,
 				provenancePath: hasProvenance ? provenanceRel : undefined,
 				startedAt: this.now().toISOString(),
 			};
 			await writeActiveAudit(this.root, file);
 			return { state: await this.stateFrom(file), provenanceError };
+		});
+	}
+
+	/**
+	 * Return the audit's stable identity, minting and persisting one for state
+	 * created before identities existed. Runs under the worktree lock so two
+	 * concurrent publishers agree on a single identity.
+	 */
+	async ensureAuditId(): Promise<string> {
+		return this.lock(async () => {
+			const file = await readActiveAudit(this.root);
+			if (!file) throw new Error("No audit is active.");
+			if (file.auditId) return file.auditId;
+			const auditId = randomUUID();
+			await writeActiveAudit(this.root, { ...file, auditId });
+			return auditId;
 		});
 	}
 

@@ -351,7 +351,7 @@ export default function auditTrailExtension(pi: ExtensionAPI) {
 			try {
 				const result = await publishRawAudit({
 					runner,
-					state,
+					state: { ...state, auditId: await wf.ensureAuditId() },
 					rows,
 					rawTsv,
 					selector: args.trim() || undefined,
@@ -360,6 +360,12 @@ export default function auditTrailExtension(pi: ExtensionAPI) {
 					`Published audit in ${result.commentCount} readable comment${result.commentCount === 1 ? "" : "s"} with canonical TSV on PR #${result.prNumber}: ${result.commentUrl}`,
 					"info",
 				);
+				if (result.foreignCommentCount) {
+					ctx.ui.notify(
+						`Warning: ${result.foreignCommentCount} same-task audit comment${result.foreignCommentCount === 1 ? "" : "s"} from a different audit exist on this PR and were left untouched; remove them manually if unwanted.`,
+						"warning",
+					);
+				}
 			} catch (error: any) {
 				ctx.ui.notify(`Audit publish failed: ${error?.message ?? error}`, "error");
 			}

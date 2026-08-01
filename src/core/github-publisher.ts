@@ -72,8 +72,23 @@ function activeWarnings(row: AuditRow, active: boolean): string[] {
 	return warnings;
 }
 
-export function rawAuditMarker(provenance: GitProvenance, task: string, part: number): string {
-	return `<!-- pi-audit-trail:${provenance.repository}:${task}:part:${part} -->`;
+/**
+ * Marker family shared by every audit of one repository+task; used only to
+ * detect foreign same-task comments, never to claim them.
+ */
+export function auditMarkerFamilyPrefix(repository: string, task: string): string {
+	return `<!-- pi-audit-trail:${repository}:${task}:`;
+}
+
+export function rawAuditMarker(provenance: GitProvenance, task: string, auditId: string, part: number): string {
+	return `${auditMarkerFamilyPrefix(provenance.repository, task)}${auditId}:part:${part} -->`;
+}
+
+function requireAuditId(state: AuditState): string {
+	if (!state.auditId) {
+		throw new Error("This audit has no identity; publish through the audit workflow so one can be minted.");
+	}
+	return state.auditId;
 }
 
 export function tsvFence(rawTsv: string): string {
@@ -181,7 +196,7 @@ function renderAuditComment(
 	const branchLink = githubRefUrl(provenance.repositoryUrl, "tree", provenance.branch);
 	const commitLink = githubRefUrl(provenance.repositoryUrl, "commit", provenance.startCommit);
 	const lines = [
-		rawAuditMarker(provenance, state.task, part),
+		rawAuditMarker(provenance, state.task, requireAuditId(state), part),
 		`## Decision audit: ${inlineCode(state.task)}${totalParts > 1 ? ` (${part}/${totalParts})` : ""}`,
 		"",
 	];
@@ -329,11 +344,18 @@ export interface PublishAuditResult {
 	prUrl: string;
 	commentUrl: string;
 	commentCount: number;
+	/**
+	 * Same-repository, same-task audit comments on the PR that belong to a
+	 * different (or pre-identity) audit. They are never modified or deleted;
+	 * surfaces should warn so duplicates are visible instead of silent.
+	 */
+	foreignCommentCount: number;
 }
 
 export async function publishRawAudit(input: PublishAuditInput): Promise<PublishAuditResult> {
 	const provenance = input.state.provenance;
 	if (!provenance) throw new Error("This audit has no Git provenance; start a new audit with this version.");
+	const auditId = requireAuditId(input.state);
 
 	// Resolve checkout identity even for explicit selectors: a PR number alone
 	// is vulnerable to typos between sibling branches that share startCommit.
@@ -404,7 +426,8 @@ export async function publishRawAudit(input: PublishAuditInput): Promise<Publish
 	}
 
 	const bodies = buildRawGitHubComments(input.state, input.rows, input.rawTsv);
-	const markerPrefix = `<!-- pi-audit-trail:${provenance.repository}:${input.state.task}:part:`;
+	const familyPrefix = auditMarkerFamilyPrefix(provenance.repository, input.state.task);
+	const markerPrefix = `${familyPrefix}${auditId}:part:`;
 	const userResult = await input.runner.exec("gh", ["api", "user", "--jq", ".login"], { timeout: 30_000 });
 	if (userResult.code !== 0) throw new Error(userResult.stderr.trim() || "GitHub authentication failed");
 	const login = userResult.stdout.trim();
@@ -417,9 +440,15 @@ export async function publishRawAudit(input: PublishAuditInput): Promise<Publish
 		throw new Error(commentsResult.stderr.trim() || "could not list pull-request comments");
 	}
 	const comments = (JSON.parse(commentsResult.stdout) as GitHubComment[][]).flat();
+	// Ownership requires this exact audit identity, not just author + task:
+	// same-task markers from another audit (or the pre-identity format) are
+	// foreign regardless of who wrote them and must never be PATCHed or DELETEd.
 	const managed = comments.filter(
 		(comment) => comment.user?.login === login && comment.body.includes(markerPrefix),
 	);
+	const foreignCommentCount = comments.filter(
+		(comment) => comment.body.includes(familyPrefix) && !comment.body.includes(markerPrefix),
+	).length;
 	const assertTargetUnchanged = async (): Promise<void> => {
 		// Revalidate local intent first: another process may commit or switch the
 		// shared worktree while publication is listing/building comments.
@@ -457,7 +486,7 @@ export async function publishRawAudit(input: PublishAuditInput): Promise<Publish
 	let publishedUrl = pr.url;
 	try {
 		for (const [index, body] of bodies.entries()) {
-			const marker = rawAuditMarker(provenance, input.state.task, index + 1);
+			const marker = rawAuditMarker(provenance, input.state.task, auditId, index + 1);
 			const existing = managed.find((comment) => comment.body.includes(marker));
 			if (existing) unused.delete(existing.id);
 			await writeFile(bodyPath, JSON.stringify({ body }), { encoding: "utf8", mode: 0o600 });
@@ -495,5 +524,6 @@ export async function publishRawAudit(input: PublishAuditInput): Promise<Publish
 		prUrl: pr.url,
 		commentUrl: publishedUrl,
 		commentCount: bodies.length,
+		foreignCommentCount,
 	};
 }

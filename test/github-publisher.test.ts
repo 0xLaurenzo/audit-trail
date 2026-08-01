@@ -21,8 +21,10 @@ const provenance: GitProvenance = {
 	worktreeDirty: false,
 	sessionId: "session-1",
 };
+const AUDIT_ID = "11111111-2222-4333-8444-555555555555";
 const state: AuditState = {
 	task: "core",
+	auditId: AUDIT_ID,
 	logPath: "/repo/.audit/core.tsv",
 	provenance,
 };
@@ -66,7 +68,7 @@ test("readable GitHub comments split at decision rows and reconstruct exact TSV 
 	const comments = buildRawGitHubComments(state, rows, raw);
 	assert.equal(comments.length, 3);
 	assert.equal(comments.map(extractTsv).join(""), raw);
-	assert.ok(comments[0].includes(rawAuditMarker(provenance, "core", 1)));
+	assert.ok(comments[0].includes(rawAuditMarker(provenance, "core", AUDIT_ID, 1)));
 	assert.ok(comments[1].includes("(2/3)"));
 	assert.ok(comments[2].includes("part 3 of 3"));
 	for (const [index, comment] of comments.entries()) assert.ok(comment.includes(`### D000${index + 1}`));
@@ -226,8 +228,12 @@ test("publisher updates managed comments and removes stale parts idempotently", 
 				return {
 					code: 0,
 					stdout: JSON.stringify([[
-						{ id: 10, html_url: "old-1", body: rawAuditMarker(provenance, "core", 1), user: { login: "reviewer" } },
-						{ id: 11, html_url: "old-2", body: rawAuditMarker(provenance, "core", 2), user: { login: "reviewer" } },
+						{ id: 10, html_url: "old-1", body: rawAuditMarker(provenance, "core", AUDIT_ID, 1), user: { login: "reviewer" } },
+						{ id: 11, html_url: "old-2", body: rawAuditMarker(provenance, "core", AUDIT_ID, 2), user: { login: "reviewer" } },
+						// Foreign: same task, same author, different audit identity.
+						{ id: 12, html_url: "foreign-1", body: rawAuditMarker(provenance, "core", "99999999-8888-4777-a666-555555555555", 1), user: { login: "reviewer" } },
+						// Foreign: pre-identity legacy marker format.
+						{ id: 13, html_url: "foreign-2", body: "<!-- pi-audit-trail:owner/repo:core:part:1 -->", user: { login: "reviewer" } },
 					]]),
 					stderr: "",
 				};
@@ -249,11 +255,31 @@ test("publisher updates managed comments and removes stale parts idempotently", 
 		prUrl: "https://github.com/owner/repo/pull/4",
 		commentUrl: "https://comment/10",
 		commentCount: 1,
+		foreignCommentCount: 2,
 	});
 	assert.equal(extractTsv(patchedBody), raw);
 	assert.ok(calls.some((args) => args.includes("PATCH") && args.includes("repos/owner/repo/issues/comments/10")));
 	assert.ok(calls.some((args) => args.includes("DELETE") && args.includes("repos/owner/repo/issues/comments/11")));
 	assert.ok(!calls.some((args) => args.includes("POST")));
+	// Foreign same-task comments must never be modified or removed, regardless
+	// of author: a different audit identity and the legacy pre-identity format
+	// are both untouchable.
+	assert.ok(
+		!calls.some((args) => args.some((arg) => arg.includes("/comments/12") || arg.includes("/comments/13"))),
+		"foreign audit comments are never PATCHed or DELETEd",
+	);
+});
+
+test("publisher refuses a state without an audit identity before any remote call", async () => {
+	const runner: CommandRunner = {
+		async exec() {
+			throw new Error("no external command may run for an identity-less publish");
+		},
+	};
+	await assert.rejects(
+		() => publishRawAudit({ runner, state: { ...state, auditId: undefined }, rows: [], rawTsv: rawFor([]), selector: "4" }),
+		/no identity/,
+	);
 });
 
 test("publisher aborts before comment mutation when the PR head changes after validation", async () => {

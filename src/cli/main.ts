@@ -340,7 +340,7 @@ async function commandPublish(workflow: AuditWorkflow, selectorArg: string, io: 
 	}
 	const result = await publishRawAudit({
 		runner: processRunner(workflow.root),
-		state,
+		state: { ...state, auditId: await workflow.ensureAuditId() },
 		rows,
 		rawTsv,
 		selector: selectorArg || undefined,
@@ -348,6 +348,11 @@ async function commandPublish(workflow: AuditWorkflow, selectorArg: string, io: 
 	io.out(
 		`Published audit in ${result.commentCount} readable comment${result.commentCount === 1 ? "" : "s"} with canonical TSV on PR #${result.prNumber}: ${result.commentUrl}`,
 	);
+	if (result.foreignCommentCount) {
+		io.err(
+			`Warning: ${result.foreignCommentCount} same-task audit comment${result.foreignCommentCount === 1 ? "" : "s"} from a different audit exist on this PR and were left untouched; remove them manually if unwanted.`,
+		);
+	}
 	return 0;
 }
 

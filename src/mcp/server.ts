@@ -275,12 +275,20 @@ export class McpAuditServer {
 				if (blocker) throw new Error(`${blocker}. Run audit_review before publishing.`);
 				const result = await publishRawAudit({
 					runner: this.runner,
-					state,
+					state: { ...state, auditId: await this.workflow.ensureAuditId() },
 					rows,
 					rawTsv,
 					selector: optionalString(args, "selector"),
 				});
-				return `Published audit in ${result.commentCount} readable comment${result.commentCount === 1 ? "" : "s"} with canonical TSV on PR #${result.prNumber}: ${result.commentUrl}`;
+				const lines = [
+					`Published audit in ${result.commentCount} readable comment${result.commentCount === 1 ? "" : "s"} with canonical TSV on PR #${result.prNumber}: ${result.commentUrl}`,
+				];
+				if (result.foreignCommentCount) {
+					lines.push(
+						`Warning: ${result.foreignCommentCount} same-task audit comment${result.foreignCommentCount === 1 ? "" : "s"} from a different audit exist on this PR and were left untouched; remove them manually if unwanted.`,
+					);
+				}
+				return lines.join("\n");
 			}
 			case "audit_close": {
 				const result = await this.workflow.close();
