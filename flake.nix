@@ -17,11 +17,14 @@
       packages = forAllSystems (system:
         let
           pkgs = import nixpkgs { inherit system; };
+          # package.json is the single version source; manifests are
+          # test-enforced against it so nothing else hardcodes the version.
+          packageJson = builtins.fromJSON (builtins.readFile ./package.json);
         in
         {
           default = pkgs.buildNpmPackage {
             pname = "pi-audit-trail";
-            version = "0.3.0";
+            version = packageJson.version;
             src = self;
             npmDepsHash = "sha256-c3tSPyi07/MycXS46rU5oGs1v5YEBwrySSgOcD5ERRM=";
             npmInstallFlags = [ "--omit=dev" ];
