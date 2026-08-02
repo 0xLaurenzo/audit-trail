@@ -13,63 +13,55 @@ It works the same across **Pi**, **Claude Code**, **Codex**, and **OpenCode** (p
 
 Requires Node.js 22+ and Git. Publishing to PRs requires an authenticated [`gh`](https://cli.github.com) CLI.
 
-### 1. Get the tool
+Pi, Claude Code, and Codex install straight from GitHub through their own package managers — no checkout needed. OpenCode (and Nix users) install from a checkout or Nix profile. Each harness section later in this document details exactly what is configured and the trust implications.
 
-From a checkout:
-
-```bash
-git clone https://github.com/0xLaurenzo/audit-trail
-cd audit-trail && npm install --omit=dev
-./bin/audit-trail help
-```
-
-Or with Nix, which puts `audit-trail` on your PATH from an immutable store path (upgrade with `nix profile upgrade pi-audit-trail`, then rerun the harness install commands below):
-
-```bash
-nix profile install github:0xLaurenzo/audit-trail
-```
-
-### 2. Register your harnesses
-
-Run `audit-trail install <pi|claude|codex|opencode|all>` (from a checkout: `./bin/audit-trail install ...`). The installer is idempotent and collision-safe: it preserves unrelated configuration and refuses to touch files or entries it cannot prove it owns. Each harness section later in this document details exactly what is configured and the trust implications.
-
-#### Pi
-
-```bash
-audit-trail install pi
-```
-
-Registers the extension entry point in `~/.pi/agent/settings.json` (JSONC-safe, localized edit). Run `/reload` in an existing pi session to activate. Alternatively, skip the checkout entirely and use pi's package manager — it clones, installs dependencies, and registers in one step:
+### Pi
 
 ```bash
 pi install git:github.com/0xLaurenzo/audit-trail       # user-wide
 pi install -l git:github.com/0xLaurenzo/audit-trail    # project-local
-pi -e /path/to/audit-trail                             # load a dev checkout directly
 ```
 
-#### Claude Code
+Pi clones the package, installs its dependencies, and registers the extension in one step; run `/reload` in an existing session to activate. During development, load a checkout directly with `pi -e /path/to/audit-trail`.
+
+### Claude Code
 
 ```bash
-audit-trail install claude
+claude plugin marketplace add 0xLaurenzo/audit-trail
+claude plugin install audit-trail@audit-trail
 ```
 
-Links `~/.claude/skills/audit-trail` to the installed package; Claude Code loads it as the `audit-trail@skills-dir` plugin (commands, hooks, and MCP tools) on the **next session**. No marketplace and no `settings.json` edits. For headless use, pre-authorize the `mcp__plugin_audit-trail_audit-trail` MCP server in your allowed tools.
+Claude Code fetches the repository as a marketplace and installs the plugin (commands, hooks, and MCP tools) for the **next session**; update later with `claude plugin marketplace update audit-trail`. For headless use, pre-authorize the `mcp__plugin_audit-trail_audit-trail` MCP server in your allowed tools. From a checkout or Nix install, `audit-trail install claude` instead links the package into `~/.claude/skills/audit-trail`, which loads as `audit-trail@skills-dir` with no marketplace and no `settings.json` edits.
 
-#### Codex
+### Codex
 
 ```bash
-audit-trail install codex
+codex plugin marketplace add 0xLaurenzo/audit-trail
+codex plugin add audit-trail@audit-trail
 ```
 
-Requires the `codex` CLI. Links the plugin into `~/plugins/audit-trail`, registers it in the personal local marketplace, and runs `codex plugin add`. Then start a **new Codex thread** and approve the plugin's `SessionStart` and `PreToolUse` hooks via `/hooks` — installation never grants hook trust automatically. Invoke the skill with `$audit-trail` or `/skills`.
+Codex snapshots the repository marketplace and installs the plugin (the `$audit-trail` skill, hooks, and MCP tools) into its plugin cache. Then start a **new Codex thread** and approve the plugin's `SessionStart` and `PreToolUse` hooks via `/hooks` — installation never grants hook trust automatically. From a checkout or Nix install, `audit-trail install codex` instead links the package through the personal local marketplace.
 
-#### OpenCode
+### OpenCode
+
+OpenCode loads remote plugins only from npm, so install from a checkout or Nix profile:
 
 ```bash
-audit-trail install opencode
+git clone https://github.com/0xLaurenzo/audit-trail
+cd audit-trail && npm install --omit=dev
+./bin/audit-trail install opencode
 ```
 
-Writes a plugin shim to `~/.config/opencode/plugins/audit-trail.ts` and the `/audit-*` commands under `~/.config/opencode/commands/`; it never touches `opencode.json`. Restart OpenCode to load the plugin. For project-local activation instead, see the OpenCode section below.
+This writes a plugin shim to `~/.config/opencode/plugins/audit-trail.ts` and the `/audit-*` commands under `~/.config/opencode/commands/`; it never touches `opencode.json`. Restart OpenCode to load the plugin. For project-local activation instead, see the OpenCode section below.
+
+### Nix
+
+```bash
+nix profile install github:0xLaurenzo/audit-trail
+audit-trail install all    # or: pi | claude | codex | opencode
+```
+
+Puts `audit-trail` on your PATH from an immutable store path and registers harnesses through the collision-safe installer, which preserves unrelated configuration and refuses to touch entries it cannot prove it owns. Upgrade with `nix profile upgrade pi-audit-trail`, then rerun `audit-trail install`.
 
 ## Use
 
@@ -140,7 +132,7 @@ The Pi installer records the exact paths it manages in `~/.pi/agent/audit-trail/
 
 ## Claude Code
 
-The package doubles as a Claude Code plugin: `.claude-plugin/plugin.json` at the package root declares commands, hooks, and an MCP server under `claude/`. Installation is one symlink:
+The package doubles as a Claude Code plugin: `.claude-plugin/plugin.json` at the package root declares commands, hooks, and an MCP server under `claude/`, and `.claude-plugin/marketplace.json` makes the repository itself an installable marketplace (`claude plugin marketplace add 0xLaurenzo/audit-trail`). Marketplace installs are bare clones, so the plugin's runtime — CLI, hooks, and MCP server — deliberately has no external dependencies; only the `audit-trail install` command needs the package's declared dependencies and says so when they are missing. From a checkout or Nix install, installation is instead one symlink:
 
 ```bash
 audit-trail install claude
@@ -161,7 +153,7 @@ Trust implications: enabling the plugin means Claude Code runs the plugin's hook
 
 ## Codex
 
-The package is also a Codex plugin: `.codex-plugin/plugin.json` bundles the `$audit-trail` Agent Skill, `hooks/hooks.json`, and `.mcp.json`. Install it with:
+The package is also a Codex plugin: `.codex-plugin/plugin.json` bundles the `$audit-trail` Agent Skill, `hooks/hooks.json`, and `.mcp.json`, and `.agents/plugins/marketplace.json` makes the repository an installable Codex marketplace (`codex plugin marketplace add 0xLaurenzo/audit-trail`). Codex requires marketplace plugins to live below the marketplace root, so the checked-in `plugins/audit-trail` symlink routes that subdirectory back to the repository root; Codex resolves it once when copying the plugin into its cache. From a checkout or Nix install, install through the personal local marketplace instead:
 
 ```bash
 audit-trail install codex

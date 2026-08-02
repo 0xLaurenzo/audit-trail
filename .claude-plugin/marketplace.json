@@ -1,0 +1,15 @@
+{
+	"name": "audit-trail",
+	"owner": {
+		"name": "0xLaurenzo",
+		"url": "https://github.com/0xLaurenzo"
+	},
+	"plugins": [
+		{
+			"name": "audit-trail",
+			"source": "./",
+			"description": "Append-only decision auditing with independent review, shared across harnesses per Git worktree",
+			"category": "Developer Tools"
+		}
+	]
+}
