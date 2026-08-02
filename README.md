@@ -1,78 +1,69 @@
 # Audit trail
 
-A cross-harness extension for reviewing consequential agent choices instead of reconstructing them from a large diff. Harness-neutral audit behavior lives under `src/core/`; Pi, Claude Code, Codex, and OpenCode adapters expose the same worktree workflow through their native extension, plugin, hook, skill, and MCP surfaces.
+Agents make dozens of consequential choices per task — compatibility trade-offs, schema decisions, requirement interpretations, silent pivots — and reviewers usually meet them only as a large diff. Audit trail records those choices *as they are made* in an append-only, per-worktree decision log, has an independent model review the log against the actual changes, and publishes the result to the pull request.
 
-## Install with Nix
+It works the same across **Pi**, **Claude Code**, **Codex**, and **OpenCode** (plus a standalone CLI and MCP server): harness-neutral behavior lives in `src/core/`, and each harness adapter exposes the identical worktree workflow through its native extension, plugin, hook, skill, and MCP surfaces. Sessions from different harnesses interoperate on one audit.
 
-This repository is currently private, so GitHub SSH access must be configured first.
+- **Append-only TSV** — the canonical artifact under `.audit/`; every decision records what triggered it, the chosen behavior, rejected alternatives, evidence, and confidence. Corrections supersede; history is never rewritten.
+- **Independent review** — a separate read-only model (cross-provider when possible, truthfully recorded) reviews the log, diff, and repository, and must end with an explicit approve/block verdict.
+- **Gated publication** — approving review required before the audit is published as deterministic, reviewer-friendly PR comments or closed.
+- **Write-protected artifacts** — hooks and guards prevent agents from editing the audit files directly.
 
-```bash
-nix profile install 'git+ssh://git@github.com/0xLaurenzo/audit-trail.git'
-```
+## Install
 
-Then register the immutable profile path in `~/.pi/agent/settings.json`:
+Requires Node.js 22+ and Git. Publishing to PRs requires an authenticated [`gh`](https://cli.github.com) CLI.
 
-```json
-{
-  "extensions": [
-    "/Users/you/.nix-profile/share/pi-audit-trail/src/adapters/pi.ts"
-  ]
-}
-```
-
-Run `/reload` in an existing pi session. Update the installed extension with:
+### Any harness, from a checkout
 
 ```bash
-nix profile upgrade pi-audit-trail
+git clone https://github.com/0xLaurenzo/audit-trail
+cd audit-trail && npm install --omit=dev
+./bin/audit-trail install all    # or: pi | claude | codex | opencode
 ```
 
-## Install with pi
+The installer is idempotent and collision-safe: it preserves unrelated configuration and refuses to touch files or entries it cannot prove it owns. See the per-harness sections below for what each target configures and its trust implications.
 
-Alternatively, install it through pi over SSH:
+### Pi
 
 ```bash
-pi install git:git@github.com:0xLaurenzo/audit-trail
+pi install git:github.com/0xLaurenzo/audit-trail
 ```
 
-For project-local installation:
+Use `pi install -l git:github.com/0xLaurenzo/audit-trail` for project-local installation, or load a checkout directly during development with `pi -e /path/to/audit-trail`.
+
+### Nix
 
 ```bash
-pi install -l git:git@github.com:0xLaurenzo/audit-trail
+nix profile install github:0xLaurenzo/audit-trail
+audit-trail install pi     # registers the immutable extension path
 ```
 
-During local development, load the checkout directly:
+This puts `audit-trail` on your PATH from an immutable store path. Upgrade with `nix profile upgrade pi-audit-trail`, rerun `audit-trail install pi`, then `/reload` in an existing pi session.
+
+## Use
+
+Start an audit in the worktree before implementation work, record decisions as they arise, then review, publish, and close:
+
+```text
+/audit-start issue-42-rate-limiting
+... implement; the agent records reviewer-relevant decisions via the audit_decision tool ...
+/audit-status
+/audit-review              # independent model reviews log + diff, verdict approve/block
+/audit-publish             # posts decision cards + canonical TSV to the branch's PR
+/audit-close
+```
+
+While an audit is active, every harness injects guidance so the agent records reviewer-relevant choices — compatibility, API/schema behavior, architecture trade-offs, correctness or security invariants, ambiguous requirements, user corrections, pivots — and skips routine noise like commits, formatting, or ordinary verification. The same workflow is available outside any harness:
 
 ```bash
-pi -e /path/to/audit-trail
+audit-trail start issue-42-rate-limiting
+audit-trail decision --phase core --origin "user requirement" --decision "..." \
+  --why "..." --confidence high --evidence "src/x.ts:10" --result verified
+audit-trail review openai/gpt-5.2 --mode cross-provider
+audit-trail publish && audit-trail close
 ```
 
-## Development
-
-Run the full check (syntax checks plus every test suite) with Node.js 22 or newer:
-
-```bash
-npm run typecheck   # full static type-check (tsc --noEmit)
-npm run check       # syntax checks + npm test
-npm test            # all test suites
-```
-
-The core modules depend only on Node.js and explicit ports from `src/core/ports.ts`; they do not import Pi packages. Adapter-specific behavior belongs under `src/adapters/`. CI (`.github/workflows/ci.yml`) runs install, type-check, and all tests on every pull request; make that workflow a required branch-protection check.
-
-### Testing model
-
-Testing happens in two layers:
-
-- **Core unit tests** (`test/audit-store.test.ts`, `test/workflow.test.ts`, `test/independent-review.test.ts`, ...) exercise the shared, harness-neutral behavior once: storage, locking, review fallback, publication, gating.
-- **Harness conformance tests** (`test/harness-conformance.test.ts`) run one shared behavior contract against every shipped harness through its real adapter boundary — registered Pi commands/tools/hooks, OpenCode plugin tools/hooks, and Claude/Codex hooks plus the MCP server. Only external systems (Git, GitHub, reviewer CLIs) are simulated. A second capability-gated contract covers catalog-driven reviewer fallback for harnesses that support model discovery.
-
-Each shipped harness declares its capabilities in `src/harness/capabilities.ts`. A capability is either backed by passing contract tests or declared unsupported, in which case its contract tests are *skipped with a visible reason* — never silently omitted. Harness-specific suites (JSON stream parsing, installers, packaging smoke tests) remain separate because they test genuinely platform-specific behavior.
-
-### Adding a new harness
-
-1. Implement the adapter under `src/adapters/` and its installer in `src/install/installers.ts`.
-2. Declare its capabilities in `src/harness/capabilities.ts` (`SHIPPED_HARNESSES` + `HARNESS_CAPABILITIES`). Declare only what the harness truthfully supports.
-3. Add a conformance driver in `test/helpers/harness-drivers.ts` (`CONFORMANCE_DRIVERS`) that drives the real adapter boundary with simulated externals.
-4. Run `npm run check` — the registry-completeness test fails until capabilities, driver, and installer agree, and the contract suite then runs your adapter automatically.
+The sections below document the shared state model, each harness integration, the review and publication model, and development.
 
 ## Shared worktree state
 
@@ -255,3 +246,31 @@ Render deterministic reviewer-friendly decision cards.
 Each audit lifecycle carries a stable identity (a UUID minted at `start`, or on demand for state created before identities existed) that is embedded in every published comment's hidden marker. Publication only ever updates or deletes comments carrying this exact identity: same-task comments from a different audit — including another worktree, a collaborator, or the pre-identity marker format — are never touched, and publish warns when such foreign comments exist so duplicates are visible. Because legacy markers cannot prove ownership, republishing an audit first published before identities existed creates fresh comments; remove the old ones manually if unwanted.
 
 The exact canonical TSV remains in a collapsed block beneath the cards. GitHub comments have a size limit, so large audits are split at decision-row boundaries based on the combined Markdown and TSV size. Each card stays with its exact source row; concatenating fenced TSV blocks in part order recovers the original file byte-for-byte. Hidden markers make publication idempotent: subsequent runs update each existing part and remove stale extra parts instead of creating duplicates. Publish before `/audit-close`; closing atomically moves `.audit/active.json` to `.audit/<slug>.closed.json`, preserving the lifecycle for an explicit reopen.
+
+## Development
+
+Run the full check (syntax checks plus every test suite) with Node.js 22 or newer:
+
+```bash
+npm run typecheck   # full static type-check (tsc --noEmit)
+npm run check       # syntax checks + npm test
+npm test            # all test suites
+```
+
+The core modules depend only on Node.js and explicit ports from `src/core/ports.ts`; they do not import Pi packages. Adapter-specific behavior belongs under `src/adapters/`. CI (`.github/workflows/ci.yml`) runs install, type-check, and all tests on every pull request; make that workflow a required branch-protection check.
+
+### Testing model
+
+Testing happens in two layers:
+
+- **Core unit tests** (`test/audit-store.test.ts`, `test/workflow.test.ts`, `test/independent-review.test.ts`, ...) exercise the shared, harness-neutral behavior once: storage, locking, review fallback, publication, gating.
+- **Harness conformance tests** (`test/harness-conformance.test.ts`) run one shared behavior contract against every shipped harness through its real adapter boundary — registered Pi commands/tools/hooks, OpenCode plugin tools/hooks, and Claude/Codex hooks plus the MCP server. Only external systems (Git, GitHub, reviewer CLIs) are simulated. A second capability-gated contract covers catalog-driven reviewer fallback for harnesses that support model discovery.
+
+Each shipped harness declares its capabilities in `src/harness/capabilities.ts`. A capability is either backed by passing contract tests or declared unsupported, in which case its contract tests are *skipped with a visible reason* — never silently omitted. Harness-specific suites (JSON stream parsing, installers, packaging smoke tests) remain separate because they test genuinely platform-specific behavior.
+
+### Adding a new harness
+
+1. Implement the adapter under `src/adapters/` and its installer in `src/install/installers.ts`.
+2. Declare its capabilities in `src/harness/capabilities.ts` (`SHIPPED_HARNESSES` + `HARNESS_CAPABILITIES`). Declare only what the harness truthfully supports.
+3. Add a conformance driver in `test/helpers/harness-drivers.ts` (`CONFORMANCE_DRIVERS`) that drives the real adapter boundary with simulated externals.
+4. Run `npm run check` — the registry-completeness test fails until capabilities, driver, and installer agree, and the contract suite then runs your adapter automatically.
