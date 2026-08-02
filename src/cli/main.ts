@@ -27,7 +27,6 @@ import { readClaudeSessionState } from "../adapters/claude-session.ts";
 import { handleCodexHook } from "../adapters/codex-hook.ts";
 import { codexMcpOptions } from "../adapters/codex-mcp.ts";
 import { createPiSubprocessReviewer } from "../adapters/pi-reviewer.ts";
-import { packageRootFromModule, selectInstallers } from "../install/installers.ts";
 import { McpAuditServer, serveStdio, type McpServerOptions } from "../mcp/server.ts";
 
 const HELP = `audit-trail — append-only decision auditing for one Git worktree
@@ -309,6 +308,21 @@ async function commandInstall(target: string, io: CliIo): Promise<number> {
 		io.err("Usage: audit-trail install <pi|claude|codex|opencode|all>");
 		return 1;
 	}
+	// Loaded lazily: the installer module needs jsonc-parser, which is absent
+	// in bare marketplace clones. Hooks, MCP, and every other CLI command must
+	// keep a dependency-free import graph so those installs work unmodified.
+	let installerModule: typeof import("../install/installers.ts");
+	try {
+		installerModule = await import("../install/installers.ts");
+	} catch (error: any) {
+		io.err(
+			`The install command needs the package's declared dependencies (${error?.message ?? error}). ` +
+			"Run `npm install --omit=dev` in the package root, or use a Nix-installed audit-trail. " +
+			"Marketplace-managed plugin installs do not need this command.",
+		);
+		return 1;
+	}
+	const { packageRootFromModule, selectInstallers } = installerModule;
 	const ctx = { home: homedir(), packageRoot: packageRootFromModule(import.meta.url), runner: processRunner() };
 	let failed = false;
 	for (const installer of selectInstallers(target)) {

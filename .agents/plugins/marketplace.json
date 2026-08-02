@@ -1,0 +1,11 @@
+{
+	"name": "audit-trail",
+	"plugins": [
+		{
+			"name": "audit-trail",
+			"source": { "source": "local", "path": "./plugins/audit-trail" },
+			"policy": { "installation": "AVAILABLE", "authentication": "ON_INSTALL" },
+			"category": "Developer Tools"
+		}
+	]
+}
