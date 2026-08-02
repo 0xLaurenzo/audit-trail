@@ -114,6 +114,8 @@ CLI rows are attributed as `cli/<user>@<host>` in the TSV `session` cell. `audit
 
 `audit-trail install <pi|claude|codex|opencode|all>` configures harnesses idempotently from a registry. `pi` registers the extension entry point in `~/.pi/agent/settings.json`, `claude` links the Claude Code plugin, `codex` installs the Codex plugin through the personal local marketplace, and `opencode` installs its plugin shim and `/audit-*` commands. Installers preserve unrelated configuration and reject same-name paths or entries they cannot prove they own. Declaratively managed settings (for example home-manager) fail with a clear error — add equivalent declarations in your configuration instead.
 
+The Pi installer records the exact paths it manages in `~/.pi/agent/audit-trail/installed.json`. It accepts JSON settings with comments and trailing commas and edits only the `extensions` array, preserving unrelated formatting and comments. On an immutable-package upgrade it replaces only an exact path in that ownership record; it never infers ownership from a directory or package name. An exact existing registration is adopted safely when the sidecar is first created. Differently located registrations from installer versions predating the sidecar remain untouched and may load the extension twice; remove the obsolete entry manually, then rerun the installer. Symlinked/declaratively managed settings, malformed ownership records, invalid JSON/JSONC, and incompatible `extensions` values fail before settings mutation with a manual registration instruction.
+
 ## Claude Code
 
 The package doubles as a Claude Code plugin: `.claude-plugin/plugin.json` at the package root declares commands, hooks, and an MCP server under `claude/`. Installation is one symlink:

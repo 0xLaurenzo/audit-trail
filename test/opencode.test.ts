@@ -309,6 +309,9 @@ test("installed-version smoke test resolves the adapter from a staged artifact, 
 			{ recursive: true },
 		);
 		await cp(join(checkout, "node_modules", "zod"), join(packageRoot, "node_modules", "zod"), { recursive: true });
+		await cp(join(checkout, "node_modules", "jsonc-parser"), join(packageRoot, "node_modules", "jsonc-parser"), {
+			recursive: true,
+		});
 		await opencodeInstaller.install({ home, packageRoot });
 		const shimPath = join(home, ".config", "opencode", "plugins", "audit-trail.ts");
 		const module: any = await import(pathToFileURL(shimPath).href);

@@ -26,7 +26,8 @@
     "check": "node --experimental-strip-types --check src/adapters/pi.ts && node --experimental-strip-types --check src/adapters/opencode.ts && node --experimental-strip-types --check src/cli/main.ts && npm test"
   },
   "dependencies": {
-    "@opencode-ai/plugin": "1.18.8"
+    "@opencode-ai/plugin": "1.18.8",
+    "jsonc-parser": "3.3.1"
   },
   "peerDependencies": {
     "@earendil-works/pi-ai": "*",
