@@ -13,32 +13,63 @@ It works the same across **Pi**, **Claude Code**, **Codex**, and **OpenCode** (p
 
 Requires Node.js 22+ and Git. Publishing to PRs requires an authenticated [`gh`](https://cli.github.com) CLI.
 
-### Any harness, from a checkout
+### 1. Get the tool
+
+From a checkout:
 
 ```bash
 git clone https://github.com/0xLaurenzo/audit-trail
 cd audit-trail && npm install --omit=dev
-./bin/audit-trail install all    # or: pi | claude | codex | opencode
+./bin/audit-trail help
 ```
 
-The installer is idempotent and collision-safe: it preserves unrelated configuration and refuses to touch files or entries it cannot prove it owns. See the per-harness sections below for what each target configures and its trust implications.
-
-### Pi
-
-```bash
-pi install git:github.com/0xLaurenzo/audit-trail
-```
-
-Use `pi install -l git:github.com/0xLaurenzo/audit-trail` for project-local installation, or load a checkout directly during development with `pi -e /path/to/audit-trail`.
-
-### Nix
+Or with Nix, which puts `audit-trail` on your PATH from an immutable store path (upgrade with `nix profile upgrade pi-audit-trail`, then rerun the harness install commands below):
 
 ```bash
 nix profile install github:0xLaurenzo/audit-trail
-audit-trail install pi     # registers the immutable extension path
 ```
 
-This puts `audit-trail` on your PATH from an immutable store path. Upgrade with `nix profile upgrade pi-audit-trail`, rerun `audit-trail install pi`, then `/reload` in an existing pi session.
+### 2. Register your harnesses
+
+Run `audit-trail install <pi|claude|codex|opencode|all>` (from a checkout: `./bin/audit-trail install ...`). The installer is idempotent and collision-safe: it preserves unrelated configuration and refuses to touch files or entries it cannot prove it owns. Each harness section later in this document details exactly what is configured and the trust implications.
+
+#### Pi
+
+```bash
+audit-trail install pi
+```
+
+Registers the extension entry point in `~/.pi/agent/settings.json` (JSONC-safe, localized edit). Run `/reload` in an existing pi session to activate. Alternatively, skip the checkout entirely and use pi's package manager — it clones, installs dependencies, and registers in one step:
+
+```bash
+pi install git:github.com/0xLaurenzo/audit-trail       # user-wide
+pi install -l git:github.com/0xLaurenzo/audit-trail    # project-local
+pi -e /path/to/audit-trail                             # load a dev checkout directly
+```
+
+#### Claude Code
+
+```bash
+audit-trail install claude
+```
+
+Links `~/.claude/skills/audit-trail` to the installed package; Claude Code loads it as the `audit-trail@skills-dir` plugin (commands, hooks, and MCP tools) on the **next session**. No marketplace and no `settings.json` edits. For headless use, pre-authorize the `mcp__plugin_audit-trail_audit-trail` MCP server in your allowed tools.
+
+#### Codex
+
+```bash
+audit-trail install codex
+```
+
+Requires the `codex` CLI. Links the plugin into `~/plugins/audit-trail`, registers it in the personal local marketplace, and runs `codex plugin add`. Then start a **new Codex thread** and approve the plugin's `SessionStart` and `PreToolUse` hooks via `/hooks` — installation never grants hook trust automatically. Invoke the skill with `$audit-trail` or `/skills`.
+
+#### OpenCode
+
+```bash
+audit-trail install opencode
+```
+
+Writes a plugin shim to `~/.config/opencode/plugins/audit-trail.ts` and the `/audit-*` commands under `~/.config/opencode/commands/`; it never touches `opencode.json`. Restart OpenCode to load the plugin. For project-local activation instead, see the OpenCode section below.
 
 ## Use
 
