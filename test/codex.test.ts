@@ -163,7 +163,11 @@ test("Codex MCP resumes another harness audit, attributes rows, and derives trut
 			calls.push([command, ...args]);
 			if (args[0] === "--version") return { code: 0, stdout: "codex-cli 0.133.0", stderr: "" };
 			const outputPath = args[args.indexOf("--output-last-message") + 1];
-			await writeFile(outputPath, "No flags\nVERDICT: approve\n", "utf8");
+			await writeFile(
+				outputPath,
+				"No flags\n\n## Design-friction evaluation\n\nNone identified.\n\nVERDICT: approve\n",
+				"utf8",
+			);
 			return { code: 0, stdout: "progress ignored", stderr: "" };
 		},
 	};

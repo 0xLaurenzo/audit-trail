@@ -4,7 +4,14 @@ import { sha256Hex } from "./active-state.ts";
 import { parseRows } from "./audit-store.ts";
 import type { ReviewerPort } from "./ports.ts";
 import type { ReviewCandidate } from "./reviewer-candidates.ts";
-import { buildReviewDocument, buildReviewPrompt, parseReviewVerdict, reviewFindingsBody, writeReviewArtifact } from "./review.ts";
+import {
+	buildReviewDocument,
+	buildReviewPrompt,
+	parseDesignFrictionEvaluation,
+	parseReviewVerdict,
+	reviewAuditFindingsBody,
+	writeReviewArtifact,
+} from "./review.ts";
 import type { ReviewMode, ReviewVerdict } from "./types.ts";
 import type { AuditWorkflow } from "./workflow.ts";
 
@@ -37,6 +44,8 @@ export interface IndependentReviewResult {
 	mode: ReviewMode;
 	/** Full raw reviewer output; callers render a bounded findings excerpt. */
 	report: string;
+	/** Mandatory structured evaluation parsed from the completed report. */
+	designFriction: string;
 }
 
 /**
@@ -67,9 +76,11 @@ export function summarizeReviewerFailure(error: unknown): string {
  * Independent review: the reviewer reads the TSV, the Git diff and repository
  * (or a harness transcript when one is supplied), and its explicit verdict is
  * recorded in the audit's review
- * checkpoint. A blocking verdict keeps publish and close gated until findings
- * are addressed and the audit is re-reviewed; a missing or malformed verdict
- * is an invalid attempt that advances to the next candidate.
+ * checkpoint. Every completed report also contains a validated, non-empty
+ * design-friction evaluation. A blocking verdict keeps publish and close gated
+ * until findings are addressed and the audit is re-reviewed; a missing or
+ * malformed evaluation or verdict is an invalid attempt that advances to the
+ * next candidate.
  *
  * Candidates are attempted in order, at most once each. An attempt fails
  * when the reviewer runtime throws (quota/rate limits, provider or transport
@@ -110,9 +121,10 @@ export async function runIndependentReview(input: IndependentReviewInput): Promi
 			input.onAttemptFailure?.(candidate, summary);
 			continue;
 		}
-		// A verdict is the terminal-output contract. Missing or malformed
-		// verdicts are invalid/incomplete attempts and must fall back; only an
-		// explicit block is a completed blocking review.
+		// The verdict and design-friction section form the terminal-output
+		// contract. Missing or malformed output is an invalid/incomplete attempt
+		// and must fall back; only an explicit block with audit findings is a
+		// completed blocking review.
 		const verdict = parseReviewVerdict(output);
 		if (!verdict) {
 			const summary = "reviewer output had no valid terminal verdict";
@@ -120,8 +132,18 @@ export async function runIndependentReview(input: IndependentReviewInput): Promi
 			input.onAttemptFailure?.(candidate, summary);
 			continue;
 		}
-		if (verdict === "block" && !reviewFindingsBody(output)) {
-			const summary = "blocking reviewer output had no findings";
+		const designFriction = parseDesignFrictionEvaluation(output);
+		if (!designFriction) {
+			const summary = "reviewer output had no valid design-friction evaluation";
+			failures.push({ candidate, error: summary });
+			input.onAttemptFailure?.(candidate, summary);
+			continue;
+		}
+		// The mandatory design section must not let an otherwise empty blocking
+		// report bypass the existing requirement for actionable current-work
+		// findings.
+		if (verdict === "block" && !reviewAuditFindingsBody(output)) {
+			const summary = "blocking reviewer output had no audit findings";
 			failures.push({ candidate, error: summary });
 			input.onAttemptFailure?.(candidate, summary);
 			continue;
@@ -141,7 +163,7 @@ export async function runIndependentReview(input: IndependentReviewInput): Promi
 		});
 		await writeReviewArtifact(reviewPath, document);
 		await workflow.recordReview({ path: reviewPath, mode, model, expectedSha256: reviewedSha256, verdict });
-		return { reviewPath, rowCount: rows.length, verdict, model, mode, report: output };
+		return { reviewPath, rowCount: rows.length, verdict, model, mode, report: output, designFriction };
 	}
 	throw new Error(
 		`All reviewer candidates failed:\n${failures

@@ -78,7 +78,11 @@ test("transcript-less review prompt and document target the TSV, diff, and repos
 	assert.match(prompt, /decision IDs and repository evidence/);
 	assert.match(prompt, /"VERDICT: approve"/);
 	assert.match(prompt, /"VERDICT: block"/);
-	assert.match(prompt, /A missing or malformed verdict makes this review attempt invalid/);
+	assert.match(prompt, /concrete challenges or walls that would be substantially simplified by a design-level change/);
+	assert.match(prompt, /exact heading "## Design-friction evaluation"/);
+	assert.match(prompt, /do not reveal private chain-of-thought/);
+	assert.match(prompt, /Design friction is not automatically blocking/);
+	assert.match(prompt, /missing or malformed design-friction section or verdict makes this review attempt invalid/i);
 	assert.doesNotMatch(prompt, /session transcript|session: /);
 	const document = buildReviewDocument({
 		model: "openai/reviewer",
@@ -86,13 +90,13 @@ test("transcript-less review prompt and document target the TSV, diff, and repos
 		logPath: "/repo/.audit/core.tsv",
 		workingDirectory: "/repo",
 		rowCount: 2,
-		output: "No flags\nVERDICT: approve\n",
+		output: "No flags\n\n## Design-friction evaluation\n\nNone identified.\n\nVERDICT: approve\n",
 		harnessName: "cli",
 		verdict: "approve",
 	});
 	assert.equal(
 		document,
-		"# Decision audit review\n\n- Reviewed by: openai/reviewer\n- Review mode: cross-model\n- Verdict: approve\n- Audit log: .audit/core.tsv\n- Decision rows reviewed: 2\n\nNo flags\nVERDICT: approve\n",
+		"# Decision audit review\n\n- Reviewed by: openai/reviewer\n- Review mode: cross-model\n- Verdict: approve\n- Audit log: .audit/core.tsv\n- Decision rows reviewed: 2\n\nNo flags\n\n## Design-friction evaluation\n\nNone identified.\n\nVERDICT: approve\n",
 	);
 });
 

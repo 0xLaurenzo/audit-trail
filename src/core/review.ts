@@ -21,7 +21,7 @@ export function buildReviewPrompt(input: ReviewPromptInput): string {
 	const sessionLine = input.transcriptPath
 		? `\n${harness === "pi" ? "Pi session" : `${harness} session`}: ${input.transcriptPath}`
 		: "";
-	return `You are an independent decision-trail reviewer. Do not redo a general line-by-line code review. Read ${sources}, then report only what a human should scrutinize. Check that logged rows map to real actions, evidence supports claims, consequential forks or pivots were not omitted, verification was not overstated, and choices are general rather than merely sufficient for the observed case. Flag weak evidence, skipped verification, symptom patches, unjustified assumptions, scope creep, and unresolved uncertainty. Point to exact decision IDs and ${evidenceAnchor}. A concise "No flags" is valid. Never modify files.\n\nEnd your report with a verdict on its own final line: "VERDICT: approve" if the audit is trustworthy enough to publish and close, or "VERDICT: block" if any finding must be addressed and re-reviewed first. A missing or malformed verdict makes this review attempt invalid and causes another reviewer to be tried when fallback candidates are available.\n\nAudit log: ${input.logPath}${sessionLine}\nWorking directory: ${input.workingDirectory}`;
+	return `You are an independent decision-trail reviewer. Do not redo a general line-by-line code review. Read ${sources}, then report only what a human should scrutinize. Check that logged rows map to real actions, evidence supports claims, consequential forks or pivots were not omitted, verification was not overstated, and choices are general rather than merely sufficient for the observed case. Flag weak evidence, skipped verification, symptom patches, unjustified assumptions, scope creep, and unresolved uncertainty. Point to exact decision IDs and ${evidenceAnchor}. A concise "No flags" is valid. Never modify files.\n\nAfter the audit findings, perform a separate design-friction evaluation by asking: while reviewing this work, did you encounter concrete challenges or walls that would be substantially simplified by a design-level change? Report only concise, observable friction; do not reveal private chain-of-thought. If friction exists, identify the challenge, the evidence or decision IDs that expose it, the design-level change, and why it would materially simplify future work compared with a local patch. Design friction is not automatically blocking: block only when it reveals a current audit-integrity, correctness, unresolved-decision, or symptom-patch problem; otherwise preserve the suggestion and approve when the audit is trustworthy.\n\nImmediately before the verdict, include the exact heading "## Design-friction evaluation" followed by either "None identified." or the actionable design-friction items. This section is mandatory and must be non-empty. Then end your report with a verdict on its own final line: "VERDICT: approve" if the audit is trustworthy enough to publish and close, or "VERDICT: block" if any finding must be addressed and re-reviewed first. A missing or malformed design-friction section or verdict makes this review attempt invalid and causes another reviewer to be tried when fallback candidates are available.\n\nAudit log: ${input.logPath}${sessionLine}\nWorking directory: ${input.workingDirectory}`;
 }
 
 export interface ReviewDocumentInput {
@@ -57,6 +57,42 @@ export function parseReviewVerdict(output: string): ReviewVerdict | undefined {
 	return match?.[1].toLowerCase() as ReviewVerdict | undefined;
 }
 
+export const DESIGN_FRICTION_HEADING = "## Design-friction evaluation";
+
+function reportLinesWithoutVerdict(report: string): string[] {
+	const lines = report.trim().split(/\r?\n/);
+	if (/^VERDICT:\s*(approve|block)$/i.test(lines.at(-1)?.trim() ?? "")) lines.pop();
+	return lines;
+}
+
+function designFrictionHeadingIndex(lines: string[]): number | undefined {
+	const matches = lines.flatMap((line, index) => line.trim() === DESIGN_FRICTION_HEADING ? [index] : []);
+	return matches.length === 1 ? matches[0] : undefined;
+}
+
+/**
+ * Parse the mandatory final design-friction section. A valid section appears
+ * exactly once, has a non-empty body, contains no later level-two section, and
+ * is immediately followed (apart from blank lines) by the terminal verdict.
+ */
+export function parseDesignFrictionEvaluation(output: string): string | undefined {
+	if (!parseReviewVerdict(output)) return undefined;
+	const lines = reportLinesWithoutVerdict(output);
+	const headingIndex = designFrictionHeadingIndex(lines);
+	if (headingIndex === undefined) return undefined;
+	const bodyLines = lines.slice(headingIndex + 1);
+	if (bodyLines.some((line) => /^##(?:\s|$)/.test(line.trim()))) return undefined;
+	const body = bodyLines.join("\n").trim();
+	return body || undefined;
+}
+
+/** Findings relevant to a blocking verdict, excluding design-only feedback. */
+export function reviewAuditFindingsBody(report: string): string {
+	const lines = reportLinesWithoutVerdict(report);
+	const headingIndex = designFrictionHeadingIndex(lines);
+	return lines.slice(0, headingIndex ?? lines.length).join("\n").trim();
+}
+
 export interface ReviewFindingsExcerpt {
 	text: string;
 	truncated: boolean;
@@ -64,9 +100,7 @@ export interface ReviewFindingsExcerpt {
 
 /** Strip the redundant terminal verdict without altering artifact content. */
 export function reviewFindingsBody(report: string): string {
-	const lines = report.trim().split(/\r?\n/);
-	if (/^VERDICT:\s*(approve|block)$/i.test(lines.at(-1)?.trim() ?? "")) lines.pop();
-	return lines.join("\n").trim();
+	return reportLinesWithoutVerdict(report).join("\n").trim();
 }
 
 /**

@@ -167,6 +167,17 @@ export function registerHarnessConformance({ harness, capabilities, createDriver
 		assert.equal(await checkpoint(root), undefined);
 	});
 
+	contract("reviewer output without the mandatory design-friction evaluation is a failed attempt", async (driver, root) => {
+		await driver.start(TASK);
+		await driver.decide();
+		driver.reviewerScript[driver.explicitReviewModel] = "missing-design-friction";
+		const outcome = await driver.review(driver.explicitReviewModel);
+		assert.equal(outcome.completed, false);
+		assert.match(outcome.message, /no valid design-friction evaluation/);
+		assert.deepEqual(await reviewArtifacts(root), []);
+		assert.equal(await checkpoint(root), undefined);
+	});
+
 	contract("a blocking verdict is recorded truthfully and gates close", async (driver, root) => {
 		await driver.start(TASK);
 		await driver.decide();
@@ -174,6 +185,7 @@ export function registerHarnessConformance({ harness, capabilities, createDriver
 		const outcome = await driver.review(driver.explicitReviewModel);
 		assert.equal(outcome.completed, true, "a blocking review is a completed review, not a failure");
 		assert.match(outcome.message, /D0001 overstates verification\./, "blocking findings must be surfaced inline");
+		assert.match(outcome.message, /## Design-friction evaluation/, "the completed evaluation is surfaced with blocking findings");
 		assert.doesNotMatch(outcome.message, /VERDICT:\s*block/i, "the redundant terminal verdict must be stripped");
 		assert.match(outcome.message, /\.review\..*\.md/, "the canonical artifact path remains visible");
 		const recorded = await checkpoint(root);
@@ -191,6 +203,8 @@ export function registerHarnessConformance({ harness, capabilities, createDriver
 		const outcome = await driver.review(driver.explicitReviewModel);
 		assert.equal(outcome.completed, true);
 		assert.equal((await checkpoint(root))?.verdict, "approve");
+		const [artifact] = await reviewArtifacts(root);
+		assert.match(await readFile(join(root, ".audit", artifact), "utf8"), /## Design-friction evaluation\n\nNone identified\./);
 		const close = await driver.close();
 		assert.equal(close.completed, true, close.message);
 	});

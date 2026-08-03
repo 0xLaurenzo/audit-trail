@@ -5,7 +5,7 @@ Agents make dozens of consequential choices per task — compatibility trade-off
 It works the same across **Pi**, **Claude Code**, **Codex**, and **OpenCode** (plus a standalone CLI and MCP server): harness-neutral behavior lives in `src/core/`, and each harness adapter exposes the identical worktree workflow through its native extension, plugin, hook, skill, and MCP surfaces. Sessions from different harnesses interoperate on one audit.
 
 - **Append-only TSV** — the canonical artifact under `.audit/`; every decision records what triggered it, the chosen behavior, rejected alternatives, evidence, and confidence. Corrections supersede; history is never rewritten.
-- **Independent review** — a separate read-only model (cross-provider when possible, truthfully recorded) reviews the log, diff, and repository, and must end with an explicit approve/block verdict.
+- **Independent review** — a separate read-only model (cross-provider when possible, truthfully recorded) reviews the log, diff, and repository, must evaluate design friction, and ends with an explicit approve/block verdict.
 - **Gated publication** — approving review required before the audit is published as deterministic, reviewer-friendly PR comments or closed.
 - **Write-protected artifacts** — hooks and guards prevent agents from editing the audit files directly.
 
@@ -207,7 +207,9 @@ Add `.audit/` to `.gitignore` or `.git/info/exclude` if trails should remain loc
 
 The reviewer runs through a `ReviewerPort`: harness adapters may supply a native reviewer runtime, and the default implementation spawns a separate no-session `pi` process with read-only tools (it fails fast when `pi` is not installed).
 
-Every review ends with an explicit verdict. The reviewer must finish its report with `VERDICT: approve` or `VERDICT: block`; a missing verdict fails closed to `block`. The verdict is recorded in the review artifact and the review checkpoint. A blocking verdict keeps publish and close gated until the findings are addressed and the audit is re-reviewed — a review certifies the audit, it is not an attendance stamp.
+Every completed review contains a final `## Design-friction evaluation` section followed by an explicit verdict. The reviewer asks whether concrete challenges or walls encountered during review would be substantially simplified by a design-level change. It records either `None identified.` or concise actionable observations covering the friction, evidence or decision IDs, proposed design change, and simplification benefit—never private chain-of-thought. Design friction is not automatically blocking: it changes the verdict only when it exposes a current audit-integrity, correctness, unresolved-decision, or symptom-patch problem.
+
+The reviewer must finish with `VERDICT: approve` or `VERDICT: block`. A missing or malformed design-friction section or verdict invalidates that attempt; fallback tries the next candidate when available, and no artifact or checkpoint is recorded unless a reviewer completes the full contract. The verdict is recorded in the review artifact and checkpoint. A blocking verdict keeps publish and close gated until the findings are addressed and the audit is re-reviewed—a review certifies the audit, it is not an attendance stamp.
 
 ## Publish to a pull request
 
