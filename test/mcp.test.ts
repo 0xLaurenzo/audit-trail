@@ -127,7 +127,11 @@ test("MCP publish rejects a blocking review before invoking GitHub", async () =>
 				return { code: key in outputs ? 0 : 1, stdout: outputs[key] ?? "", stderr: "" };
 			},
 		};
-		const server = makeServer(root, { review: async () => "Finding.\nVERDICT: block\n" }, git);
+		const server = makeServer(
+			root,
+			{ review: async () => "Finding.\n\n## Design-friction evaluation\n\nNone identified.\n\nVERDICT: block\n" },
+			git,
+		);
 		await server.call("audit_start", { task: "task" });
 		await server.call("audit_decision", {
 			phase: "mcp", origin: "implementation discovery", decision: "decision", why: "because",

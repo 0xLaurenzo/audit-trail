@@ -20,7 +20,7 @@ import { AuditWorkflow } from "../../src/core/workflow.ts";
 import type { ShippedHarness } from "../../src/harness/capabilities.ts";
 import { McpAuditServer } from "../../src/mcp/server.ts";
 
-export type ReviewerBehavior = "approve" | "block" | "invalid-verdict" | "fail";
+export type ReviewerBehavior = "approve" | "block" | "missing-design-friction" | "invalid-verdict" | "fail";
 
 /**
  * Deliberately secret-looking failure stderr: the contract asserts these
@@ -152,8 +152,10 @@ export const DEFAULT_CATALOG: ReviewModel[] = [
 ];
 
 function behaviorText(behavior: Exclude<ReviewerBehavior, "fail">): string {
-	if (behavior === "approve") return "No flags\nVERDICT: approve";
-	if (behavior === "block") return "D0001 overstates verification.\nVERDICT: block";
+	const designFriction = "\n\n## Design-friction evaluation\n\nNone identified.";
+	if (behavior === "approve") return `No flags${designFriction}\n\nVERDICT: approve`;
+	if (behavior === "block") return `D0001 overstates verification.${designFriction}\n\nVERDICT: block`;
+	if (behavior === "missing-design-friction") return "No flags\nVERDICT: approve";
 	return "Looks fine to me, probably approve-ish.";
 }
 
