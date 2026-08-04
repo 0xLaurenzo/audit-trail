@@ -9,6 +9,7 @@ import type { CommandRunner, ReviewerPort } from "../src/core/ports.ts";
 import type { NewAuditRow } from "../src/core/types.ts";
 import { AuditWorkflow } from "../src/core/workflow.ts";
 import { runCli, type CliIo } from "../src/cli/main.ts";
+import { buildReviewOutputFixture } from "./helpers/review-output.ts";
 
 function capture(): CliIo & { stdout: string[]; stderr: string[] } {
 	const stdout: string[] = [];
@@ -80,7 +81,7 @@ test("cli requires explicit reopen after close", async () => {
 		assert.equal(await runCli(["-C", root, "start", "Lifecycle Task"], capture()), 0);
 		assert.equal(await runCli(["-C", root, ...decisionArgs], capture()), 0);
 		const reviewer: ReviewerPort = {
-			review: async () => "No flags.\n\n## Design-friction evaluation\n\nNone identified.\n\nVERDICT: approve\n",
+			review: async () => buildReviewOutputFixture({ sections: { auditFindings: "No flags." }, verdict: "approve" }),
 		};
 		assert.equal(
 			await runCli(["-C", root, "review", "provider/model", "--mode", "cross-model"], capture(), {
@@ -145,7 +146,7 @@ test("CLI review records a blocking verdict and exits 1", async () => {
 		assert.equal(await runCli(["-C", root, "start", "task"], capture()), 0);
 		assert.equal(await runCli(["-C", root, ...decisionArgs], capture()), 0);
 		const reviewer: ReviewerPort = {
-			review: async () => "Finding.\n\n## Design-friction evaluation\n\nNone identified.\n\nVERDICT: block\n",
+			review: async () => buildReviewOutputFixture({ sections: { auditFindings: "Finding." }, verdict: "block" }),
 		};
 		const io = capture();
 		assert.equal(

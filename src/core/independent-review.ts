@@ -4,14 +4,8 @@ import { sha256Hex } from "./active-state.ts";
 import { parseRows } from "./audit-store.ts";
 import type { ReviewerPort } from "./ports.ts";
 import type { ReviewCandidate } from "./reviewer-candidates.ts";
-import {
-	buildReviewDocument,
-	buildReviewPrompt,
-	parseDesignFrictionEvaluation,
-	parseReviewVerdict,
-	reviewAuditFindingsBody,
-	writeReviewArtifact,
-} from "./review.ts";
+import { parseReviewOutput } from "./review-output.ts";
+import { buildReviewDocument, buildReviewPrompt, writeReviewArtifact } from "./review.ts";
 import type { ReviewMode, ReviewVerdict } from "./types.ts";
 import type { AuditWorkflow } from "./workflow.ts";
 
@@ -85,8 +79,8 @@ export function summarizeReviewerFailure(error: unknown): string {
  * Candidates are attempted in order, at most once each. An attempt fails
  * when the reviewer runtime throws (quota/rate limits, provider or transport
  * errors, timeouts, empty or incomplete terminal output) or returns output
- * without a valid terminal verdict; the next candidate is then tried, and
- * failed attempts write no artifact and record no checkpoint. A completed
+ * that violates the review-output contract; the next candidate is then tried,
+ * and failed attempts write no artifact and record no checkpoint. A completed
  * review with an explicit verdict is terminal regardless of verdict:
  * `VERDICT: block` never triggers fallback. If every candidate fails, the
  * error summarizes each attempted model using a safe failure category.
@@ -121,33 +115,17 @@ export async function runIndependentReview(input: IndependentReviewInput): Promi
 			input.onAttemptFailure?.(candidate, summary);
 			continue;
 		}
-		// The verdict and design-friction section form the terminal-output
-		// contract. Missing or malformed output is an invalid/incomplete attempt
-		// and must fall back; only an explicit block with audit findings is a
-		// completed blocking review.
-		const verdict = parseReviewVerdict(output);
-		if (!verdict) {
-			const summary = "reviewer output had no valid terminal verdict";
-			failures.push({ candidate, error: summary });
-			input.onAttemptFailure?.(candidate, summary);
+		// Parse and validate the complete terminal-output contract once. Invalid
+		// attempts fail closed and advance fallback without writing an artifact or
+		// checkpoint; a valid block is terminal because the schema also requires
+		// its audit-findings section to be non-empty.
+		const parsed = parseReviewOutput(output);
+		if (!parsed.ok) {
+			failures.push({ candidate, error: parsed.failureSummary });
+			input.onAttemptFailure?.(candidate, parsed.failureSummary);
 			continue;
 		}
-		const designFriction = parseDesignFrictionEvaluation(output);
-		if (!designFriction) {
-			const summary = "reviewer output had no valid design-friction evaluation";
-			failures.push({ candidate, error: summary });
-			input.onAttemptFailure?.(candidate, summary);
-			continue;
-		}
-		// The mandatory design section must not let an otherwise empty blocking
-		// report bypass the existing requirement for actionable current-work
-		// findings.
-		if (verdict === "block" && !reviewAuditFindingsBody(output)) {
-			const summary = "blocking reviewer output had no audit findings";
-			failures.push({ candidate, error: summary });
-			input.onAttemptFailure?.(candidate, summary);
-			continue;
-		}
+		const { verdict, sections: { designFriction } } = parsed;
 		const stamp = new Date().toISOString().replace(/[:.]/g, "-");
 		const reviewPath = resolve(workflow.root, ".audit", `${state.task}.review.${stamp}.md`);
 		const document = buildReviewDocument({
