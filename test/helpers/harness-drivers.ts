@@ -16,9 +16,11 @@ import { codexMcpOptions } from "../../src/adapters/codex-mcp.ts";
 import { AuditTrailPlugin } from "../../src/adapters/opencode.ts";
 import auditTrailExtension from "../../src/adapters/pi.ts";
 import type { CommandRunner, ExecResult, ReviewModel } from "../../src/core/ports.ts";
+import { REVIEW_OUTPUT_CONTRACT } from "../../src/core/review-output.ts";
 import { AuditWorkflow } from "../../src/core/workflow.ts";
 import type { ShippedHarness } from "../../src/harness/capabilities.ts";
 import { McpAuditServer } from "../../src/mcp/server.ts";
+import { buildReviewOutputFixture } from "./review-output.ts";
 
 export type ReviewerBehavior = "approve" | "block" | "missing-design-friction" | "invalid-verdict" | "fail";
 
@@ -152,10 +154,13 @@ export const DEFAULT_CATALOG: ReviewModel[] = [
 ];
 
 function behaviorText(behavior: Exclude<ReviewerBehavior, "fail">): string {
-	const designFriction = "\n\n## Design-friction evaluation\n\nNone identified.";
-	if (behavior === "approve") return `No flags${designFriction}\n\nVERDICT: approve`;
-	if (behavior === "block") return `D0001 overstates verification.${designFriction}\n\nVERDICT: block`;
-	if (behavior === "missing-design-friction") return "No flags\nVERDICT: approve";
+	if (behavior === "approve") return buildReviewOutputFixture({ verdict: "approve" });
+	if (behavior === "block") {
+		return buildReviewOutputFixture({ findings: "D0001 overstates verification.", verdict: "block" });
+	}
+	if (behavior === "missing-design-friction") {
+		return `No flags\n${REVIEW_OUTPUT_CONTRACT.verdict.prefix} approve`;
+	}
 	return "Looks fine to me, probably approve-ish.";
 }
 

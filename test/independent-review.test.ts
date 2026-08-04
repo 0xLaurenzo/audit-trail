@@ -6,17 +6,12 @@ import test from "node:test";
 import { readActiveAudit, writeActiveAudit } from "../src/core/active-state.ts";
 import { runIndependentReview, summarizeReviewerFailure } from "../src/core/independent-review.ts";
 import type { CommandRunner, ReviewerPort } from "../src/core/ports.ts";
-import {
-	DESIGN_FRICTION_HEADING,
-	formatBlockingReviewMessage,
-	parseDesignFrictionEvaluation,
-	parseReviewVerdict,
-	reviewAuditFindingsBody,
-	reviewFindingsExcerpt,
-} from "../src/core/review.ts";
+import { parseReviewOutput, REVIEW_OUTPUT_CONTRACT } from "../src/core/review-output.ts";
+import { formatBlockingReviewMessage, reviewFindingsExcerpt } from "../src/core/review.ts";
 import { formatStatusLines } from "../src/core/status.ts";
 import type { NewAuditRow } from "../src/core/types.ts";
 import { AuditWorkflow } from "../src/core/workflow.ts";
+import { buildReviewOutputFixture } from "./helpers/review-output.ts";
 
 const noGit: CommandRunner = {
 	exec: async () => ({ code: 1, stdout: "", stderr: "git unavailable" }),
@@ -33,9 +28,9 @@ const resolvedRow: Omit<NewAuditRow, "session" | "entry"> = {
 	supersedes: "",
 };
 
-function completeReview(findings: string, verdict: "approve" | "block", designFriction = "None identified."): string {
-	return `${findings}\n\n${DESIGN_FRICTION_HEADING}\n\n${designFriction}\n\nVERDICT: ${verdict}\n`;
-}
+const designSection = REVIEW_OUTPUT_CONTRACT.sections.find((section) => section.id === "designFriction")!;
+const designHeading = designSection.heading!;
+const verdictPrefix = REVIEW_OUTPUT_CONTRACT.verdict.prefix;
 
 function reviewerReturning(output: string): ReviewerPort {
 	return { review: async () => output };
@@ -48,48 +43,76 @@ async function startedWorkflow(root: string): Promise<AuditWorkflow> {
 	return workflow;
 }
 
-test("parseReviewVerdict accepts only an exact final-line verdict, case-insensitively", () => {
-	assert.equal(parseReviewVerdict("No flags\nVERDICT: approve\n"), "approve");
-	assert.equal(parseReviewVerdict("findings...\nverdict: BLOCK"), "block");
-	assert.equal(parseReviewVerdict("VERDICT: block\nreconsidered"), undefined, "verdict is not the final line");
-	assert.equal(parseReviewVerdict("VERDICT: approve with caveats"), undefined, "trailing text is ambiguous");
-	assert.equal(parseReviewVerdict("I would approve this"), undefined, "prose is not a verdict");
-	assert.equal(parseReviewVerdict("no verdict at all"), undefined);
+test("the review-output schema parses canonical output and accepts case-insensitive protocol markers", () => {
+	const canonical = buildReviewOutputFixture({
+		findings: "No flags",
+		designFriction: "- Challenge: centralize the contract.",
+		verdict: "approve",
+	});
+	const parsed = parseReviewOutput(canonical);
+	assert.equal(parsed.ok, true);
+	if (!parsed.ok) return;
+	assert.equal(parsed.verdict, "approve");
+	assert.equal(parsed.sections.auditFindings, "No flags");
+	assert.match(parsed.sections.designFriction, /centralize the contract/);
+
+	const caseVariant = canonical
+		.replace(designHeading, designHeading.toUpperCase())
+		.replace(`${verdictPrefix} approve`, `${verdictPrefix.toLowerCase()} APPROVE`);
+	const caseVariantParsed = parseReviewOutput(caseVariant);
+	assert.equal(caseVariantParsed.ok, true, "heading and verdict markers are case-insensitive");
 });
 
-test("design-friction evaluation is mandatory, non-empty, unique, and final", () => {
-	const valid = completeReview(
-		"No flags",
-		"approve",
-		"- Challenge: reviewer setup crossed adapters.\n- Evidence: src/core/review.ts.\n- Change: centralize the contract.\n- Benefit: one update path.",
-	);
-	assert.match(parseDesignFrictionEvaluation(valid) ?? "", /centralize the contract/);
-	assert.equal(reviewAuditFindingsBody(valid), "No flags", "design feedback is separate from verdict-driving findings");
-	assert.equal(parseDesignFrictionEvaluation("No flags\nVERDICT: approve\n"), undefined, "missing section is invalid");
-	assert.equal(
-		parseDesignFrictionEvaluation(`No flags\n${DESIGN_FRICTION_HEADING}\n\nVERDICT: approve\n`),
-		undefined,
-		"empty section is invalid",
-	);
-	assert.equal(
-		parseDesignFrictionEvaluation(`${DESIGN_FRICTION_HEADING}\nNone.\n${DESIGN_FRICTION_HEADING}\nNone.\nVERDICT: approve`),
-		undefined,
-		"duplicate section is invalid",
-	);
-	assert.equal(
-		parseDesignFrictionEvaluation(`${DESIGN_FRICTION_HEADING}\nNone.\n## Later section\nText\nVERDICT: approve`),
-		undefined,
-		"the design evaluation must be the final section",
-	);
+test("the review-output parser returns typed failures for every schema violation", () => {
+	const malformed = [
+		{
+			output: "No flags",
+			reason: "invalid-verdict",
+			section: undefined,
+		},
+		{
+			output: `No flags\n${verdictPrefix} approve`,
+			reason: "missing-section",
+			section: "designFriction",
+		},
+		{
+			output: `No flags\n${designHeading}\n\n${verdictPrefix} approve`,
+			reason: "empty-section",
+			section: "designFriction",
+		},
+		{
+			output: `${designHeading}\nNone.\n${designHeading.toUpperCase()}\nNone.\n${verdictPrefix} approve`,
+			reason: "duplicate-section",
+			section: "designFriction",
+		},
+		{
+			output: `${designHeading}\nNone.\n## Later section\nText\n${verdictPrefix} approve`,
+			reason: "non-final-section",
+			section: "designFriction",
+		},
+		{
+			output: `${designHeading}\nNone identified.\n${verdictPrefix} block`,
+			reason: "empty-section",
+			section: "auditFindings",
+		},
+	] as const;
+	for (const expected of malformed) {
+		const parsed = parseReviewOutput(expected.output);
+		assert.equal(parsed.ok, false);
+		if (parsed.ok) continue;
+		assert.equal(parsed.reason, expected.reason);
+		assert.equal(parsed.section, expected.section);
+	}
 });
 
 test("blocking review feedback strips the verdict and makes truncation explicit", () => {
-	assert.deepEqual(reviewFindingsExcerpt("First finding.\nSecond finding.\nVERDICT: block\n", 1_000), {
+	const terminalBlock = `${verdictPrefix} block`;
+	assert.deepEqual(reviewFindingsExcerpt(`First finding.\nSecond finding.\n${terminalBlock}\n`, 1_000), {
 		text: "First finding.\nSecond finding.",
 		truncated: false,
 	});
 	const message = formatBlockingReviewMessage(
-		"First complete finding.\nSecond finding is beyond the bound.\nVERDICT: block",
+		`First complete finding.\nSecond finding is beyond the bound.\n${terminalBlock}`,
 		".audit/review.md",
 		25,
 	);
@@ -97,7 +120,7 @@ test("blocking review feedback strips the verdict and makes truncation explicit"
 	assert.doesNotMatch(message, /Second finding|VERDICT:/);
 	assert.match(message, /truncated; see the review artifact/);
 	assert.match(message, /\.audit\/review\.md/);
-	assert.throws(() => reviewFindingsExcerpt("Finding\nVERDICT: block", 0), /positive integer/);
+	assert.throws(() => reviewFindingsExcerpt(`Finding\n${terminalBlock}`, 0), /positive integer/);
 });
 
 test("an approving review records the verdict and unblocks close", async () => {
@@ -106,13 +129,11 @@ test("an approving review records the verdict and unblocks close", async () => {
 		const workflow = await startedWorkflow(root);
 		const result = await runIndependentReview({
 			workflow,
-			reviewer: reviewerReturning(
-				completeReview(
-					"No flags",
-					"approve",
-					"- Challenge: adapter fixtures duplicate the output contract.\n- Evidence: test/helpers/harness-drivers.ts.\n- Change: expose a shared fixture builder.\n- Benefit: future review fields change once.",
-				),
-			),
+			reviewer: reviewerReturning(buildReviewOutputFixture({
+				findings: "No flags",
+				designFriction: "- Challenge: adapter fixtures duplicate the output contract.\n- Evidence: test/helpers/harness-drivers.ts.\n- Change: expose a shared fixture builder.\n- Benefit: future review fields change once.",
+				verdict: "approve",
+			})),
 			candidates: [{ model: "provider/reviewer", mode: "cross-model" }],
 			harnessName: "cli",
 		});
@@ -121,7 +142,9 @@ test("an approving review records the verdict and unblocks close", async () => {
 		assert.equal(result.model, "provider/reviewer");
 		assert.equal(result.mode, "cross-model");
 		assert.match(result.designFriction, /adapter fixtures duplicate the output contract/);
-		assert.match(await readFile(result.reviewPath, "utf8"), /## Design-friction evaluation[\s\S]*expose a shared fixture builder/);
+		const artifact = await readFile(result.reviewPath, "utf8");
+		assert.ok(artifact.includes(designHeading));
+		assert.match(artifact, /expose a shared fixture builder/);
 		const closed = await workflow.close();
 		assert.equal(closed.closed, true);
 	} finally {
@@ -133,16 +156,18 @@ test("a blocking review keeps close gated and is visible in status", async () =>
 	const root = await mkdtemp(join(tmpdir(), "audit-review-test-"));
 	try {
 		const workflow = await startedWorkflow(root);
+		const report = buildReviewOutputFixture({ findings: "D0001 overstates verification.", verdict: "block" });
 		const result = await runIndependentReview({
 			workflow,
-			reviewer: reviewerReturning(completeReview("D0001 overstates verification.", "block")),
+			reviewer: reviewerReturning(report),
 			candidates: [{ model: "provider/reviewer", mode: "cross-model" }],
 			harnessName: "cli",
 		});
 		assert.equal(result.verdict, "block");
-		assert.equal(result.report, completeReview("D0001 overstates verification.", "block"));
+		assert.equal(result.report, report);
 		const artifact = await readFile(result.reviewPath, "utf8");
-		assert.match(artifact, /D0001 overstates verification\.[\s\S]*## Design-friction evaluation[\s\S]*VERDICT: block\n$/);
+		assert.ok(artifact.includes(designHeading));
+		assert.ok(artifact.endsWith(`${verdictPrefix} block\n`));
 		const closed = await workflow.close();
 		assert.equal(closed.closed, false);
 		assert.match(closed.blockers.join("\n"), /the last review did not approve this audit/);
@@ -167,8 +192,8 @@ test("an empty blocking report is invalid and falls back without recording the e
 				review: async (request) => {
 					attempted.push(request.model);
 					return request.model === "provider/empty-block"
-						? `${DESIGN_FRICTION_HEADING}\nNone identified.\nVERDICT: block\n`
-						: completeReview("No flags", "approve");
+						? `${designHeading}\nNone identified.\n${verdictPrefix} block\n`
+						: buildReviewOutputFixture({ verdict: "approve" });
 				},
 			},
 			candidates: [
@@ -197,7 +222,7 @@ test("a review without an explicit verdict falls back without recording an artif
 			reviewer: {
 				review: async (request) => {
 					attempted.push(request.model);
-					return request.model === "provider/invalid" ? "Looks fine to me.\n" : completeReview("No flags", "approve");
+					return request.model === "provider/invalid" ? "Looks fine to me.\n" : buildReviewOutputFixture({ verdict: "approve" });
 				},
 			},
 			candidates: [
@@ -225,8 +250,11 @@ test("a review without the mandatory design-friction evaluation falls back witho
 			workflow,
 			reviewer: {
 				review: async (request) => request.model === "provider/missing-section"
-					? "No flags\nVERDICT: approve\n"
-					: completeReview("No flags", "approve", "A shared review-result schema would simplify adapter fixtures."),
+					? `No flags\n${verdictPrefix} approve\n`
+					: buildReviewOutputFixture({
+						verdict: "approve",
+						designFriction: "A shared review-result schema would simplify adapter fixtures.",
+					}),
 			},
 			candidates: [
 				{ model: "provider/missing-section", mode: "cross-model" },
@@ -252,7 +280,7 @@ test("a pinned review with an invalid verdict fails directly and records nothing
 			() =>
 				runIndependentReview({
 					workflow,
-					reviewer: reviewerReturning("VERDICT: approve with caveats\n"),
+					reviewer: reviewerReturning(`${verdictPrefix} approve with caveats\n`),
 					candidates: [{ model: "provider/pinned", mode: "cross-provider" }],
 					harnessName: "cli",
 				}),
@@ -340,7 +368,7 @@ test("a failed candidate falls back to the next one, which records truthful mode
 			review: async (request) => {
 				attempted.push(request.model);
 				if (request.model === "openai/gpt-5.6-sol") throw new Error("usage limit reached");
-				return completeReview("No flags", "approve");
+				return buildReviewOutputFixture({ verdict: "approve" });
 			},
 		};
 		const failures: string[] = [];
@@ -377,7 +405,7 @@ test("a blocking verdict is terminal and never triggers fallback", async () => {
 		const reviewer: ReviewerPort = {
 			review: async (request) => {
 				attempted.push(request.model);
-				return completeReview("D0001 overstates verification.", "block");
+				return buildReviewOutputFixture({ findings: "D0001 overstates verification.", verdict: "block" });
 			},
 		};
 		const result = await runIndependentReview({
@@ -448,7 +476,7 @@ test("the checkpoint hash reflects the bytes the successful attempt saw, not the
 					await workflow.append({ harness: "pi", id: "session" }, resolvedRow);
 					throw new Error("provider outage");
 				}
-				return completeReview("No flags", "approve");
+				return buildReviewOutputFixture({ verdict: "approve" });
 			},
 		};
 		const result = await runIndependentReview({
