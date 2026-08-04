@@ -81,7 +81,7 @@ test("cli requires explicit reopen after close", async () => {
 		assert.equal(await runCli(["-C", root, "start", "Lifecycle Task"], capture()), 0);
 		assert.equal(await runCli(["-C", root, ...decisionArgs], capture()), 0);
 		const reviewer: ReviewerPort = {
-			review: async () => buildReviewOutputFixture({ findings: "No flags.", verdict: "approve" }),
+			review: async () => buildReviewOutputFixture({ sections: { auditFindings: "No flags." }, verdict: "approve" }),
 		};
 		assert.equal(
 			await runCli(["-C", root, "review", "provider/model", "--mode", "cross-model"], capture(), {
@@ -146,7 +146,7 @@ test("CLI review records a blocking verdict and exits 1", async () => {
 		assert.equal(await runCli(["-C", root, "start", "task"], capture()), 0);
 		assert.equal(await runCli(["-C", root, ...decisionArgs], capture()), 0);
 		const reviewer: ReviewerPort = {
-			review: async () => buildReviewOutputFixture({ findings: "Finding.", verdict: "block" }),
+			review: async () => buildReviewOutputFixture({ sections: { auditFindings: "Finding." }, verdict: "block" }),
 		};
 		const io = capture();
 		assert.equal(

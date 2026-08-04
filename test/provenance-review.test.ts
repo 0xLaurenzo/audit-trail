@@ -80,6 +80,7 @@ test("transcript-less review prompt and document target the TSV, diff, and repos
 	assert.match(prompt, /decision IDs and repository evidence/);
 	for (const section of REVIEW_OUTPUT_CONTRACT.sections) {
 		assert.ok(prompt.includes(section.prompt), `prompt includes instructions for ${section.id}`);
+		assert.ok(prompt.includes(`"${section.defaultBody}"`), `prompt includes the canonical default for ${section.id}`);
 		if (section.heading) assert.ok(prompt.includes(`exact heading "${section.heading}"`));
 	}
 	for (const verdict of REVIEW_OUTPUT_CONTRACT.verdict.values) {

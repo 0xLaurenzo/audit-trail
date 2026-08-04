@@ -45,8 +45,10 @@ async function startedWorkflow(root: string): Promise<AuditWorkflow> {
 
 test("the review-output schema parses canonical output and accepts case-insensitive protocol markers", () => {
 	const canonical = buildReviewOutputFixture({
-		findings: "No flags",
-		designFriction: "- Challenge: centralize the contract.",
+		sections: {
+			auditFindings: "No flags",
+			designFriction: "- Challenge: centralize the contract.",
+		},
 		verdict: "approve",
 	});
 	const parsed = parseReviewOutput(canonical);
@@ -130,8 +132,10 @@ test("an approving review records the verdict and unblocks close", async () => {
 		const result = await runIndependentReview({
 			workflow,
 			reviewer: reviewerReturning(buildReviewOutputFixture({
-				findings: "No flags",
-				designFriction: "- Challenge: adapter fixtures duplicate the output contract.\n- Evidence: test/helpers/harness-drivers.ts.\n- Change: expose a shared fixture builder.\n- Benefit: future review fields change once.",
+				sections: {
+					auditFindings: "No flags",
+					designFriction: "- Challenge: adapter fixtures duplicate the output contract.\n- Evidence: test/helpers/harness-drivers.ts.\n- Change: expose a shared fixture builder.\n- Benefit: future review fields change once.",
+				},
 				verdict: "approve",
 			})),
 			candidates: [{ model: "provider/reviewer", mode: "cross-model" }],
@@ -156,7 +160,10 @@ test("a blocking review keeps close gated and is visible in status", async () =>
 	const root = await mkdtemp(join(tmpdir(), "audit-review-test-"));
 	try {
 		const workflow = await startedWorkflow(root);
-		const report = buildReviewOutputFixture({ findings: "D0001 overstates verification.", verdict: "block" });
+		const report = buildReviewOutputFixture({
+			sections: { auditFindings: "D0001 overstates verification." },
+			verdict: "block",
+		});
 		const result = await runIndependentReview({
 			workflow,
 			reviewer: reviewerReturning(report),
@@ -252,8 +259,8 @@ test("a review without the mandatory design-friction evaluation falls back witho
 				review: async (request) => request.model === "provider/missing-section"
 					? `No flags\n${verdictPrefix} approve\n`
 					: buildReviewOutputFixture({
+						sections: { designFriction: "A shared review-result schema would simplify adapter fixtures." },
 						verdict: "approve",
-						designFriction: "A shared review-result schema would simplify adapter fixtures.",
 					}),
 			},
 			candidates: [
@@ -405,7 +412,10 @@ test("a blocking verdict is terminal and never triggers fallback", async () => {
 		const reviewer: ReviewerPort = {
 			review: async (request) => {
 				attempted.push(request.model);
-				return buildReviewOutputFixture({ findings: "D0001 overstates verification.", verdict: "block" });
+				return buildReviewOutputFixture({
+					sections: { auditFindings: "D0001 overstates verification." },
+					verdict: "block",
+				});
 			},
 		};
 		const result = await runIndependentReview({
