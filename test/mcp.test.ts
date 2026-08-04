@@ -130,7 +130,7 @@ test("MCP publish rejects a blocking review before invoking GitHub", async () =>
 		};
 		const server = makeServer(
 			root,
-			{ review: async () => buildReviewOutputFixture({ findings: "Finding.", verdict: "block" }) },
+			{ review: async () => buildReviewOutputFixture({ sections: { auditFindings: "Finding." }, verdict: "block" }) },
 			git,
 		);
 		await server.call("audit_start", { task: "task" });

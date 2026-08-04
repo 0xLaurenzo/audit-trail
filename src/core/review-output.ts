@@ -8,7 +8,8 @@ interface ReviewSectionSpec {
 	nonEmptyWhen: "always" | ReviewVerdict;
 	finalSection: boolean;
 	prompt: string;
-	bodyPrompt?: string;
+	defaultBody: string;
+	bodyAlternativePrompt?: string;
 	failureSummary: string;
 }
 
@@ -33,7 +34,8 @@ export const REVIEW_OUTPUT_CONTRACT = {
 			required: true,
 			nonEmptyWhen: "block",
 			finalSection: false,
-			prompt: "Report the audit findings first. A concise \"No flags\" is valid.",
+			prompt: "Report the audit findings first.",
+			defaultBody: "No flags",
 			failureSummary: "blocking reviewer output had no audit findings",
 		},
 		{
@@ -44,7 +46,8 @@ export const REVIEW_OUTPUT_CONTRACT = {
 			nonEmptyWhen: "always",
 			finalSection: true,
 			prompt: "Perform a separate design-friction evaluation by asking: while reviewing this work, did you encounter concrete challenges or walls that would be substantially simplified by a design-level change? Report only concise, observable friction; do not reveal private chain-of-thought. If friction exists, identify the challenge, the evidence or decision IDs that expose it, the design-level change, and why it would materially simplify future work compared with a local patch. Design friction is not automatically blocking: block only when it reveals a current audit-integrity, correctness, unresolved-decision, or symptom-patch problem; otherwise preserve the suggestion and approve when the audit is trustworthy.",
-			bodyPrompt: "either \"None identified.\" or the actionable design-friction items",
+			defaultBody: "None identified.",
+			bodyAlternativePrompt: "the actionable design-friction items",
 			failureSummary: "reviewer output had no valid design-friction evaluation",
 		},
 	] satisfies readonly ReviewSectionSpec[],
@@ -113,20 +116,59 @@ function sectionFailure(section: ContractSection, reason: ReviewOutputFailureRea
 	return { ok: false, reason, section: section.id, failureSummary: section.failureSummary };
 }
 
-/** Render the output-format portion of the independent-review prompt. */
+function joinedAlternatives(values: string[]): string {
+	if (values.length < 2) return values[0] ?? "";
+	if (values.length === 2) return values.join(" or ");
+	return `${values.slice(0, -1).join(", ")}, or ${values.at(-1)}`;
+}
+
+function sectionPrompt(section: ContractSection): string {
+	const nonEmptyRule = section.nonEmptyWhen === "always"
+		? "must be non-empty"
+		: `must be non-empty for ${section.nonEmptyWhen}`;
+	if (!section.heading) return `${section.prompt} A concise "${section.defaultBody}" is valid.`;
+	const position = section.finalSection ? "Immediately before the verdict" : "Next";
+	const body = section.bodyAlternativePrompt
+		? `either "${section.defaultBody}" or ${section.bodyAlternativePrompt}`
+		: `"${section.defaultBody}" or the requested content`;
+	const requirement = section.required ? "mandatory" : "optional";
+	return `${section.prompt}\n\n${position}, include the exact heading "${section.heading}" followed by ${body}. This section is ${requirement} and ${nonEmptyRule}.`;
+}
+
+/** Render every output-format instruction from the ordered section schema. */
 export function buildReviewOutputInstructions(): string {
 	const sections = REVIEW_OUTPUT_CONTRACT.sections;
-	const finalSection = sections.find((section) => section.finalSection);
-	if (!finalSection?.heading || !finalSection.bodyPrompt) {
-		throw new Error("Review output contract has no renderable final section.");
-	}
 	const verdict = REVIEW_OUTPUT_CONTRACT.verdict;
 	const verdictForms = verdict.values
 		.map((value) => `"${verdict.prefix} ${value}" ${verdict.promptByValue[value]}`)
 		.join(", or ");
-	const requirement = finalSection.required ? "mandatory" : "optional";
-	const contentRule = finalSection.nonEmptyWhen === "always" ? "must be non-empty" : `must be non-empty for ${finalSection.nonEmptyWhen}`;
-	return `${sections.map((section) => section.prompt).join("\n\n")}\n\nImmediately before the verdict, include the exact heading "${finalSection.heading}" followed by ${finalSection.bodyPrompt}. This section is ${requirement} and ${contentRule}. Then end your report with a verdict on its own final line: ${verdictForms}. A missing or malformed ${finalSection.label} section or verdict makes this review attempt invalid and causes another reviewer to be tried when fallback candidates are available.`;
+	const requiredParts = sections
+		.filter((section) => section.required && section.heading)
+		.map((section) => `${section.label} section`);
+	const malformedParts = joinedAlternatives([...requiredParts, "verdict"]);
+	return `${sections.map(sectionPrompt).join("\n\n")}\n\nEnd your report with a verdict on its own final line: ${verdictForms}. A missing or malformed ${malformedParts} makes this review attempt invalid and causes another reviewer to be tried when fallback candidates are available.`;
+}
+
+export interface ReviewOutputRenderInput {
+	sections: Record<ReviewOutputSectionId, string>;
+	verdict: ReviewVerdict;
+}
+
+/** Serialize canonical reviewer output from the ordered contract. */
+export function renderReviewOutput(input: ReviewOutputRenderInput): string {
+	if (!REVIEW_OUTPUT_CONTRACT.verdict.values.includes(input.verdict)) {
+		throw new Error(REVIEW_OUTPUT_CONTRACT.verdict.failureSummary);
+	}
+	const blocks: string[] = [];
+	for (const section of REVIEW_OUTPUT_CONTRACT.sections) {
+		const body = input.sections[section.id].trim();
+		if (!body && (section.nonEmptyWhen === "always" || section.nonEmptyWhen === input.verdict)) {
+			throw new Error(section.failureSummary);
+		}
+		if (section.heading) blocks.push(`${section.heading}\n\n${body}`);
+		else if (body) blocks.push(body);
+	}
+	return `${blocks.join("\n\n")}\n\n${REVIEW_OUTPUT_CONTRACT.verdict.prefix} ${input.verdict}\n`;
 }
 
 /**

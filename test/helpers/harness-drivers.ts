@@ -156,7 +156,10 @@ export const DEFAULT_CATALOG: ReviewModel[] = [
 function behaviorText(behavior: Exclude<ReviewerBehavior, "fail">): string {
 	if (behavior === "approve") return buildReviewOutputFixture({ verdict: "approve" });
 	if (behavior === "block") {
-		return buildReviewOutputFixture({ findings: "D0001 overstates verification.", verdict: "block" });
+		return buildReviewOutputFixture({
+			sections: { auditFindings: "D0001 overstates verification." },
+			verdict: "block",
+		});
 	}
 	if (behavior === "missing-design-friction") {
 		return `No flags\n${REVIEW_OUTPUT_CONTRACT.verdict.prefix} approve`;
