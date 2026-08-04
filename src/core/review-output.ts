@@ -126,7 +126,9 @@ function sectionPrompt(section: ContractSection): string {
 	const nonEmptyRule = section.nonEmptyWhen === "always"
 		? "must be non-empty"
 		: `must be non-empty for ${section.nonEmptyWhen}`;
-	if (!section.heading) return `${section.prompt} A concise "${section.defaultBody}" is valid.`;
+	if (!section.heading) {
+		return `${section.prompt} A concise "${section.defaultBody}" is valid. This section ${nonEmptyRule}.`;
+	}
 	const position = section.finalSection ? "Immediately before the verdict" : "Next";
 	const body = section.bodyAlternativePrompt
 		? `either "${section.defaultBody}" or ${section.bodyAlternativePrompt}`
