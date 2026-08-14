@@ -17,13 +17,20 @@ export interface HookSessionState {
 	updatedAt: string;
 }
 
+export function hookSessionStateDirectory(
+	harness: HookHarness,
+	env: NodeJS.ProcessEnv = process.env,
+): string {
+	const base = env.XDG_STATE_HOME?.trim() || join(env.HOME?.trim() || homedir(), ".local", "state");
+	return join(base, "audit-trail", harness);
+}
+
 export function hookSessionStatePath(
 	harness: HookHarness,
 	worktreeRoot: string,
 	env: NodeJS.ProcessEnv = process.env,
 ): string {
-	const base = env.XDG_STATE_HOME?.trim() || join(env.HOME?.trim() || homedir(), ".local", "state");
-	return join(base, "audit-trail", harness, `${sha256Hex(worktreeRoot).slice(0, 32)}.json`);
+	return join(hookSessionStateDirectory(harness, env), `${sha256Hex(worktreeRoot).slice(0, 32)}.json`);
 }
 
 export async function writeHookSessionState(

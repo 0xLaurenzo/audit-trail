@@ -22,11 +22,15 @@ import { readFile } from "node:fs/promises";
 /** Newest first; initialize echoes the client's version when supported. */
 const SUPPORTED_PROTOCOL_VERSIONS = ["2025-06-18", "2025-03-26", "2024-11-05"];
 
-interface JsonRpcMessage {
+export interface JsonRpcMessage {
 	jsonrpc?: string;
 	id?: number | string | null;
 	method?: string;
 	params?: any;
+}
+
+export interface McpRequestHandler {
+	handle(message: JsonRpcMessage): Promise<object | undefined>;
 }
 
 interface ToolDefinition {
@@ -363,7 +367,7 @@ export class McpAuditServer {
 
 /** Newline-delimited JSON-RPC over stdio, per the MCP stdio transport. */
 export async function serveStdio(
-	server: McpAuditServer,
+	server: McpRequestHandler,
 	input: Readable = process.stdin,
 	output: Writable = process.stdout,
 ): Promise<void> {

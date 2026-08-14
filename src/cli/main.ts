@@ -25,7 +25,7 @@ import { handleClaudeHook } from "../adapters/claude-hook.ts";
 import { createClaudeSubprocessReviewer } from "../adapters/claude-reviewer.ts";
 import { readClaudeSessionState } from "../adapters/claude-session.ts";
 import { handleCodexHook } from "../adapters/codex-hook.ts";
-import { codexMcpOptions } from "../adapters/codex-mcp.ts";
+import { createCodexMcpHandler } from "../adapters/codex-mcp.ts";
 import { createPiSubprocessReviewer } from "../adapters/pi-reviewer.ts";
 import { McpAuditServer, serveStdio, type McpServerOptions } from "../mcp/server.ts";
 
@@ -248,6 +248,12 @@ async function commandMcp(
 ): Promise<number> {
 	const { values } = parseArgs({ args, options: { harness: { type: "string" } }, strict: true });
 	const harness = values.harness ?? "mcp";
+	if (harness === "codex") {
+		const server = createCodexMcpHandler(workflow.root, processRunner, cliSession().id);
+		io.err("audit-trail MCP server on stdio (harness: codex; worktree routed per call)");
+		await serveStdio(server);
+		return 0;
+	}
 	const runner = processRunner(workflow.root);
 	let options: Pick<
 		McpServerOptions,
@@ -275,8 +281,6 @@ async function commandMcp(
 				}
 			},
 		};
-	} else if (harness === "codex") {
-		options = codexMcpOptions(workflow.root, runner, cliSession().id);
 	} else if (harness === "mcp") {
 		options = {
 			session: { harness: "mcp", id: cliSession().id },

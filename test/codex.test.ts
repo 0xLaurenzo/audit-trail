@@ -6,22 +6,30 @@ import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 import test from "node:test";
 import { handleCodexHook } from "../src/adapters/codex-hook.ts";
-import { codexMcpOptions } from "../src/adapters/codex-mcp.ts";
+import { codexMcpOptions, createCodexMcpHandler } from "../src/adapters/codex-mcp.ts";
 import { createCodexSubprocessReviewer, selectCodexReviewCandidates } from "../src/adapters/codex-reviewer.ts";
-import { codexSessionStatePath, readCodexSessionState } from "../src/adapters/codex-session.ts";
+import { codexSessionStatePath, findCodexSessionState, readCodexSessionState } from "../src/adapters/codex-session.ts";
 import type { CommandRunner, ExecResult } from "../src/core/ports.ts";
 import { AuditWorkflow } from "../src/core/workflow.ts";
 import { codexInstaller } from "../src/install/installers.ts";
-import { McpAuditServer } from "../src/mcp/server.ts";
+import { McpAuditServer, type McpRequestHandler } from "../src/mcp/server.ts";
 import { buildReviewOutputFixture } from "./helpers/review-output.ts";
 
 const execFileAsync = promisify(execFile);
 const noGit: CommandRunner = { exec: async () => ({ code: 1, stdout: "", stderr: "git unavailable" }) };
 
-async function callInstalledMcp(executable: string, cwd: string, worktree: string): Promise<string> {
+async function callInstalledMcp(
+	executable: string,
+	cwd: string,
+	env: NodeJS.ProcessEnv,
+	threadId: string,
+	name: string,
+	args: object,
+): Promise<string> {
 	return new Promise((resolveCall, rejectCall) => {
-		const child = spawn(executable, ["-C", worktree, "mcp", "--harness", "codex"], {
+		const child = spawn(executable, ["mcp", "--harness", "codex"], {
 			cwd,
+			env,
 			stdio: ["pipe", "pipe", "pipe"],
 		});
 		let stdout = "";
@@ -58,9 +66,26 @@ async function callInstalledMcp(executable: string, cwd: string, worktree: strin
 		);
 		child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized", params: {} })}\n`);
 		child.stdin.write(
-			`${JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "audit_status", arguments: {} } })}\n`,
+			`${JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name, arguments: args, _meta: { threadId } } })}\n`,
 		);
 	});
+}
+
+async function callCodexTool(
+	handler: McpRequestHandler,
+	threadId: string,
+	name: string,
+	args: object,
+): Promise<string> {
+	const response: any = await handler.handle({
+		jsonrpc: "2.0",
+		id: 1,
+		method: "tools/call",
+		params: { name, arguments: args, _meta: { threadId } },
+	});
+	const text = response.result.content[0].text;
+	if (response.result.isError) throw new Error(text);
+	return text;
 }
 
 function codexCliRunner(calls: string[][] = []): CommandRunner {
@@ -95,6 +120,8 @@ test("Codex SessionStart records metadata and injects active-audit guidance", as
 		assert.equal(recorded?.model, "gpt-5.6-sol");
 		assert.equal(recorded?.transcriptPath, "/tmp/codex-transcript.jsonl");
 		assert.equal(codexSessionStatePath(root, env).startsWith(stateHome), true);
+		assert.equal((await findCodexSessionState("codex-session-1", env))?.worktree, root);
+		assert.equal(await findCodexSessionState("missing", env), undefined);
 
 		await new AuditWorkflow(root, noGit).start("codex-hook", { harness: "pi", id: "earlier" });
 		const active = await handleCodexHook(JSON.stringify(payload), () => noGit, env);
@@ -220,6 +247,72 @@ test("Codex MCP resumes another harness audit, attributes rows, and derives trut
 	}
 });
 
+test("Codex MCP routes concurrent thread calls to hook-recorded worktrees", async () => {
+	const launchRoot = await mkdtemp(join(tmpdir(), "audit-codex-cache-"));
+	const rootA = await mkdtemp(join(tmpdir(), "audit-codex-route-a-"));
+	const rootB = await mkdtemp(join(tmpdir(), "audit-codex-route-b-"));
+	const stateHome = await mkdtemp(join(tmpdir(), "audit-codex-route-state-"));
+	const env = { XDG_STATE_HOME: stateHome };
+	const runner: CommandRunner = {
+		exec: async (command, args) => {
+			if (command !== "codex") return noGit.exec(command, args);
+			if (args[0] === "--version") return { code: 0, stdout: "codex", stderr: "" };
+			await writeFile(args[args.indexOf("--output-last-message") + 1], buildReviewOutputFixture({ verdict: "approve" }));
+			return { code: 0, stdout: "", stderr: "" };
+		},
+	};
+	try {
+		for (const [sessionId, cwd, model] of [
+			["thread-a", rootA, "gpt-a"],
+			["thread-b", rootB, "gpt-b"],
+		] as const) {
+			await handleCodexHook(
+				JSON.stringify({ hook_event_name: "SessionStart", session_id: sessionId, model, cwd }),
+				() => noGit,
+				env,
+			);
+		}
+		const handler = createCodexMcpHandler(launchRoot, () => runner, "fallback", env);
+		assert.match(await callCodexTool(handler, "thread-a", "audit_start", { task: "worktree-a" }), /Started/);
+		assert.match(await callCodexTool(handler, "thread-b", "audit_start", { task: "worktree-b" }), /Started/);
+		await callCodexTool(handler, "thread-a", "audit_decision", {
+			phase: "routing",
+			origin: "failing test",
+			decision: "Keep worktree A isolated",
+			why: "Thread metadata selects its own workflow",
+			confidence: "high",
+			evidence: "test/codex.test.ts",
+			result: "verified",
+		});
+
+		await callCodexTool(handler, "thread-a", "audit_review", {});
+		assert.match(await callCodexTool(handler, "thread-a", "audit_status", {}), /worktree-a: 1 row/);
+		assert.match(await callCodexTool(handler, "thread-b", "audit_status", {}), /worktree-b: 0 rows/);
+		const stateA = await new AuditWorkflow(rootA, noGit).active();
+		assert.equal((await new AuditWorkflow(rootA, noGit).rows(stateA!))[0].session, "codex/thread-a");
+		assert.deepEqual(stateA?.review && { model: stateA.review.model, mode: stateA.review.mode }, {
+			model: "openai/gpt-a",
+			mode: "same-model",
+		});
+
+		const missing: any = await handler.handle({
+			jsonrpc: "2.0",
+			id: 2,
+			method: "tools/call",
+			params: { name: "audit_status", arguments: {} },
+		});
+		assert.equal(missing.result.isError, true);
+		assert.match(missing.result.content[0].text, /no threadId metadata/);
+		await assert.rejects(() => callCodexTool(handler, "unknown", "audit_status", {}), /SessionStart state was not found/);
+		await assert.rejects(() => lstat(join(launchRoot, ".audit")), /ENOENT/);
+	} finally {
+		await rm(launchRoot, { recursive: true, force: true });
+		await rm(rootA, { recursive: true, force: true });
+		await rm(rootB, { recursive: true, force: true });
+		await rm(stateHome, { recursive: true, force: true });
+	}
+});
+
 test("Codex reviewer selection and subprocess enforce truthful isolated execution", async () => {
 	assert.deepEqual(selectCodexReviewCandidates(undefined, "gpt-work"), [
 		{ model: "openai/gpt-work", mode: "same-model" },
@@ -275,6 +368,7 @@ test("Codex plugin bundle is internally consistent", async () => {
 		assert.match(hooks.hooks[event][0].hooks[0].command, /\$\{PLUGIN_ROOT\}\/bin\/audit-trail.*codex-hook/);
 	}
 	const mcp = JSON.parse(await readFile(join(root, ".mcp.json"), "utf8"));
+	// Codex 0.136 needs this cwd to find the executable; MCP calls derive their audit root from thread state.
 	assert.deepEqual(mcp.mcpServers["audit-trail"], {
 		command: "./bin/audit-trail",
 		args: ["mcp", "--harness", "codex"],
@@ -339,6 +433,7 @@ test("staged Codex plugin launches the installed audit-trail binary without chec
 	const packageRoot = await mkdtemp(join(tmpdir(), "audit-codex-installed-"));
 	const home = await mkdtemp(join(tmpdir(), "audit-codex-installed-home-"));
 	const worktree = await mkdtemp(join(tmpdir(), "audit-codex-installed-wt-"));
+	const stateHome = await mkdtemp(join(tmpdir(), "audit-codex-installed-state-"));
 	try {
 		const checkout = join(import.meta.dirname, "..");
 		for (const path of ["src", "bin", ".codex-plugin", "hooks", "skills"]) {
@@ -356,13 +451,32 @@ test("staged Codex plugin launches the installed audit-trail binary without chec
 		const mcp = JSON.parse(await readFile(join(linkedRoot, ".mcp.json"), "utf8"));
 		const mcpRoot = resolve(linkedRoot, mcp.mcpServers["audit-trail"].cwd);
 		const executable = resolve(mcpRoot, mcp.mcpServers["audit-trail"].command);
-		assert.match(await callInstalledMcp(executable, mcpRoot, worktree), /No audit is active/);
-		const { stdout } = await execFileAsync(executable, ["-C", worktree, "start", "installed-codex"]);
-		assert.match(stdout, /Started decision audit/);
+		const env = { ...process.env, XDG_STATE_HOME: stateHome };
+		await new Promise<void>((resolveHook, rejectHook) => {
+			const child = execFile(executable, ["codex-hook"], { cwd: mcpRoot, env }, (error) =>
+				error ? rejectHook(error) : resolveHook(),
+			);
+			child.stdin?.end(
+				JSON.stringify({
+					hook_event_name: "SessionStart",
+					session_id: "installed-thread",
+					model: "gpt-installed",
+					cwd: worktree,
+				}),
+			);
+		});
+		assert.match(
+			await callInstalledMcp(executable, mcpRoot, env, "installed-thread", "audit_start", {
+				task: "installed-codex",
+			}),
+			/Started decision audit/,
+		);
 		assert.match(await readFile(join(worktree, ".audit", "installed-codex.tsv"), "utf8"), /^id\tts\tsession/);
+		await assert.rejects(() => lstat(join(mcpRoot, ".audit")), /ENOENT/);
 	} finally {
 		await rm(packageRoot, { recursive: true, force: true });
 		await rm(home, { recursive: true, force: true });
 		await rm(worktree, { recursive: true, force: true });
+		await rm(stateHome, { recursive: true, force: true });
 	}
 });
