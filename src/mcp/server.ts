@@ -100,7 +100,11 @@ const TOOLS: ToolDefinition[] = [
 		inputSchema: {
 			type: "object",
 			properties: {
-				model: { type: "string", description: "Reviewer as provider/model" },
+				model: {
+					type: "string",
+					description:
+						"Reviewer as provider/model. When Anthropic is cross-provider, prefer anthropic/claude-fable-5, then anthropic/claude-opus-5",
+				},
 				mode: {
 					type: "string",
 					enum: [...REVIEW_MODES],

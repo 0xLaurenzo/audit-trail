@@ -300,13 +300,14 @@ export function registerModelDiscoveryConformance({ harness, capabilities, creat
 			}));
 
 	// With DEFAULT_CATALOG and the anthropic working model, the deterministic
-	// candidate order is: openai/fable-5, openai/gpt-5.6-sol (cross-provider),
-	// anthropic/claude-fable-5 (cross-model), anthropic/claude-opus-4-8
-	// (same-model).
-	const [firstCross, secondCross, crossModel, sameModel] = [
-		"openai/fable-5",
+	// candidate order is: openai/gpt-5.6-sol, openai/fable-5 (cross-provider),
+	// anthropic/claude-fable-5, anthropic/claude-opus-5 (cross-model), then
+	// anthropic/claude-opus-4-8 (same-model).
+	const [firstCross, secondCross, firstCrossModel, secondCrossModel, sameModel] = [
 		"openai/gpt-5.6-sol",
+		"openai/fable-5",
 		"anthropic/claude-fable-5",
+		"anthropic/claude-opus-5",
 		"anthropic/claude-opus-4-8",
 	];
 
@@ -321,12 +322,12 @@ export function registerModelDiscoveryConformance({ harness, capabilities, creat
 	});
 
 	contract("progresses into the cross-model tier when every cross-provider candidate fails", async (driver, root) => {
-		driver.reviewerScript[crossModel] = "approve";
+		driver.reviewerScript[firstCrossModel] = "approve";
 		const outcome = await driver.review();
 		assert.equal(outcome.completed, true, outcome.message);
-		assert.deepEqual(driver.attemptedModels(), [firstCross, secondCross, crossModel]);
+		assert.deepEqual(driver.attemptedModels(), [firstCross, secondCross, firstCrossModel]);
 		const recorded = await checkpoint(root);
-		assert.equal(recorded?.model, crossModel);
+		assert.equal(recorded?.model, firstCrossModel);
 		assert.equal(recorded?.mode, "cross-model");
 	});
 
@@ -334,7 +335,7 @@ export function registerModelDiscoveryConformance({ harness, capabilities, creat
 		driver.reviewerScript[sameModel] = "approve";
 		const outcome = await driver.review();
 		assert.equal(outcome.completed, true, outcome.message);
-		assert.deepEqual(driver.attemptedModels(), [firstCross, secondCross, crossModel, sameModel]);
+		assert.deepEqual(driver.attemptedModels(), [firstCross, secondCross, firstCrossModel, secondCrossModel, sameModel]);
 		const recorded = await checkpoint(root);
 		assert.equal(recorded?.model, sameModel);
 		assert.equal(recorded?.mode, "same-model");
@@ -361,7 +362,7 @@ export function registerModelDiscoveryConformance({ harness, capabilities, creat
 		const outcome = await driver.review();
 		assert.equal(outcome.completed, false);
 		const attempts = driver.attemptedModels();
-		assert.deepEqual(attempts, [firstCross, secondCross, crossModel, sameModel]);
+		assert.deepEqual(attempts, [firstCross, secondCross, firstCrossModel, secondCrossModel, sameModel]);
 		assert.equal(new Set(attempts).size, attempts.length, "each candidate is attempted at most once");
 		for (const model of attempts) {
 			assert.ok(outcome.message.includes(model), `diagnostics name ${model}`);

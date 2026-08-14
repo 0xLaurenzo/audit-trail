@@ -17,7 +17,7 @@ const stubClient = {
 		providers: async () => ({
 			data: {
 				providers: [
-					{ id: "anthropic", models: { "claude-opus-4-8": {}, "claude-fable-5": {} } },
+					{ id: "anthropic", models: { "claude-opus-4-8": {}, "claude-opus-5": {}, "claude-fable-5": {} } },
 					{ id: "openai", models: { "gpt-5.6-sol": {} } },
 				],
 			},
@@ -132,6 +132,7 @@ test("reviewer candidates cover cross-provider, then cross-model, then the worki
 	const working: ReviewModelRef = { provider: "anthropic", id: "claude-opus-4-8" };
 	const catalog: ReviewModelRef[] = [
 		{ provider: "anthropic", id: "claude-opus-4-8" },
+		{ provider: "anthropic", id: "claude-opus-5" },
 		{ provider: "anthropic", id: "claude-fable-5" },
 		{ provider: "openai", id: "gpt-5.6-sol" },
 		{ provider: "zai", id: "glm-5" },
@@ -143,6 +144,7 @@ test("reviewer candidates cover cross-provider, then cross-model, then the worki
 		{ model: "openai/gpt-5.6-sol", mode: "cross-provider" },
 		{ model: "zai/glm-5", mode: "cross-provider" },
 		{ model: "anthropic/claude-fable-5", mode: "cross-model" },
+		{ model: "anthropic/claude-opus-5", mode: "cross-model" },
 		{ model: "anthropic/claude-opus-4-8", mode: "same-model" },
 	]);
 
@@ -153,6 +155,7 @@ test("reviewer candidates cover cross-provider, then cross-model, then the worki
 		),
 		[
 			{ model: "anthropic/claude-fable-5", mode: "cross-model" },
+			{ model: "anthropic/claude-opus-5", mode: "cross-model" },
 			{ model: "anthropic/claude-opus-4-8", mode: "same-model" },
 		],
 	);
@@ -185,6 +188,7 @@ test("model listing tolerates SDK data envelopes and bare payloads", async () =>
 	const wrapped = await listOpencodeModels(stubClient);
 	assert.deepEqual(wrapped, [
 		{ provider: "anthropic", id: "claude-opus-4-8" },
+		{ provider: "anthropic", id: "claude-opus-5" },
 		{ provider: "anthropic", id: "claude-fable-5" },
 		{ provider: "openai", id: "gpt-5.6-sol" },
 	]);
@@ -211,6 +215,9 @@ test("opencode installer writes shim and commands idempotently without touching 
 			assert.match(command, /^---\ndescription: /, `${name} has frontmatter`);
 			assert.match(command, /audit-trail-managed:v1/, `${name} has an ownership marker`);
 			assert.match(command, new RegExp(`${name.replace("-", "_")} tool`), `${name} instructs its tool`);
+			if (name === "audit-review") {
+				assert.ok(command.indexOf("anthropic/claude-fable-5") < command.indexOf("anthropic/claude-opus-5"));
+			}
 		}
 
 		// Unrelated user files survive reinstallation.

@@ -355,7 +355,7 @@ ${OPENCODE_COMMAND_MARKER}Call the audit_status tool with no arguments and repor
 	"audit-review": `---
 description: Run an independent review of the active decision audit
 ---
-${OPENCODE_COMMAND_MARKER}Call the audit_review tool. If "$ARGUMENTS" is non-empty, pass it as the model argument (provider/model); otherwise omit model so a cross-provider reviewer is selected automatically. The review may take several minutes. Report the tool output verbatim.
+${OPENCODE_COMMAND_MARKER}Call the audit_review tool. If "$ARGUMENTS" is non-empty, pass it as the model argument (provider/model); otherwise omit model so a cross-provider reviewer is selected automatically. When Anthropic is cross-provider, prefer anthropic/claude-fable-5, then anthropic/claude-opus-5. The review may take several minutes. Report the tool output verbatim.
 `,
 	"audit-publish": `---
 description: Publish the audit to the current branch's pull request

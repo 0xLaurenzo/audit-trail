@@ -163,6 +163,7 @@ const failGit: ExecResult = { code: 1, stdout: "", stderr: "git unavailable" };
 export const DEFAULT_WORKING_MODEL: ReviewModel = { provider: "anthropic", id: "claude-opus-4-8" };
 export const DEFAULT_CATALOG: ReviewModel[] = [
 	DEFAULT_WORKING_MODEL,
+	{ provider: "anthropic", id: "claude-opus-5" },
 	{ provider: "anthropic", id: "claude-fable-5" },
 	{ provider: "openai", id: "fable-5" },
 	{ provider: "openai", id: "gpt-5.6-sol" },
