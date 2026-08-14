@@ -3,11 +3,15 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { serializeRow } from "../src/core/audit-store.ts";
 import {
-	buildRawGitHubComments,
+	auditSetMarkerPrefix,
+	buildAuditComponentSegments,
+	buildAuditSetComments,
 	publishRawAudit,
+	rawAuditComponentMarker,
 	rawAuditMarker,
+	rawAuditSetMarker,
 } from "../src/core/github-publisher.ts";
-import type { CommandRunner } from "../src/core/ports.ts";
+import type { CommandRunner, ExecResult } from "../src/core/ports.ts";
 import { AUDIT_HEADER, type AuditRow, type AuditState, type GitProvenance } from "../src/core/types.ts";
 
 const provenance: GitProvenance = {
@@ -22,15 +26,20 @@ const provenance: GitProvenance = {
 	sessionId: "session-1",
 };
 const AUDIT_ID = "11111111-2222-4333-8444-555555555555";
+const OTHER_AUDIT_ID = "99999999-8888-4777-a666-555555555555";
 const state: AuditState = {
 	task: "core",
 	auditId: AUDIT_ID,
 	logPath: "/repo/.audit/core.tsv",
 	provenance,
-};
-const sameHeadRepository = {
-	headRepository: { nameWithOwner: "owner/repo" },
-	isCrossRepository: false,
+	review: {
+		path: ".audit/core.review.md",
+		sha256: "a".repeat(64),
+		mode: "cross-provider",
+		model: "provider/reviewer",
+		at: "2026-01-01T02:00:00.000Z",
+		verdict: "approve",
+	},
 };
 const baseRow: AuditRow = {
 	id: "D0001",
@@ -52,586 +61,477 @@ function rawFor(rows: AuditRow[]): string {
 	return `${AUDIT_HEADER}\n${rows.map(serializeRow).map((line) => `${line}\n`).join("")}`;
 }
 
-function extractTsv(body: string): string {
-	const match = body.match(/(`{3,})tsv\n([\s\S]*?)\1\n<\/details>/);
-	assert.ok(match, "raw TSV fence is present");
-	return match[2];
+function render(
+	auditState: AuditState,
+	rows: AuditRow[],
+	raw = rawFor(rows),
+	head = "head-core",
+	setId = auditState.auditId!,
+): string[] {
+	return buildAuditSetComments(
+		provenance.repository,
+		4,
+		setId,
+		buildAuditComponentSegments(auditState, rows, raw, head, 4),
+	);
 }
 
-test("readable GitHub comments split at decision rows and reconstruct exact TSV bytes", () => {
+function extractTsvs(bodies: string[]): string[] {
+	return bodies.flatMap((body) => [...body.matchAll(/(`{3,})tsv\n([\s\S]*?)\1\n<\/details>/g)].map((match) => match[2]));
+}
+
+function componentBody(body: string, auditId: string): string {
+	const begin = rawAuditComponentMarker(auditId, 1, 1, "begin");
+	const end = rawAuditComponentMarker(auditId, 1, 1, "end");
+	const start = body.indexOf(begin);
+	const finish = body.indexOf(end, start);
+	assert.notEqual(start, -1);
+	assert.notEqual(finish, -1);
+	return body.slice(start, finish + end.length);
+}
+
+function count(text: string, needle: string): number {
+	return text.split(needle).length - 1;
+}
+
+test("aggregate rendering preserves exact TSV and exposes coverage, review, and namespaced decisions", () => {
+	const rows = [baseRow];
+	const bodies = render(state, rows);
+	assert.equal(bodies.length, 1);
+	assert.equal(extractTsvs(bodies).join(""), rawFor(rows));
+	const body = bodies[0];
+	assert.ok(body.startsWith(rawAuditSetMarker("owner/repo", 4, AUDIT_ID, 1, 1)));
+	assert.match(body, /\*\*Audit ID:\*\* `11111111-2222-4333-8444-555555555555`/);
+	assert.match(body, /\*\*Commit range:\*\* \[`abcdef123456`\].*\.\.\[`head-core`\]/);
+	assert.match(body, /Review `approve` · `cross-provider` · `provider\/reviewer`/);
+	assert.match(body, new RegExp(`<a id="audit-${AUDIT_ID}-d0001"></a>`));
+	assert.match(body, new RegExp(`D0001\\]\\(#user-content-audit-${AUDIT_ID}-d0001\\)`));
+});
+
+test("large audits split only at rows and reconstruct their exact canonical TSV", () => {
 	const rows = ["a", "b", "c"].map((value, index) => ({
 		...baseRow,
 		id: `D000${index + 1}`,
 		decision: value.repeat(20_000),
 	}));
-	const raw = rawFor(rows);
-	const comments = buildRawGitHubComments(state, rows, raw);
-	assert.equal(comments.length, 3);
-	assert.equal(comments.map(extractTsv).join(""), raw);
-	assert.ok(comments[0].includes(rawAuditMarker(provenance, "core", AUDIT_ID, 1)));
-	assert.ok(comments[1].includes("(2/3)"));
-	assert.ok(comments[2].includes("part 3 of 3"));
-	for (const [index, comment] of comments.entries()) assert.ok(comment.includes(`### D000${index + 1}`));
-	const firstIndex = comments[0].slice(comments[0].indexOf("### Current decisions"), comments[0].indexOf("## Chronological decision history"));
-	assert.match(firstIndex, /\[D0001\]\(#user-content-d0001\)/, "same-comment decision is linked");
-	assert.doesNotMatch(firstIndex, /\[D000[23]\]/, "cross-comment decisions remain visible without dead fragment links");
+	const segments = buildAuditComponentSegments(state, rows, rawFor(rows), "head-core", 4);
+	const bodies = buildAuditSetComments("owner/repo", 4, AUDIT_ID, segments);
+	assert.equal(segments.length, 3);
+	assert.equal(bodies.length, 3);
+	assert.equal(extractTsvs(bodies).join(""), rawFor(rows));
+	assert.ok(bodies[1].includes("(2/3)"));
+	assert.ok(bodies[2].includes("segment 3 of 3"));
+	for (const [index, body] of bodies.entries()) assert.ok(body.includes(`### D000${index + 1}`));
 });
 
-test("readable GitHub comments choose a safe fence when source contains backticks", () => {
-	const rows = [{ ...baseRow, decision: "value with ``` and ```` fences" }];
-	const raw = rawFor(rows);
-	const body = buildRawGitHubComments(state, rows, raw)[0];
-	assert.equal(extractTsv(body), raw);
+test("several small audits share one aggregate comment and retain independent TSV blocks", () => {
+	const otherState: AuditState = {
+		...state,
+		task: "follow-up",
+		auditId: OTHER_AUDIT_ID,
+		provenance: { ...provenance, task: "follow-up", startCommit: "head-before-follow-up" },
+	};
+	const first = buildAuditComponentSegments(state, [baseRow], rawFor([baseRow]), "head-one", 4);
+	const secondRow = { ...baseRow, decision: "Follow-up choice" };
+	const second = buildAuditComponentSegments(otherState, [secondRow], rawFor([secondRow]), "head-two", 4);
+	const bodies = buildAuditSetComments("owner/repo", 4, AUDIT_ID, [...first, ...second]);
+	assert.equal(bodies.length, 1);
+	assert.equal(extractTsvs(bodies).length, 2);
+	assert.ok(bodies[0].includes(rawAuditComponentMarker(AUDIT_ID, 1, 1, "begin")));
+	assert.ok(bodies[0].includes(rawAuditComponentMarker(OTHER_AUDIT_ID, 1, 1, "begin")));
+	assert.match(bodies[0], /head-before.*\.\.\[`head-two`\]/s);
+	assert.match(bodies[0], new RegExp(`audit-${AUDIT_ID}-d0001`));
+	assert.match(bodies[0], new RegExp(`audit-${OTHER_AUDIT_ID}-d0001`));
+});
+
+test("rendering chooses safe TSV fences and escapes generated Markdown and HTML", () => {
+	const malicious = "</details> ### Fake <!-- pi-audit-trail:component:v1:audit:evil:segment:1/1:end --> ``` ````";
+	const rows = [{ ...baseRow, phase: "安全 | review", decision: malicious, why: "Unicode: café 🚀" }];
+	const body = render(state, rows)[0];
+	const generated = body.slice(0, body.indexOf("<details>\n<summary>Canonical audit TSV"));
+	assert.ok(generated.includes("安全 \\| review"));
+	assert.ok(generated.includes("&lt;/details&gt; \\#\\#\\# Fake"));
+	assert.doesNotMatch(generated, /### Fake|:evil:segment:1\/1:end -->/);
 	assert.match(body, /`````tsv/);
+	assert.equal(extractTsvs([body]).join(""), rawFor(rows));
 });
 
-test("reviewer view exposes active state, complete fields, and bidirectional supersession history", () => {
+test("reviewer view retains blockers and bidirectional supersession history", () => {
 	const rows: AuditRow[] = [
 		{ ...baseRow, id: "D0001", result: "open", confidence: "low", evidence: "none" },
-		{
-			...baseRow,
-			id: "D0002",
-			phase: "replacement policy",
-			decision: "Use cards",
-			why: "Cards preserve readable prose",
-			alternatives: "A wide table",
-			evidence: "src/core/github-publisher.ts:100",
-			supersedes: "D0001",
-		},
+		{ ...baseRow, id: "D0002", decision: "Use cards", supersedes: "D0001" },
 	];
-	const body = buildRawGitHubComments(state, rows, rawFor(rows))[0];
-	const index = body.slice(body.indexOf("### Current decisions"), body.indexOf("## Chronological decision history"));
-	assert.doesNotMatch(index, /D0001/);
-	assert.match(index, /\[D0002\]\(#user-content-d0002\).*replacement policy.*`verified`.*`high`/s);
-	assert.match(body, /<a id="d0001"><\/a>\n<details>\n<summary><strong>D0001<\/strong> · publication · superseded by <a href="#user-content-d0002"><code>D0002<\/code><\/a> · result: <code>open<\/code> · confidence: <code>low<\/code><\/summary>/);
-	assert.doesNotMatch(body, /### D0001/);
-	const supersededBody = body.match(/<a id="d0001"><\/a>\n<details>[\s\S]*?<\/details>/)?.[0];
-	assert.ok(supersededBody, "superseded body remains available");
-	assert.match(supersededBody, /\*\*publication\*\* · superseded by \[D0002\]\(#user-content-d0002\) · `open` · `low` · user requirement  \n<sub>2026-01-01T01:02:03\.000Z · session session-1 · entry entry-1<\/sub>/);
-	assert.match(supersededBody, /\*\*Decision\*\*[\s\S]*Render readable decisions/);
-	assert.match(supersededBody, /\*\*Why\*\*[\s\S]*Reviewers need the complete rationale/);
-	assert.match(supersededBody, /\*\*Alternatives considered\*\*[\s\S]*Keep TSV only/);
-	assert.match(supersededBody, /<sub><strong>Evidence:<\/strong> none<\/sub>/);
-	assert.match(supersededBody, /<sub><strong>History:<\/strong> Superseded by <a href="#user-content-d0002"><code>D0002<\/code><\/a>\.<\/sub>/);
-	assert.match(body, /<\/details>\n\n---\n\n<a id="d0002"><\/a>\n### D0002/);
-	assert.match(body, /### D0002[\s\S]*\*\*replacement policy\*\* · active[\s\S]*\*\*Decision\*\*[\s\S]*Use cards/);
-	assert.match(body, /\*\*Why\*\*[\s\S]*Cards preserve readable prose/);
-	assert.match(body, /\*\*Alternatives considered\*\*[\s\S]*A wide table/);
-	assert.match(body, /Supersedes <a href="#user-content-d0001"><code>D0001<\/code><\/a>\./);
-	const activeBody = body.slice(body.indexOf("### D0002"), body.indexOf("<details>\n<summary>Canonical audit TSV"));
-	assert.match(activeBody, /### D0002\n\n\*\*replacement policy\*\* · active · `verified` · `high` · user requirement  \n<sub>2026-01-01T01:02:03\.000Z · session session-1 · entry entry-1<\/sub>/);
-	assert.match(activeBody, /<sub><strong>Evidence:<\/strong> src\/core\/github-publisher\.ts:100<\/sub>/);
-	assert.match(activeBody, /<sub><strong>History:<\/strong> Supersedes <a href="#user-content-d0001"><code>D0001<\/code><\/a>\.<\/sub>/);
-	assert.doesNotMatch(activeBody, /\*\*Recorded:|\*\*Evidence\*\*|\*\*History\*\*/);
-	assert.match(body, /\*\*2 decisions\*\* · \*\*1 active\*\* · \*\*0 unresolved\*\* · \*\*0 low-confidence\*\* · \*\*0 missing evidence\*\*/);
+	const body = render(state, rows)[0];
+	assert.match(body, /\*\*2 decisions\*\* · \*\*1 active\*\* · \*\*0 unresolved\*\*/);
+	assert.match(body, /superseded by <a href="#user-content-audit-.*-d0002">/);
+	assert.match(body, /Supersedes <a href="#user-content-audit-.*-d0001">/);
+	assert.match(body, /result: <code>open<\/code> · confidence: <code>low<\/code>/);
 });
 
-test("reviewer view highlights active blockers and all result states", () => {
-	const rows: AuditRow[] = [
-		{ ...baseRow, id: "D0001", result: "open", confidence: "low", evidence: "none" },
-		{ ...baseRow, id: "D0002", result: "inconclusive" },
-		{ ...baseRow, id: "D0003", result: "reverted" },
-	];
-	const body = buildRawGitHubComments(state, rows, rawFor(rows))[0];
-	assert.match(body, /\*\*3 decisions\*\* · \*\*3 active\*\* · \*\*2 unresolved\*\* · \*\*1 low-confidence\*\* · \*\*1 missing evidence\*\*/);
-	assert.match(body, /D0001[\s\S]*`open` · `low` · ⚠️ unresolved · ⚠️ low confidence · ⚠️ missing evidence/);
-	assert.match(body, /### D0002[\s\S]*\*\*publication\*\* · active · `inconclusive` · `high` · user requirement · ⚠️ unresolved/);
-	assert.match(body, /### D0003[\s\S]*\*\*publication\*\* · active · `reverted` · `high` · user requirement/);
-});
-
-test("reviewer view escapes structural Markdown and HTML while preserving Unicode", () => {
-	const malicious = "</details> ### Fake heading <!-- pi-audit-trail:owner/repo:evil:part:9 -->";
-	const rows = [{
-		...baseRow,
-		phase: "安全 | review",
-		decision: malicious,
-		why: "Unicode: café 🚀",
-	}];
-	const body = buildRawGitHubComments(state, rows, rawFor(rows))[0];
-	const rendered = body.slice(0, body.indexOf("<details>\n<summary>Canonical audit TSV"));
-	assert.ok(rendered.includes("安全 \\| review"));
-	assert.ok(rendered.includes("&lt;/details&gt; \\#\\#\\# Fake heading"));
-	assert.ok(rendered.includes("&lt;\\!\\-\\- pi\\-audit\\-trail:owner/repo:evil:part:9 \\-\\-&gt;"));
-	assert.ok(rendered.includes("Unicode: café 🚀"));
-	assert.doesNotMatch(rendered, /<\/details>|### Fake heading|<!-- pi-audit-trail:owner\/repo:evil/);
-});
-
-test("compact metadata hides the none entry sentinel but retains real entry IDs", () => {
-	const noneRows = [{ ...baseRow, entry: "none" }];
-	const noneBody = buildRawGitHubComments(state, noneRows, rawFor(noneRows))[0];
-	const rendered = noneBody.slice(0, noneBody.indexOf("<details>\n<summary>Canonical audit TSV"));
-	assert.match(rendered, /<sub>2026-01-01T01:02:03\.000Z · session session-1<\/sub>/);
-	assert.doesNotMatch(rendered, /entry none/);
-
-	const realBody = buildRawGitHubComments(state, [baseRow], rawFor([baseRow]))[0];
-	assert.match(realBody, /session session-1 · entry entry-1<\/sub>/);
-});
-
-test("superseded one-line summaries HTML-escape audit fields", () => {
-	const rows: AuditRow[] = [
-		{ ...baseRow, id: "D0001", phase: "</summary><script>alert(1)</script>" },
-		{ ...baseRow, id: "D0002", supersedes: "D0001" },
-	];
-	const body = buildRawGitHubComments(state, rows, rawFor(rows))[0];
-	const summary = body.match(/<summary><strong>D0001<\/strong>([^\n]+)<\/summary>/)?.[0];
-	assert.ok(summary, "superseded decision renders as one summary line");
-	assert.ok(summary.includes("&lt;/summary&gt;&lt;script&gt;alert(1)&lt;/script&gt;"));
-	assert.doesNotMatch(summary, /<script>|<\/summary><script>/);
-});
-
-test("reviewer view rejects row mismatches and a single decision too large to publish safely", () => {
+test("component rendering rejects source mismatches and an indivisible oversized decision", () => {
 	assert.throws(
-		() => buildRawGitHubComments(state, [baseRow], rawFor([])),
+		() => buildAuditComponentSegments(state, [baseRow], rawFor([]), "head", 4),
 		/row count does not match parsed decisions/,
 	);
 	assert.throws(
-		() => buildRawGitHubComments(state, [{ ...baseRow, decision: "stale card" }], rawFor([baseRow])),
+		() => buildAuditComponentSegments(state, [{ ...baseRow, decision: "stale" }], rawFor([baseRow]), "head", 4),
 		/does not match the exact canonical TSV/,
 	);
 	const oversized = [{ ...baseRow, decision: "x".repeat(35_000) }];
 	assert.throws(
-		() => buildRawGitHubComments(state, oversized, rawFor(oversized)),
-		/Decision D0001 and its canonical TSV row exceed/,
+		() => buildAuditComponentSegments(state, oversized, rawFor(oversized), "head", 4),
+		/exceed/,
 	);
 });
 
-test("publisher updates managed comments and removes stale parts idempotently", async () => {
-	const raw = rawFor([]);
-	const calls: string[][] = [];
-	let patchedBody = "";
-	const runner: CommandRunner = {
-		async exec(command, args) {
-			if (command === "git" && args[0] === "branch") return { code: 0, stdout: "feature/core\n", stderr: "" };
-			if (command === "git" && args[0] === "rev-parse") return { code: 0, stdout: "head-core\n", stderr: "" };
-			assert.equal(command, "gh");
-			calls.push(args);
-			if (args[0] === "pr") {
-				return {
-					code: 0,
-					stdout: JSON.stringify({
-						number: 4,
-						url: "https://github.com/owner/repo/pull/4",
-						title: "Core",
-						headRefName: "feature/core",
-						headRefOid: "head-core",
-						...sameHeadRepository,
-						baseRefName: "main",
-					}),
-					stderr: "",
-				};
-			}
-			if (args.some((arg) => arg.includes("/compare/abcdef1234567890...head-core"))) {
-				return { code: 0, stdout: "ahead\n", stderr: "" };
-			}
-			if (args[1] === "user") return { code: 0, stdout: "reviewer\n", stderr: "" };
-			if (args.some((arg) => arg.endsWith("comments?per_page=100"))) {
-				return {
-					code: 0,
-					stdout: JSON.stringify([[
-						{ id: 10, html_url: "old-1", body: rawAuditMarker(provenance, "core", AUDIT_ID, 1), user: { login: "reviewer" } },
-						{ id: 11, html_url: "old-2", body: rawAuditMarker(provenance, "core", AUDIT_ID, 2), user: { login: "reviewer" } },
-						// Foreign: same task, same author, different audit identity.
-						{ id: 12, html_url: "foreign-1", body: rawAuditMarker(provenance, "core", "99999999-8888-4777-a666-555555555555", 1), user: { login: "reviewer" } },
-						// Foreign: pre-identity legacy marker format.
-						{ id: 13, html_url: "foreign-2", body: "<!-- pi-audit-trail:owner/repo:core:part:1 -->", user: { login: "reviewer" } },
-					]]),
-					stderr: "",
-				};
-			}
-			const method = args[args.indexOf("--method") + 1];
-			if (method === "PATCH") {
-				const inputPath = args[args.indexOf("--input") + 1];
-				patchedBody = JSON.parse(await readFile(inputPath, "utf8")).body;
-				return { code: 0, stdout: JSON.stringify({ html_url: "https://comment/10" }), stderr: "" };
-			}
-			if (method === "DELETE") return { code: 0, stdout: "", stderr: "" };
-			throw new Error(`Unexpected gh call: ${args.join(" ")}`);
-		},
-	};
+interface FakeOptions {
+	branch?: string;
+	head?: string;
+	prHead?: string;
+	prBranch?: string;
+	repository?: string;
+	compare?: string;
+	login?: string;
+	comments?: FakeComment[];
+	onList?: (fake: FakeGitHub, listNumber: number) => void;
+	onRevalidate?: (fake: FakeGitHub, viewNumber: number) => void;
+	onGitRead?: (fake: FakeGitHub, kind: "branch" | "head", readNumber: number) => string | undefined;
+}
 
-	const result = await publishRawAudit({ runner, state, rows: [], rawTsv: raw, selector: "feature/core" });
+interface FakeComment {
+	id: number;
+	html_url: string;
+	body: string;
+	user: { login: string };
+}
+
+class FakeGitHub implements CommandRunner {
+	branch: string;
+	head: string;
+	prHead: string;
+	prBranch: string;
+	repository: string;
+	compare: string;
+	login: string;
+	comments: FakeComment[];
+	calls: { command: string; args: string[] }[] = [];
+	mutations: string[] = [];
+	private nextId = 100;
+	private listNumber = 0;
+	private viewNumber = 0;
+	private branchReads = 0;
+	private headReads = 0;
+	private readonly onList?: FakeOptions["onList"];
+	private readonly onRevalidate?: FakeOptions["onRevalidate"];
+	private readonly onGitRead?: FakeOptions["onGitRead"];
+
+	constructor(options: FakeOptions = {}) {
+		this.branch = options.branch ?? "feature/core";
+		this.head = options.head ?? "head-core";
+		this.prHead = options.prHead ?? this.head;
+		this.prBranch = options.prBranch ?? this.branch;
+		this.repository = options.repository ?? "owner/repo";
+		this.compare = options.compare ?? "ahead";
+		this.login = options.login ?? "reviewer";
+		this.comments = options.comments ?? [];
+		this.onList = options.onList;
+		this.onRevalidate = options.onRevalidate;
+		this.onGitRead = options.onGitRead;
+	}
+
+	async exec(command: string, args: string[]): Promise<ExecResult> {
+		this.calls.push({ command, args });
+		if (command === "git" && args[0] === "branch") {
+			this.branchReads += 1;
+			return { code: 0, stdout: `${this.onGitRead?.(this, "branch", this.branchReads) ?? this.branch}\n`, stderr: "" };
+		}
+		if (command === "git" && args[0] === "rev-parse") {
+			this.headReads += 1;
+			return { code: 0, stdout: `${this.onGitRead?.(this, "head", this.headReads) ?? this.head}\n`, stderr: "" };
+		}
+		assert.equal(command, "gh");
+		if (args[0] === "pr") {
+			this.viewNumber += 1;
+			if (this.viewNumber > 1) this.onRevalidate?.(this, this.viewNumber);
+			if (args.at(-1) === "headRefOid") {
+				return { code: 0, stdout: JSON.stringify({ headRefOid: this.prHead }), stderr: "" };
+			}
+			return {
+				code: 0,
+				stdout: JSON.stringify({
+					number: 4,
+					url: "https://github.com/owner/repo/pull/4",
+					title: "Core",
+					headRefName: this.prBranch,
+					headRefOid: this.prHead,
+					headRepository: { nameWithOwner: this.repository },
+					isCrossRepository: this.repository !== "owner/repo",
+					baseRefName: "main",
+				}),
+				stderr: "",
+			};
+		}
+		if (args.some((arg) => arg.includes("/compare/"))) return { code: 0, stdout: `${this.compare}\n`, stderr: "" };
+		if (args[1] === "user") return { code: 0, stdout: `${this.login}\n`, stderr: "" };
+		if (args.includes("--paginate")) {
+			this.listNumber += 1;
+			this.onList?.(this, this.listNumber);
+			return { code: 0, stdout: JSON.stringify([this.comments]), stderr: "" };
+		}
+		const method = args[args.indexOf("--method") + 1];
+		const endpoint = args[args.indexOf("--method") + 2];
+		if (method === "POST" || method === "PATCH") {
+			const inputPath = args[args.indexOf("--input") + 1];
+			const body = JSON.parse(await readFile(inputPath, "utf8")).body as string;
+			if (method === "POST") {
+				const comment = { id: this.nextId++, html_url: `https://comment/${this.nextId - 1}`, body, user: { login: this.login } };
+				this.comments.push(comment);
+				this.mutations.push(`POST:${comment.id}`);
+				return { code: 0, stdout: JSON.stringify(comment), stderr: "" };
+			}
+			const id = Number(endpoint.split("/").at(-1));
+			const comment = this.comments.find((candidate) => candidate.id === id);
+			assert.ok(comment);
+			comment.body = body;
+			this.mutations.push(`PATCH:${id}`);
+			return { code: 0, stdout: JSON.stringify(comment), stderr: "" };
+		}
+		if (method === "DELETE") {
+			const id = Number(endpoint.split("/").at(-1));
+			this.comments = this.comments.filter((comment) => comment.id !== id);
+			this.mutations.push(`DELETE:${id}`);
+			return { code: 0, stdout: "", stderr: "" };
+		}
+		throw new Error(`Unexpected call: ${command} ${args.join(" ")}`);
+	}
+}
+
+function commentsFor(bodies: string[], login = "reviewer", firstId = 10): FakeComment[] {
+	return bodies.map((body, index) => ({
+		id: firstId + index,
+		html_url: `https://comment/${firstId + index}`,
+		body,
+		user: { login },
+	}));
+}
+
+test("first publish creates an author-owned aggregate set anchored by the audit ID", async () => {
+	const fake = new FakeGitHub();
+	const result = await publishRawAudit({ runner: fake, state, rows: [baseRow], rawTsv: rawFor([baseRow]) });
 	assert.deepEqual(result, {
 		prNumber: 4,
 		prUrl: "https://github.com/owner/repo/pull/4",
-		commentUrl: "https://comment/10",
+		commentUrl: "https://comment/100",
 		commentCount: 1,
-		foreignCommentCount: 2,
+		commentSetId: AUDIT_ID,
+		componentCount: 1,
+		legacyCommentCount: 0,
 	});
-	assert.equal(extractTsv(patchedBody), raw);
-	assert.ok(calls.some((args) => args.includes("PATCH") && args.includes("repos/owner/repo/issues/comments/10")));
-	assert.ok(calls.some((args) => args.includes("DELETE") && args.includes("repos/owner/repo/issues/comments/11")));
-	assert.ok(!calls.some((args) => args.includes("POST")));
-	// Foreign same-task comments must never be modified or removed, regardless
-	// of author: a different audit identity and the legacy pre-identity format
-	// are both untouchable.
-	assert.ok(
-		!calls.some((args) => args.some((arg) => arg.includes("/comments/12") || arg.includes("/comments/13"))),
-		"foreign audit comments are never PATCHed or DELETEd",
-	);
+	assert.deepEqual(fake.mutations, ["POST:100"]);
+	assert.ok(fake.comments[0].body.startsWith(rawAuditSetMarker("owner/repo", 4, AUDIT_ID, 1, 1)));
+	assert.match(fake.comments[0].body, /abcdef123456.*\.\.\[`head-core`\]/s);
 });
 
-test("publisher refuses a state without an audit identity before any remote call", async () => {
-	const runner: CommandRunner = {
-		async exec() {
-			throw new Error("no external command may run for an identity-less publish");
-		},
-	};
-	await assert.rejects(
-		() => publishRawAudit({ runner, state: { ...state, auditId: undefined }, rows: [], rawTsv: rawFor([]), selector: "4" }),
-		/no identity/,
-	);
-});
-
-test("publisher aborts before comment mutation when the PR head changes after validation", async () => {
-	let prViews = 0;
-	let mutationCalled = false;
-	const runner: CommandRunner = {
-		async exec(command, args) {
-			if (command === "git" && args[0] === "branch") return { code: 0, stdout: "feature/core\n", stderr: "" };
-			if (command === "git" && args[0] === "rev-parse") return { code: 0, stdout: "validated-head\n", stderr: "" };
-			if (args[0] === "pr") {
-				prViews += 1;
-				return { code: 0, stdout: JSON.stringify(prViews === 1
-					? { number: 4, url: "https://github.com/owner/repo/pull/4", title: "Moving", headRefName: "feature/core", headRefOid: "validated-head", ...sameHeadRepository, baseRefName: "main" }
-					: { headRefOid: "force-pushed-head" }), stderr: "" };
-			}
-			if (args.some((arg) => arg.includes("/compare/abcdef1234567890...validated-head"))) return { code: 0, stdout: "ahead\n", stderr: "" };
-			if (args[1] === "user") return { code: 0, stdout: "reviewer\n", stderr: "" };
-			if (args.some((arg) => arg.endsWith("comments?per_page=100"))) return { code: 0, stdout: "[[]]", stderr: "" };
-			mutationCalled = true;
-			return { code: 1, stdout: "", stderr: "mutation must not run" };
-		},
-	};
-	await assert.rejects(
-		() => publishRawAudit({ runner, state, rows: [], rawTsv: rawFor([]), selector: "4" }),
-		/changed from validated-he to force-pushed/,
-	);
-	assert.equal(mutationCalled, false);
-});
-
-test("publisher aborts before comment mutation when the local checkout changes after validation", async () => {
-	let branchReads = 0;
-	let headReads = 0;
-	let prViews = 0;
-	const runner: CommandRunner = {
-		async exec(command, args) {
-			if (command === "git" && args[0] === "branch") {
-				branchReads += 1;
-				return { code: 0, stdout: `${branchReads === 1 ? "feature/core" : "feature/other"}\n`, stderr: "" };
-			}
-			if (command === "git" && args[0] === "rev-parse") {
-				headReads += 1;
-				return { code: 0, stdout: `${headReads === 1 ? "validated-head" : "changed-local-head"}\n`, stderr: "" };
-			}
-			if (args[0] === "pr") {
-				prViews += 1;
-				return { code: 0, stdout: JSON.stringify({ number: 4, url: "https://github.com/owner/repo/pull/4", title: "Moving local", headRefName: "feature/core", headRefOid: "validated-head", ...sameHeadRepository, baseRefName: "main" }), stderr: "" };
-			}
-			if (args.some((arg) => arg.includes("/compare/abcdef1234567890...validated-head"))) return { code: 0, stdout: "ahead\n", stderr: "" };
-			if (args[1] === "user") return { code: 0, stdout: "reviewer\n", stderr: "" };
-			if (args.some((arg) => arg.endsWith("comments?per_page=100"))) return { code: 0, stdout: "[[]]", stderr: "" };
-			throw new Error("comment mutation must not run");
-		},
-	};
-	await assert.rejects(
-		() => publishRawAudit({ runner, state, rows: [], rawTsv: rawFor([]), selector: "4" }),
-		/Local checkout changed from feature\/core@validated-he to feature\/other@changed-loca/,
-	);
-	assert.equal(prViews, 1, "local revalidation fails before the second remote check or mutation");
-});
-
-test("publisher defaults to the current branch and accepts a PR descended from the immutable start commit", async () => {
-	const raw = rawFor([]);
-	const startedOnMain: AuditState = {
+test("a second audit appends to the same set and republishing replaces only its component", async () => {
+	const fake = new FakeGitHub();
+	await publishRawAudit({ runner: fake, state, rows: [baseRow], rawTsv: rawFor([baseRow]) });
+	const firstComponent = componentBody(fake.comments[0].body, AUDIT_ID);
+	const secondState: AuditState = {
 		...state,
-		provenance: { ...provenance, branch: "main", startCommit: "start123" },
+		task: "follow-up",
+		auditId: OTHER_AUDIT_ID,
+		provenance: { ...provenance, task: "follow-up", startCommit: "head-before-follow-up" },
 	};
-	const calls: { command: string; args: string[] }[] = [];
-	const runner: CommandRunner = {
-		async exec(command, args) {
-			calls.push({ command, args });
-			if (command === "git" && args[0] === "branch") return { code: 0, stdout: "feature/after-start\n", stderr: "" };
-			if (command === "git" && args[0] === "rev-parse") return { code: 0, stdout: "head456\n", stderr: "" };
-			if (args[0] === "pr") {
-				return {
-					code: 0,
-					stdout: JSON.stringify({
-						number: 23,
-						url: "https://github.com/owner/repo/pull/23",
-						title: "After start",
-						headRefName: "feature/after-start",
-						headRefOid: "head456",
-						...sameHeadRepository,
-						baseRefName: "main",
-					}),
-					stderr: "",
-				};
-			}
-			if (args.some((arg) => arg.includes("/compare/start123...head456"))) {
-				return { code: 0, stdout: "ahead\n", stderr: "" };
-			}
-			if (args[1] === "user") return { code: 0, stdout: "reviewer\n", stderr: "" };
-			if (args.some((arg) => arg.endsWith("comments?per_page=100"))) {
-				return { code: 0, stdout: "[[]]", stderr: "" };
-			}
-			if (args.includes("POST")) {
-				return { code: 0, stdout: JSON.stringify({ html_url: "https://comment/23" }), stderr: "" };
-			}
-			throw new Error(`Unexpected call: ${command} ${args.join(" ")}`);
-		},
-	};
+	const firstSecondRow = { ...baseRow, decision: "Initial follow-up" };
+	const appended = await publishRawAudit({ runner: fake, state: secondState, rows: [firstSecondRow], rawTsv: rawFor([firstSecondRow]) });
+	assert.equal(appended.commentSetId, AUDIT_ID);
+	assert.equal(appended.componentCount, 2);
+	assert.equal(fake.comments.length, 1);
+	assert.ok(fake.comments[0].body.includes(firstComponent), "the first audit component is preserved byte-for-byte");
+	assert.equal(count(fake.comments[0].body, rawAuditComponentMarker(OTHER_AUDIT_ID, 1, 1, "begin")), 1);
 
-	const result = await publishRawAudit({ runner, state: startedOnMain, rows: [], rawTsv: raw });
-	assert.equal(result.prNumber, 23);
-	const prCall = calls.find((call) => call.args[0] === "pr");
-	assert.equal(prCall?.args[2], "feature/after-start", "current branch is the default selector");
-	assert.ok(calls.some((call) => call.args.some((arg) => arg.includes("/compare/start123...head456"))));
+	const replacementRow = { ...baseRow, decision: "Updated follow-up" };
+	await publishRawAudit({ runner: fake, state: secondState, rows: [replacementRow], rawTsv: rawFor([replacementRow]) });
+	assert.ok(fake.comments[0].body.includes(firstComponent));
+	assert.ok(fake.comments[0].body.includes("Updated follow\\-up"));
+	assert.ok(!fake.comments[0].body.includes("Initial follow\\-up"));
+	assert.equal(count(fake.comments[0].body, rawAuditComponentMarker(OTHER_AUDIT_ID, 1, 1, "begin")), 1);
 });
 
-test("publisher rejects a detached audit's explicit PR when it does not descend from the start commit", async () => {
-	const startedDetached: AuditState = {
-		...state,
-		provenance: { ...provenance, branch: "DETACHED", startCommit: "start1234567890" },
-	};
-	let commentsListed = false;
-	const runner: CommandRunner = {
-		async exec(command, args) {
-			if (command === "git" && args[0] === "branch") return { code: 0, stdout: "", stderr: "" };
-			if (command === "git" && args[0] === "rev-parse") return { code: 0, stdout: "other999\n", stderr: "" };
-			assert.equal(command, "gh");
-			if (args[0] === "pr") {
-				return {
-					code: 0,
-					stdout: JSON.stringify({
-						number: 99,
-						url: "https://github.com/owner/repo/pull/99",
-						title: "Unrelated",
-						headRefName: "feature/unrelated",
-						headRefOid: "other999",
-						...sameHeadRepository,
-						baseRefName: "main",
-					}),
-					stderr: "",
-				};
-			}
-			if (args.some((arg) => arg.includes("/compare/start1234567890...other999"))) {
-				return { code: 0, stdout: "diverged\n", stderr: "" };
-			}
-			commentsListed = true;
-			return { code: 1, stdout: "", stderr: "must not publish" };
-		},
-	};
+test("multipart growth and shrink use numbered continuations and remove only stale selected-set parts", async () => {
+	const rows = ["a", "b", "c"].map((value, index) => ({
+		...baseRow,
+		id: `D000${index + 1}`,
+		decision: value.repeat(20_000),
+	}));
+	const fake = new FakeGitHub();
+	const grown = await publishRawAudit({ runner: fake, state, rows, rawTsv: rawFor(rows) });
+	assert.equal(grown.commentCount, 3);
+	assert.equal(fake.comments.length, 3);
+	assert.ok(fake.comments[1].body.startsWith(rawAuditSetMarker("owner/repo", 4, AUDIT_ID, 2, 3)));
 
+	const shrunk = await publishRawAudit({ runner: fake, state, rows: [baseRow], rawTsv: rawFor([baseRow]) });
+	assert.equal(shrunk.commentCount, 1);
+	assert.equal(fake.comments.length, 1);
+	assert.ok(fake.mutations.some((mutation) => mutation.startsWith("DELETE:")));
+	assert.equal(extractTsvs(fake.comments.map((comment) => comment.body)).join(""), rawFor([baseRow]));
+});
+
+test("multiple owned sets require explicit selection and update only the chosen set", async () => {
+	const secondSetId = "22222222-3333-4444-8555-666666666666";
+	const firstBodies = render(state, [baseRow], rawFor([baseRow]), "head-core", AUDIT_ID);
+	const secondBodies = render(state, [baseRow], rawFor([baseRow]), "head-core", secondSetId);
+	const comments = [...commentsFor(firstBodies, "reviewer", 10), ...commentsFor(secondBodies, "reviewer", 20)];
+	const fake = new FakeGitHub({ comments });
 	await assert.rejects(
-		() => publishRawAudit({ runner, state: startedDetached, rows: [], rawTsv: "header\n", selector: "99" }),
-		/does not descend from audit start commit/,
+		() => publishRawAudit({ runner: fake, state: { ...state, auditId: OTHER_AUDIT_ID }, rows: [baseRow], rawTsv: rawFor([baseRow]) }),
+		/Multiple audit comment sets.*choose one.*11111111.*22222222/,
 	);
-	assert.equal(commentsListed, false, "lineage rejection happens before comments are read or written");
+	const firstBefore = fake.comments.find((comment) => comment.id === 10)!.body;
+	const result = await publishRawAudit({
+		runner: fake,
+		state: { ...state, task: "follow-up", auditId: OTHER_AUDIT_ID },
+		rows: [baseRow],
+		rawTsv: rawFor([baseRow]),
+		commentSetId: secondSetId,
+	});
+	assert.equal(result.commentSetId, secondSetId);
+	assert.equal(fake.comments.find((comment) => comment.id === 10)!.body, firstBefore);
+	assert.ok(fake.comments.find((comment) => comment.id === 20)!.body.includes(OTHER_AUDIT_ID));
+	assert.ok(!fake.mutations.some((mutation) => mutation.endsWith(":10")));
 });
 
-test("publisher accepts a detached checkout when exact HEAD matches a descended PR", async () => {
-	const detached: AuditState = {
-		...state,
-		provenance: { ...provenance, branch: "DETACHED", startCommit: "start-detached" },
-	};
-	const calls: { command: string; args: string[] }[] = [];
-	const runner: CommandRunner = {
-		async exec(command, args) {
-			calls.push({ command, args });
-			if (command === "git" && args[0] === "branch") return { code: 0, stdout: "", stderr: "" };
-			if (command === "git" && args[0] === "rev-parse") return { code: 0, stdout: "detached-head\n", stderr: "" };
-			if (args[0] === "pr") {
-				return {
-					code: 0,
-					stdout: JSON.stringify({ number: 31, url: "https://github.com/owner/repo/pull/31", title: "Detached", headRefName: "feature/detached", headRefOid: "detached-head", ...sameHeadRepository, baseRefName: "main" }),
-					stderr: "",
-				};
-			}
-			if (args.some((arg) => arg.includes("/compare/start-detached...detached-head"))) return { code: 0, stdout: "ahead\n", stderr: "" };
-			if (args[1] === "user") return { code: 0, stdout: "reviewer\n", stderr: "" };
-			if (args.some((arg) => arg.endsWith("comments?per_page=100"))) return { code: 0, stdout: "[[]]", stderr: "" };
-			if (args.includes("POST")) return { code: 0, stdout: JSON.stringify({ html_url: "https://comment/31" }), stderr: "" };
-			throw new Error(`Unexpected call: ${command} ${args.join(" ")}`);
-		},
-	};
-
-	const result = await publishRawAudit({ runner, state: detached, rows: [], rawTsv: rawFor([]), selector: "31" });
-	assert.equal(result.prNumber, 31);
-	assert.ok(calls.some((call) => call.args.some((arg) => arg.includes("/compare/start-detached...detached-head"))));
+test("legacy and other-author comments remain untouched", async () => {
+	const legacy = rawAuditMarker(provenance, "core", AUDIT_ID, 1);
+	const foreignBody = render(state, [baseRow])[0];
+	const fake = new FakeGitHub({
+		comments: [
+			{ id: 5, html_url: "legacy", body: legacy, user: { login: "reviewer" } },
+			{ id: 6, html_url: "foreign", body: foreignBody, user: { login: "other-user" } },
+		],
+	});
+	const result = await publishRawAudit({ runner: fake, state, rows: [baseRow], rawTsv: rawFor([baseRow]) });
+	assert.equal(result.legacyCommentCount, 1);
+	assert.equal(fake.comments.find((comment) => comment.id === 5)!.body, legacy);
+	assert.equal(fake.comments.find((comment) => comment.id === 6)!.body, foreignBody);
+	assert.ok(!fake.mutations.some((mutation) => mutation.endsWith(":5") || mutation.endsWith(":6")));
 });
 
-test("publisher rejects a detached target whose head differs from current HEAD before ancestry", async () => {
-	const detached: AuditState = { ...state, provenance: { ...provenance, branch: "DETACHED", startCommit: "shared-base" } };
-	let compareCalled = false;
-	const runner: CommandRunner = {
-		async exec(command, args) {
-			if (command === "git" && args[0] === "branch") return { code: 0, stdout: "", stderr: "" };
-			if (command === "git" && args[0] === "rev-parse") return { code: 0, stdout: "checked-out-head\n", stderr: "" };
-			if (args[0] === "pr") return { code: 0, stdout: JSON.stringify({ number: 32, url: "https://github.com/owner/repo/pull/32", title: "Wrong detached", headRefName: "feature/wrong", headRefOid: "other-head", ...sameHeadRepository, baseRefName: "main" }), stderr: "" };
-			compareCalled = true;
-			return { code: 0, stdout: "ahead\n", stderr: "" };
-		},
-	};
-
+test("owned malformed and incomplete aggregate sets fail closed before mutation", async () => {
+	const malformed = `${auditSetMarkerPrefix("owner/repo", 4)}${AUDIT_ID}:broken -->`;
+	const fake = new FakeGitHub({ comments: commentsFor([malformed]) });
 	await assert.rejects(
-		() => publishRawAudit({ runner, state: detached, rows: [], rawTsv: "header\n", selector: "32" }),
-		/current checkout .*checked-out-/,
+		() => publishRawAudit({ runner: fake, state, rows: [baseRow], rawTsv: rawFor([baseRow]) }),
+		/Malformed owned audit comment-set marker/,
 	);
-	assert.equal(compareCalled, false);
-});
+	assert.deepEqual(fake.mutations, []);
 
-test("publisher requires an explicit selector when named provenance is published from a detached checkout", async () => {
-	let githubCalled = false;
-	const runner: CommandRunner = {
-		async exec(command, args) {
-			if (command === "git" && args[0] === "branch") return { code: 0, stdout: "", stderr: "" };
-			if (command === "git" && args[0] === "rev-parse") return { code: 0, stdout: "detached-work\n", stderr: "" };
-			githubCalled = true;
-			return { code: 1, stdout: "", stderr: "GitHub must not run" };
-		},
-	};
+	const incomplete = render(state, [baseRow])[0].replace(":part:1/1 -->", ":part:1/2 -->");
+	const incompleteFake = new FakeGitHub({ comments: commentsFor([incomplete]) });
 	await assert.rejects(
-		() => publishRawAudit({ runner, state, rows: [], rawTsv: "header\n" }),
-		/Detached checkouts require an explicit PR/,
+		() => publishRawAudit({ runner: incompleteFake, state, rows: [baseRow], rawTsv: rawFor([baseRow]) }),
+		/incomplete continuation comments/,
 	);
-	assert.equal(githubCalled, false);
+	assert.deepEqual(incompleteFake.mutations, []);
 });
 
-test("publisher fails closed when current branch detection fails and no selector is given", async () => {
-	let githubCalled = false;
-	const runner: CommandRunner = {
-		async exec(command, args) {
-			if (command === "git" && args[0] === "branch") return { code: 1, stdout: "", stderr: "git unavailable" };
-			if (command === "git" && args[0] === "rev-parse") return { code: 1, stdout: "", stderr: "git unavailable" };
-			githubCalled = true;
-			return { code: 1, stdout: "", stderr: "GitHub must not run" };
+test("publisher rejects a concurrent managed-comment change before mutation", async () => {
+	const existing = render(state, [baseRow]);
+	const fake = new FakeGitHub({
+		comments: commentsFor(existing),
+		onList(current, listNumber) {
+			if (listNumber === 2) current.comments[0].body += "\nconcurrent edit";
 		},
-	};
+	});
+	const changed = { ...baseRow, decision: "Changed" };
 	await assert.rejects(
-		() => publishRawAudit({ runner, state, rows: [], rawTsv: "header\n" }),
-		/current branch cannot be identified.*explicit PR/,
+		() => publishRawAudit({ runner: fake, state, rows: [changed], rawTsv: rawFor([changed]) }),
+		/changed concurrently/,
 	);
-	assert.equal(githubCalled, false);
+	assert.deepEqual(fake.mutations, []);
 });
 
-test("a detached checkout must exactly match an explicit PR head even when its branch matches provenance", async () => {
-	let compareCalled = false;
-	const runner: CommandRunner = {
-		async exec(command, args) {
-			if (command === "git" && args[0] === "branch") return { code: 0, stdout: "", stderr: "" };
-			if (command === "git" && args[0] === "rev-parse") return { code: 0, stdout: "detached-other-work\n", stderr: "" };
-			if (args[0] === "pr") return { code: 0, stdout: JSON.stringify({ number: 4, url: "https://github.com/owner/repo/pull/4", title: "Original", headRefName: "feature/core", headRefOid: "branch-head", ...sameHeadRepository, baseRefName: "main" }), stderr: "" };
-			compareCalled = true;
-			return { code: 0, stdout: "ahead\n", stderr: "" };
+test("publisher rejects PR-head and local-checkout changes before comment mutation", async () => {
+	const movingRemote = new FakeGitHub({
+		onRevalidate(fake) {
+			fake.prHead = "force-pushed-head";
 		},
-	};
+	});
 	await assert.rejects(
-		() => publishRawAudit({ runner, state, rows: [], rawTsv: "header\n", selector: "4" }),
-		/current checkout .*detached-oth/,
+		() => publishRawAudit({ runner: movingRemote, state, rows: [baseRow], rawTsv: rawFor([baseRow]) }),
+		/changed from head-core to force-pushed/,
 	);
-	assert.equal(compareCalled, false);
-});
+	assert.deepEqual(movingRemote.mutations, []);
 
-test("publisher rejects an explicit provenance-branch PR while another named branch is checked out", async () => {
-	let compareCalled = false;
-	const runner: CommandRunner = {
-		async exec(command, args) {
-			if (command === "git" && args[0] === "branch") return { code: 0, stdout: "feature/other\n", stderr: "" };
-			if (command === "git" && args[0] === "rev-parse") return { code: 0, stdout: "other-local-head\n", stderr: "" };
-			if (args[0] === "pr") return { code: 0, stdout: JSON.stringify({ number: 4, url: "https://github.com/owner/repo/pull/4", title: "Original", headRefName: "feature/core", headRefOid: "original-head", ...sameHeadRepository, baseRefName: "main" }), stderr: "" };
-			compareCalled = true;
-			return { code: 0, stdout: "identical\n", stderr: "" };
+	const movingLocal = new FakeGitHub({
+		onGitRead(fake, kind, readNumber) {
+			if (readNumber === 1) return undefined;
+			return kind === "branch" ? "feature/other" : "changed-local-head";
 		},
-	};
+	});
 	await assert.rejects(
-		() => publishRawAudit({ runner, state, rows: [], rawTsv: "header\n", selector: "4" }),
-		/current checkout .*feature\/other/,
+		() => publishRawAudit({ runner: movingLocal, state, rows: [baseRow], rawTsv: rawFor([baseRow]) }),
+		/Local checkout changed/,
 	);
-	assert.equal(compareCalled, false);
+	assert.deepEqual(movingLocal.mutations, []);
 });
 
-test("publisher rejects same-name, same-HEAD rewritten history that dropped startCommit", async () => {
-	let commentsCalled = false;
-	const runner: CommandRunner = {
-		async exec(command, args) {
-			if (command === "git" && args[0] === "branch") return { code: 0, stdout: "feature/core\n", stderr: "" };
-			if (command === "git" && args[0] === "rev-parse") return { code: 0, stdout: "rewritten-head\n", stderr: "" };
-			if (args[0] === "pr") return { code: 0, stdout: JSON.stringify({ number: 4, url: "https://github.com/owner/repo/pull/4", title: "Rewritten", headRefName: "feature/core", headRefOid: "rewritten-head", ...sameHeadRepository, baseRefName: "main" }), stderr: "" };
-			if (args.some((arg) => arg.includes("/compare/abcdef1234567890...rewritten-head"))) return { code: 0, stdout: "diverged\n", stderr: "" };
-			commentsCalled = true;
-			return { code: 1, stdout: "", stderr: "comments must not run" };
-		},
-	};
+test("publisher preserves exact checkout, repository, and ancestry validation", async () => {
+	const stale = new FakeGitHub({ head: "local-head", prHead: "remote-head" });
 	await assert.rejects(
-		() => publishRawAudit({ runner, state, rows: [], rawTsv: "header\n", selector: "4" }),
-		/GitHub compare: diverged/,
+		() => publishRawAudit({ runner: stale, state, rows: [], rawTsv: rawFor([]) }),
+		/does not match current checkout/,
 	);
-	assert.equal(commentsCalled, false);
-});
+	assert.equal(stale.calls.some((call) => call.args.some((arg) => arg.includes("/compare/"))), false);
 
-test("publisher rejects a stale same-name PR head that differs from local HEAD", async () => {
-	const runner: CommandRunner = {
-		async exec(command, args) {
-			if (command === "git" && args[0] === "branch") return { code: 0, stdout: "feature/core\n", stderr: "" };
-			if (command === "git" && args[0] === "rev-parse") return { code: 0, stdout: "local-new-head\n", stderr: "" };
-			if (args[0] === "pr") return { code: 0, stdout: JSON.stringify({ number: 4, url: "https://github.com/owner/repo/pull/4", title: "Stale", headRefName: "feature/core", headRefOid: "remote-old-head", ...sameHeadRepository, baseRefName: "main" }), stderr: "" };
-			throw new Error("validation should stop before APIs");
-		},
-	};
+	const fork = new FakeGitHub({ repository: "attacker/repo" });
 	await assert.rejects(
-		() => publishRawAudit({ runner, state, rows: [], rawTsv: "header\n", selector: "4" }),
-		/remote-old-h.*local-new-he/,
-	);
-});
-
-test("publisher rejects a same-name, same-OID PR from a fork", async () => {
-	const runner: CommandRunner = {
-		async exec(command, args) {
-			if (command === "git" && args[0] === "branch") return { code: 0, stdout: "feature/core\n", stderr: "" };
-			if (command === "git" && args[0] === "rev-parse") return { code: 0, stdout: "same-head\n", stderr: "" };
-			if (args[0] === "pr") return { code: 0, stdout: JSON.stringify({ number: 44, url: "https://github.com/owner/repo/pull/44", title: "Fork", headRefName: "feature/core", headRefOid: "same-head", headRepository: { nameWithOwner: "attacker/repo" }, isCrossRepository: true, baseRefName: "main" }), stderr: "" };
-			throw new Error("validation should stop before APIs");
-		},
-	};
-	await assert.rejects(
-		() => publishRawAudit({ runner, state, rows: [], rawTsv: "header\n", selector: "44" }),
+		() => publishRawAudit({ runner: fork, state, rows: [], rawTsv: rawFor([]) }),
 		/attacker\/repo.*does not match current checkout owner\/repo/,
 	);
+
+	const diverged = new FakeGitHub({ compare: "diverged" });
+	await assert.rejects(
+		() => publishRawAudit({ runner: diverged, state, rows: [], rawTsv: rawFor([]) }),
+		/does not descend.*diverged/,
+	);
+	assert.deepEqual(diverged.mutations, []);
 });
 
-test("publisher rejects a sibling descendant PR that does not match the current checkout", async () => {
-	const startedOnMain: AuditState = {
-		...state,
-		provenance: { ...provenance, branch: "main", startCommit: "shared-base" },
-	};
-	let compareCalled = false;
-	const runner: CommandRunner = {
-		async exec(command, args) {
-			if (command === "git" && args[0] === "branch") return { code: 0, stdout: "feature/intended\n", stderr: "" };
-			if (command === "git" && args[0] === "rev-parse") return { code: 0, stdout: "intended-head\n", stderr: "" };
-			if (args[0] === "pr") {
-				return {
-					code: 0,
-					stdout: JSON.stringify({
-						number: 77,
-						url: "https://github.com/owner/repo/pull/77",
-						title: "Sibling",
-						headRefName: "feature/typo",
-						headRefOid: "sibling-head",
-						...sameHeadRepository,
-						baseRefName: "main",
-					}),
-					stderr: "",
-				};
-			}
-			compareCalled = true;
-			return { code: 0, stdout: "ahead\n", stderr: "" };
-		},
-	};
-
+test("detached and post-start branch publication retain explicit checkout intent checks", async () => {
+	const detachedWithoutSelector = new FakeGitHub({ branch: "", prBranch: "feature/detached" });
 	await assert.rejects(
-		() => publishRawAudit({ runner, state: startedOnMain, rows: [], rawTsv: "header\n", selector: "77" }),
-		/current checkout .*feature\/intended/,
+		() => publishRawAudit({ runner: detachedWithoutSelector, state, rows: [], rawTsv: rawFor([]) }),
+		/Detached checkouts require an explicit PR/,
 	);
-	assert.equal(compareCalled, false, "checkout-intent rejection happens before ancestry and comment APIs");
+	assert.equal(detachedWithoutSelector.calls.some((call) => call.command === "gh"), false);
+
+	const detached = new FakeGitHub({ branch: "", prBranch: "feature/detached" });
+	const detachedResult = await publishRawAudit({ runner: detached, state, rows: [], rawTsv: rawFor([]), selector: "4" });
+	assert.equal(detachedResult.prNumber, 4);
+
+	const startedOnMain: AuditState = { ...state, provenance: { ...provenance, branch: "main" } };
+	const branchedAfterStart = new FakeGitHub({ branch: "feature/core", prBranch: "feature/core" });
+	assert.equal((await publishRawAudit({ runner: branchedAfterStart, state: startedOnMain, rows: [], rawTsv: rawFor([]) })).prNumber, 4);
+
+	const sibling = new FakeGitHub({ branch: "feature/core", prBranch: "feature/sibling" });
+	await assert.rejects(
+		() => publishRawAudit({ runner: sibling, state: startedOnMain, rows: [], rawTsv: rawFor([]), selector: "4" }),
+		/does not match current checkout/,
+	);
+	assert.equal(sibling.calls.some((call) => call.args.some((arg) => arg.includes("/compare/"))), false);
+});
+
+test("publisher requires identity and a valid explicit owned set", async () => {
+	const noCalls: CommandRunner = { async exec() { throw new Error("must not run"); } };
+	await assert.rejects(
+		() => publishRawAudit({ runner: noCalls, state: { ...state, auditId: undefined }, rows: [], rawTsv: rawFor([]) }),
+		/no identity/,
+	);
+	const fake = new FakeGitHub();
+	await assert.rejects(
+		() => publishRawAudit({ runner: fake, state, rows: [], rawTsv: rawFor([]), commentSetId: "missing" }),
+		/does not exist for the authenticated GitHub author/,
+	);
+	assert.deepEqual(fake.mutations, []);
 });

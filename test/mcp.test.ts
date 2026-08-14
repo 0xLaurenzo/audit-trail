@@ -68,6 +68,7 @@ test("mcp server initializes, lists tools, and drives the audit workflow", async
 				"audit_close",
 			],
 		);
+		assert.equal(tools.find((tool: any) => tool.name === "audit_publish").inputSchema.properties.commentSetId.type, "string");
 
 		const started = resultOf(
 			await server.handle(request(3, "tools/call", { name: "audit_start", arguments: { task: "MCP Task" } })),

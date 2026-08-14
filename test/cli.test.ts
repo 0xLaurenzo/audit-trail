@@ -132,6 +132,12 @@ test("cli rejects invalid input with clear errors", async () => {
 		assert.equal(await runCli(["-C", root, "publish"], io), 1);
 		assert.match(io.stderr.join("\n"), /no Git provenance/);
 
+		const badPublish = capture();
+		assert.equal(await runCli(["-C", root, "publish", "1", "2"], badPublish), 1);
+		assert.match(badPublish.stderr.join("\n"), /at most one PR/);
+		assert.equal(await runCli(["-C", root, "publish", "--set"], badPublish), 1);
+		assert.match(badPublish.stderr.join("\n"), /argument missing|requires an argument/i);
+
 		assert.equal(await runCli(["-C", root, "unknown-command"], io), 1);
 		assert.match(io.stderr.join("\n"), /Unknown command: unknown-command/);
 	} finally {

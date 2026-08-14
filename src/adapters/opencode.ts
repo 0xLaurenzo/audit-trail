@@ -289,7 +289,7 @@ export const AuditTrailPlugin = async ({ client, directory, runner: runnerOverri
 			}),
 			audit_publish: tool({
 				description:
-					"Create or update readable audit comments with canonical TSV on the current checked-out branch's pull request.",
+					"Create or update this author's aggregate audit comment set on the current checked-out branch's pull request.",
 				args: {
 					selector: z
 						.string()
@@ -297,6 +297,10 @@ export const AuditTrailPlugin = async ({ client, directory, runner: runnerOverri
 						.describe(
 							"PR number or URL; defaults to the current branch. The PR must be in the provenance repository, match exact local HEAD, and descend from the audit start commit.",
 						),
+					commentSetId: z
+						.string()
+						.optional()
+						.describe("Existing set ID; required only when this GitHub author owns multiple sets on the PR."),
 				},
 				execute: async (args, context) => (await server(context)).call("audit_publish", args),
 			}),

@@ -40,7 +40,7 @@ Commands:
   decision           Append one decision row (see options below)
   status             Show audit status and unresolved decision IDs
   review <model>     Run an independent review with <provider/model>
-  publish [pr]       Create or update readable audit comments with canonical TSV
+  publish [pr]       Create/update an aggregate audit set (--set <set-id>)
   close              Close the audit once resolved and reviewed
   mcp                Serve the audit tools as a local MCP server on stdio
                      (--harness claude|codex uses that harness's hook state)
@@ -337,7 +337,14 @@ async function commandInstall(target: string, io: CliIo): Promise<number> {
 	return failed ? 1 : 0;
 }
 
-async function commandPublish(workflow: AuditWorkflow, selectorArg: string, io: CliIo): Promise<number> {
+async function commandPublish(workflow: AuditWorkflow, args: string[], io: CliIo): Promise<number> {
+	const parsed = parseArgs({
+		args,
+		options: { set: { type: "string" } },
+		allowPositionals: true,
+		strict: true,
+	});
+	if (parsed.positionals.length > 1) throw new Error("publish accepts at most one PR number or URL");
 	const state = await requireActive(workflow);
 	if (!state.provenance) {
 		io.err("This audit has no Git provenance; publishing requires a GitHub origin");
@@ -357,15 +364,14 @@ async function commandPublish(workflow: AuditWorkflow, selectorArg: string, io: 
 		state: { ...state, auditId: await workflow.ensureAuditId() },
 		rows,
 		rawTsv,
-		selector: selectorArg || undefined,
+		selector: parsed.positionals[0]?.trim() || undefined,
+		commentSetId: parsed.values.set?.trim() || undefined,
 	});
 	io.out(
-		`Published audit in ${result.commentCount} readable comment${result.commentCount === 1 ? "" : "s"} with canonical TSV on PR #${result.prNumber}: ${result.commentUrl}`,
+		`Published audit to set ${result.commentSetId} (${result.componentCount} audit${result.componentCount === 1 ? "" : "s"} in ${result.commentCount} comment${result.commentCount === 1 ? "" : "s"}) on PR #${result.prNumber}: ${result.commentUrl}`,
 	);
-	if (result.foreignCommentCount) {
-		io.err(
-			`Warning: ${result.foreignCommentCount} same-task audit comment${result.foreignCommentCount === 1 ? "" : "s"} from a different audit exist on this PR and were left untouched; remove them manually if unwanted.`,
-		);
+	if (result.legacyCommentCount) {
+		io.err(`Warning: ${result.legacyCommentCount} legacy audit comment${result.legacyCommentCount === 1 ? " was" : "s were"} left untouched.`);
 	}
 	return 0;
 }
@@ -428,7 +434,7 @@ export async function runCli(
 			case "review":
 				return await commandReview(workflow, args, io, dependencies);
 			case "publish":
-				return await commandPublish(workflow, (args[0] ?? "").trim(), io);
+				return await commandPublish(workflow, args, io);
 			case "close":
 				return await commandClose(workflow, io);
 			case "mcp":

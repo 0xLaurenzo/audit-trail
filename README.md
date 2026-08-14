@@ -106,7 +106,7 @@ audit-trail decision --phase core --origin "implementation discovery" \
   --decision "..." --why "..." --confidence high --evidence "file:1" --result verified
 audit-trail status
 audit-trail review <provider/model> --mode cross-provider|cross-model|same-model
-audit-trail publish [pr-number-or-url]
+audit-trail publish [pr-number-or-url] [--set <comment-set-id>]
 audit-trail close
 ```
 
@@ -197,7 +197,7 @@ export { AuditTrailPlugin } from "/path/to/audit-trail/src/adapters/opencode.ts"
 - `/audit-reopen <task>` — explicitly restore the exact matching closed lifecycle
 - `/audit-status` — show unresolved, low-confidence, and unsupported decisions, plus review freshness
 - `/audit-review [provider/model]` — review the log and pi session, preferring a cross-provider model
-- `/audit-publish [number-or-url]` — create or update reviewer-friendly audit comments with canonical TSV on the current checked-out branch's PR
+- `/audit-publish [number-or-url] [--set set-id]` — add or replace this audit in the authenticated author's aggregate comment set on the current branch's PR
 - `/audit-close` — close only after all active rows are resolved and the latest audit bytes have been reviewed
 
 ## Agent tool
@@ -251,7 +251,13 @@ Pass a PR number or URL when automatic branch lookup is not appropriate. Every t
 /audit-publish 123
 ```
 
-Publishing requires an approving review checkpoint matching the current audit bytes: after any new decision, run `/audit-review` again, and a `VERDICT: block` review must be resolved and re-reviewed first. The `gh` CLI must be installed and authenticated. Provenance keeps the original audit-start branch immutable. GitHub must prove that every selected PR head descends from the pinned audit start commit, including same-named branches that may have been force-rewritten. Unrelated or diverged PRs are rejected before comments are read or written. Local branch/HEAD and the remote PR head OID are revalidated immediately before every comment mutation; GitHub has no atomic conditional comment write, so a local change or force-push in the sub-request window cannot be eliminated and requires publishing again from the updated checkout. It publishes a deterministic reviewer view with an active-decision index, blocker counts, and one Markdown card per decision. Horizontal rules separate entries. Active decisions are expanded; each superseded decision becomes a single collapsed summary line (ID, phase, replacement, result, and confidence) with the complete body and bidirectional history links available on expansion. Each card exposes phase, result, confidence, origin, decision, rationale, alternatives, evidence, supersession, timestamp, and session. A real harness entry ID is shown when available; the CLI/MCP `none` sentinel stays only in canonical TSV. Open, inconclusive, low-confidence, and missing-evidence active rows are visibly flagged. No model summarizes or rewrites these fields.
+Publication groups successive audits into one logical comment set per repository, PR, and authenticated GitHub author. The first audit ID becomes the stable set ID. A later audit is appended as another component; republishing the same audit ID replaces only that component. If the author has multiple sets on the PR, select one explicitly:
+
+```text
+/audit-publish 123 --set 11111111-2222-4333-8444-555555555555
+```
+
+Publishing requires an approving review checkpoint matching the current audit bytes: after any new decision, run `/audit-review` again, and a `VERDICT: block` review must be resolved and re-reviewed first. The `gh` CLI must be installed and authenticated. Every component records its own linked `startCommit..publishedHead` range, provenance, review result, decision cards, and canonical TSV. GitHub must prove that every selected PR head descends from that audit's pinned start commit. Unrelated or diverged PRs are rejected before comments are read or written. Local branch/HEAD, remote PR head OID, and the selected comment bodies are revalidated immediately before every mutation. GitHub has no atomic conditional comment write, so the remaining sub-request race requires publishing again if detected afterward. Active decisions are expanded; superseded decisions retain their complete body and audit-namespaced history links. Open, inconclusive, low-confidence, and missing-evidence active rows are visibly flagged. No model summarizes or rewrites these fields.
 
 ```markdown
 ### D0002
@@ -268,9 +274,9 @@ Render deterministic reviewer-friendly decision cards.
 <sub><strong>History:</strong> No supersession links.</sub>
 ```
 
-Each audit lifecycle carries a stable identity (a UUID minted at `start`, or on demand for state created before identities existed) that is embedded in every published comment's hidden marker. Publication only ever updates or deletes comments carrying this exact identity: same-task comments from a different audit — including another worktree, a collaborator, or the pre-identity marker format — are never touched, and publish warns when such foreign comments exist so duplicates are visible. Because legacy markers cannot prove ownership, republishing an audit first published before identities existed creates fresh comments; remove the old ones manually if unwanted.
+Versioned hidden markers identify the author-owned set, its numbered continuation comments, and each audit component. Publication never mutates another author's set or an unselected owned set. Legacy per-audit comments are deliberately left untouched and no migration command is provided.
 
-The exact canonical TSV remains in a collapsed block beneath the cards. GitHub comments have a size limit, so large audits are split at decision-row boundaries based on the combined Markdown and TSV size. Each card stays with its exact source row; concatenating fenced TSV blocks in part order recovers the original file byte-for-byte. Hidden markers make publication idempotent: subsequent runs update each existing part and remove stale extra parts instead of creating duplicates. Publish before `/audit-close`; closing atomically moves `.audit/active.json` to `.audit/<slug>.closed.json`, preserving the lifecycle for an explicit reopen.
+Each exact canonical TSV remains in a collapsed block beneath its component. GitHub comments have a size limit, so large audits split at decision-row boundaries and aggregate sets use deterministic numbered continuation comments. Concatenating one component's fenced TSV blocks in segment order recovers that audit file byte-for-byte. Republishing is idempotent by audit ID and removes only stale continuation parts of the selected set. Publish before `/audit-close`; closing atomically moves `.audit/active.json` to `.audit/<slug>.closed.json`, preserving the lifecycle for an explicit reopen.
 
 ## Development
 
