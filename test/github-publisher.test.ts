@@ -195,6 +195,7 @@ interface FakeOptions {
 	comments?: FakeComment[];
 	onList?: (fake: FakeGitHub, listNumber: number) => void;
 	onRevalidate?: (fake: FakeGitHub, viewNumber: number) => void;
+	onMutate?: (fake: FakeGitHub, method: string) => ExecResult | undefined;
 	onGitRead?: (fake: FakeGitHub, kind: "branch" | "head", readNumber: number) => string | undefined;
 }
 
@@ -224,6 +225,7 @@ class FakeGitHub implements CommandRunner {
 	private readonly onList?: FakeOptions["onList"];
 	private readonly onRevalidate?: FakeOptions["onRevalidate"];
 	private readonly onGitRead?: FakeOptions["onGitRead"];
+	onMutate?: FakeOptions["onMutate"];
 
 	constructor(options: FakeOptions = {}) {
 		this.branch = options.branch ?? "feature/core";
@@ -237,6 +239,7 @@ class FakeGitHub implements CommandRunner {
 		this.onList = options.onList;
 		this.onRevalidate = options.onRevalidate;
 		this.onGitRead = options.onGitRead;
+		this.onMutate = options.onMutate;
 	}
 
 	async exec(command: string, args: string[]): Promise<ExecResult> {
@@ -280,6 +283,8 @@ class FakeGitHub implements CommandRunner {
 		}
 		const method = args[args.indexOf("--method") + 1];
 		const endpoint = args[args.indexOf("--method") + 2];
+		const override = this.onMutate?.(this, method);
+		if (override) return override;
 		if (method === "POST" || method === "PATCH") {
 			const inputPath = args[args.indexOf("--input") + 1];
 			const body = JSON.parse(await readFile(inputPath, "utf8")).body as string;
@@ -417,7 +422,7 @@ test("legacy and other-author comments remain untouched", async () => {
 	assert.ok(!fake.mutations.some((mutation) => mutation.endsWith(":5") || mutation.endsWith(":6")));
 });
 
-test("owned malformed and incomplete aggregate sets fail closed before mutation", async () => {
+test("owned malformed set markers fail closed while interrupted numbering is adopted and rewritten", async () => {
 	const malformed = `${auditSetMarkerPrefix("owner/repo", 4)}${AUDIT_ID}:broken -->`;
 	const fake = new FakeGitHub({ comments: commentsFor([malformed]) });
 	await assert.rejects(
@@ -426,13 +431,99 @@ test("owned malformed and incomplete aggregate sets fail closed before mutation"
 	);
 	assert.deepEqual(fake.mutations, []);
 
+	// A crash artifact: valid markers whose totals disagree with reality.
 	const incomplete = render(state, [baseRow])[0].replace(":part:1/1 -->", ":part:1/2 -->");
 	const incompleteFake = new FakeGitHub({ comments: commentsFor([incomplete]) });
+	const result = await publishRawAudit({ runner: incompleteFake, state, rows: [baseRow], rawTsv: rawFor([baseRow]) });
+	assert.equal(result.commentCount, 1);
+	assert.deepEqual(incompleteFake.mutations, ["PATCH:10"]);
+	assert.ok(incompleteFake.comments[0].body.startsWith(rawAuditSetMarker("owner/repo", 4, AUDIT_ID, 1, 1)));
+});
+
+test("publish auto-selects the owned set containing this audit and rejects duplicating it elsewhere", async () => {
+	const fake = new FakeGitHub();
+	await publishRawAudit({ runner: fake, state, rows: [baseRow], rawTsv: rawFor([baseRow]) });
+	const secondState: AuditState = {
+		...state,
+		task: "follow-up",
+		auditId: OTHER_AUDIT_ID,
+		provenance: { ...provenance, task: "follow-up" },
+	};
+	await publishRawAudit({ runner: fake, state: secondState, rows: [baseRow], rawTsv: rawFor([baseRow]) });
+
+	// An unrelated owned set with a third audit inside it.
+	const foreignSetId = "33333333-4444-4555-8666-777777777777";
+	const foreignAudit = "44444444-5555-4666-8777-888888888888";
+	const foreignBodies = render({ ...state, auditId: foreignAudit }, [baseRow], rawFor([baseRow]), "head-core", foreignSetId);
+	fake.comments.push(...commentsFor(foreignBodies, "reviewer", 900));
+	const foreignBefore = fake.comments.find((comment) => comment.id === 900)!.body;
+
+	const updated = { ...baseRow, decision: "Auto-selected update" };
+	const result = await publishRawAudit({ runner: fake, state: secondState, rows: [updated], rawTsv: rawFor([updated]) });
+	assert.equal(result.commentSetId, AUDIT_ID, "the set containing this audit is auto-selected despite multiple sets");
+	assert.ok(fake.comments.find((comment) => comment.id === 100)!.body.includes("Auto\\-selected update"));
+	assert.equal(fake.comments.find((comment) => comment.id === 900)!.body, foreignBefore);
+
 	await assert.rejects(
-		() => publishRawAudit({ runner: incompleteFake, state, rows: [baseRow], rawTsv: rawFor([baseRow]) }),
-		/incomplete continuation comments/,
+		() => publishRawAudit({ runner: fake, state: secondState, rows: [updated], rawTsv: rawFor([updated]), commentSetId: foreignSetId }),
+		/already published in comment set 11111111.*publish without --set/,
 	);
-	assert.deepEqual(incompleteFake.mutations, []);
+	assert.ok(!fake.mutations.some((mutation) => mutation.endsWith(":900")), "the unrelated set is never mutated");
+});
+
+test("an interrupted multipart publish is adopted and repaired by the next run", async () => {
+	const fake = new FakeGitHub();
+	await publishRawAudit({ runner: fake, state, rows: [baseRow], rawTsv: rawFor([baseRow]) });
+	const firstComponent = componentBody(fake.comments[0].body, AUDIT_ID);
+
+	const bigState: AuditState = {
+		...state,
+		task: "big",
+		auditId: OTHER_AUDIT_ID,
+		provenance: { ...provenance, task: "big" },
+	};
+	const bigRows = ["a", "b", "c"].map((value, index) => ({
+		...baseRow,
+		id: `D000${index + 1}`,
+		decision: value.repeat(20_000),
+	}));
+	// Crash after the continuation POSTs but before part 1 is rewritten.
+	fake.onMutate = (_fake, method) => (method === "PATCH" ? { code: 1, stdout: "", stderr: "network dropped" } : undefined);
+	await assert.rejects(
+		() => publishRawAudit({ runner: fake, state: bigState, rows: bigRows, rawTsv: rawFor(bigRows) }),
+		/network dropped/,
+	);
+	assert.ok(fake.comments.length > 1, "the interrupted run left extra continuation comments");
+	assert.ok(fake.comments[0].body.includes(":part:1/1 -->"), "part 1 still carries its stale marker");
+
+	fake.onMutate = undefined;
+	const result = await publishRawAudit({ runner: fake, state: bigState, rows: bigRows, rawTsv: rawFor(bigRows) });
+	assert.equal(result.commentSetId, AUDIT_ID);
+	assert.equal(result.componentCount, 2);
+	assert.equal(result.commentCount, fake.comments.length);
+	const bodies = fake.comments.map((comment) => comment.body);
+	for (const [index, body] of bodies.entries()) {
+		assert.ok(body.startsWith(rawAuditSetMarker("owner/repo", 4, AUDIT_ID, index + 1, bodies.length)), `part ${index + 1} is renumbered consistently`);
+	}
+	assert.ok(bodies[0].includes(firstComponent), "the first audit's component survives byte-for-byte");
+	assert.equal(extractTsvs(bodies).join(""), rawFor([baseRow]) + rawFor(bigRows), "both canonical TSVs reconstruct exactly");
+});
+
+test("conflicting copies of another audit in an interrupted set fail closed with comment URLs", async () => {
+	const v1 = buildAuditComponentSegments(state, [baseRow], rawFor([baseRow]), "head-core", 4);
+	const changedRow = { ...baseRow, decision: "Conflicting copy" };
+	const v2 = buildAuditComponentSegments(state, [changedRow], rawFor([changedRow]), "head-core", 4);
+	const body1 = buildAuditSetComments("owner/repo", 4, AUDIT_ID, v1)[0];
+	const body2 = buildAuditSetComments("owner/repo", 4, AUDIT_ID, v2)[0].replace(":part:1/1 -->", ":part:2/3 -->");
+	const fake = new FakeGitHub({
+		comments: [...commentsFor([body1], "reviewer", 10), ...commentsFor([body2], "reviewer", 20)],
+	});
+	const publishing: AuditState = { ...state, task: "other", auditId: OTHER_AUDIT_ID };
+	await assert.rejects(
+		() => publishRawAudit({ runner: fake, state: publishing, rows: [baseRow], rawTsv: rawFor([baseRow]) }),
+		/interrupted publish and audit 11111111.*conflicting copies.*https:\/\/comment\/10.*https:\/\/comment\/20/s,
+	);
+	assert.deepEqual(fake.mutations, []);
 });
 
 test("publisher rejects a concurrent managed-comment change before mutation", async () => {

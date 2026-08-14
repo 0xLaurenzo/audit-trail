@@ -251,7 +251,7 @@ Pass a PR number or URL when automatic branch lookup is not appropriate. Every t
 /audit-publish 123
 ```
 
-Publication groups successive audits into one logical comment set per repository, PR, and authenticated GitHub author. The first audit ID becomes the stable set ID. A later audit is appended as another component; republishing the same audit ID replaces only that component. If the author has multiple sets on the PR, select one explicitly:
+Publication groups successive audits into one logical comment set per repository, PR, and authenticated GitHub author. The first audit ID becomes the stable set ID. A later audit is appended as another component; republishing the same audit ID replaces only that component. The set already containing this audit is selected automatically, and a `--set` choice that would duplicate the audit into a second set is rejected. Only when the author owns multiple sets and none contains this audit must one be chosen explicitly:
 
 ```text
 /audit-publish 123 --set 11111111-2222-4333-8444-555555555555
@@ -274,7 +274,7 @@ Render deterministic reviewer-friendly decision cards.
 <sub><strong>History:</strong> No supersession links.</sub>
 ```
 
-Versioned hidden markers identify the author-owned set, its numbered continuation comments, and each audit component. Publication never mutates another author's set or an unselected owned set. Legacy per-audit comments are deliberately left untouched and no migration command is provided.
+Versioned hidden markers identify the author-owned set, its numbered continuation comments, and each audit component. Publication never mutates another author's set or an unselected owned set. A publication interrupted between comment writes leaves valid markers with disagreeing numbering; the next publish into that set adopts and rewrites it, preserving every other audit's component byte-for-byte. Only conflicting copies of a different audit fail closed, naming the affected comment URLs (re-running publish for that audit repairs them). Legacy per-audit comments are deliberately left untouched and no migration command is provided.
 
 Each exact canonical TSV remains in a collapsed block beneath its component. GitHub comments have a size limit, so large audits split at decision-row boundaries and aggregate sets use deterministic numbered continuation comments. Concatenating one component's fenced TSV blocks in segment order recovers that audit file byte-for-byte. Republishing is idempotent by audit ID and removes only stale continuation parts of the selected set. Publish before `/audit-close`; closing atomically moves `.audit/active.json` to `.audit/<slug>.closed.json`, preserving the lifecycle for an explicit reopen.
 

@@ -506,8 +506,11 @@ interface SetMarker {
 
 interface OwnedAuditSet {
 	setId: string;
+	/** Comments in creation (id) order; equals part order for consistent sets. */
 	comments: GitHubComment[];
 	segments: AuditComponentSegment[];
+	/** False when an interrupted publish left valid markers with disagreeing numbering. */
+	consistent: boolean;
 }
 
 function escapeRegex(value: string): string {
@@ -586,21 +589,60 @@ function discoverOwnedSets(
 	}
 	const sets: OwnedAuditSet[] = [];
 	for (const [setId, entries] of grouped) {
-		entries.sort((a, b) => a.marker.part - b.marker.part);
+		entries.sort((a, b) => a.comment.id - b.comment.id);
+		const segments = entries.flatMap((entry) => parseComponentSegments(entry.comment.body));
 		const total = entries[0].marker.totalParts;
-		if (total < 1 || entries.some((entry) => entry.marker.totalParts !== total) || entries.length !== total) {
-			throw new Error(`Audit comment set ${setId} has incomplete continuation comments`);
-		}
-		for (const [index, entry] of entries.entries()) {
-			if (entry.marker.part !== index + 1) {
-				throw new Error(`Audit comment set ${setId} has duplicate or non-contiguous continuation comments`);
+		let consistent = entries.length === total
+			&& entries.every((entry, index) => entry.marker.totalParts === total && entry.marker.part === index + 1);
+		if (consistent) {
+			try {
+				validateComponentSequence(setId, segments);
+			} catch {
+				// A crash between comment writes can leave consistent part markers
+				// with mixed component packing; adopt it like any interrupted set.
+				consistent = false;
 			}
 		}
-		const segments = entries.flatMap((entry) => parseComponentSegments(entry.comment.body));
-		validateComponentSequence(setId, segments);
-		sets.push({ setId, comments: entries.map((entry) => entry.comment), segments });
+		sets.push({ setId, comments: entries.map((entry) => entry.comment), segments, consistent });
 	}
 	return sets;
+}
+
+/**
+ * Adopt an interrupted publication: author-owned comments whose valid markers
+ * disagree on numbering (a crash between comment writes). Every other audit
+ * must keep exactly one identical copy of each segment; the audit being
+ * republished is replaced wholesale, so its conflicting copies are dropped.
+ */
+function repairOwnedSegments(set: OwnedAuditSet, currentAuditId: string): AuditComponentSegment[] {
+	const conflict = (auditId: string): Error => new Error(
+		`Audit comment set ${set.setId} was left inconsistent by an interrupted publish and audit ${auditId} has conflicting copies. Re-run publish for that audit to repair it, or remove the affected comments: ${set.comments.map((comment) => comment.html_url).join(", ")}`,
+	);
+	const order: string[] = [];
+	const byAudit = new Map<string, Map<number, AuditComponentSegment>>();
+	for (const segment of set.segments) {
+		let group = byAudit.get(segment.auditId);
+		if (!group) {
+			group = new Map();
+			byAudit.set(segment.auditId, group);
+			order.push(segment.auditId);
+		}
+		const existing = group.get(segment.segment);
+		if (!existing) {
+			group.set(segment.segment, segment);
+		} else if (segment.auditId !== currentAuditId && existing.body !== segment.body) {
+			throw conflict(segment.auditId);
+		}
+	}
+	return order.flatMap((auditId) => {
+		const group = [...byAudit.get(auditId)!.values()].sort((a, b) => a.segment - b.segment);
+		const total = group[0].totalSegments;
+		if (auditId !== currentAuditId
+			&& (group.length !== total || group.some((segment, index) => segment.segment !== index + 1 || segment.totalSegments !== total))) {
+			throw conflict(auditId);
+		}
+		return group;
+	});
 }
 
 function selectOwnedSet(
@@ -608,15 +650,27 @@ function selectOwnedSet(
 	requestedId: string | undefined,
 	auditId: string,
 ): { setId: string; set?: OwnedAuditSet } {
-	if (!sets.length) {
-		if (requestedId) throw new Error(`Audit comment set ${requestedId} does not exist for the authenticated GitHub author`);
-		return { setId: auditId };
-	}
+	// Republishing must stay idempotent per audit ID at PR scope: the set that
+	// already contains this audit wins, and no choice may duplicate it elsewhere.
+	const containing = sets.filter((set) => set.segments.some((segment) => segment.auditId === auditId));
 	if (requestedId) {
 		const selected = sets.find((set) => set.setId === requestedId);
 		if (!selected) throw new Error(`Audit comment set ${requestedId} does not exist for the authenticated GitHub author`);
+		const conflictSet = containing.find((set) => set.setId !== requestedId);
+		if (conflictSet) {
+			throw new Error(
+				`This audit is already published in comment set ${conflictSet.setId} (${conflictSet.comments[0].html_url}); publish without --set/commentSetId to update it there`,
+			);
+		}
 		return { setId: selected.setId, set: selected };
 	}
+	if (containing.length > 1) {
+		throw new Error(
+			`This audit appears in multiple comment sets (${containing.map((set) => `${set.setId} (${set.comments[0].html_url})`).join(", ")}); remove the duplicate component before publishing`,
+		);
+	}
+	if (containing.length === 1) return { setId: containing[0].setId, set: containing[0] };
+	if (!sets.length) return { setId: auditId };
 	if (sets.length === 1) return { setId: sets[0].setId, set: sets[0] };
 	throw new Error(
 		`Multiple audit comment sets belong to the authenticated GitHub author; choose one with --set/commentSetId: ${sets.map((set) => `${set.setId} (${set.comments[0].html_url})`).join(", ")}`,
@@ -732,7 +786,13 @@ export async function publishRawAudit(input: PublishAuditInput): Promise<Publish
 	const sets = discoverOwnedSets(comments, login, provenance.repository, pr.number);
 	const selected = selectOwnedSet(sets, input.commentSetId?.trim() || undefined, auditId);
 	const newSegments = buildAuditComponentSegments(input.state, input.rows, input.rawTsv, pr.headRefOid, pr.number);
-	const mergedSegments = replaceAuditComponent(selected.set?.segments ?? [], auditId, newSegments);
+	const existingSegments = !selected.set
+		? []
+		: selected.set.consistent
+			? selected.set.segments
+			: repairOwnedSegments(selected.set, auditId);
+	const mergedSegments = replaceAuditComponent(existingSegments, auditId, newSegments);
+	validateComponentSequence(selected.setId, mergedSegments);
 	const bodies = buildAuditSetComments(provenance.repository, pr.number, selected.setId, mergedSegments);
 	const componentCount = new Set(mergedSegments.map((segment) => segment.auditId)).size;
 	const legacyCommentCount = comments.filter(
@@ -778,9 +838,12 @@ export async function publishRawAudit(input: PublishAuditInput): Promise<Publish
 	};
 
 	const existingByPart = new Map<number, GitHubComment>();
-	for (const comment of selected.set?.comments ?? []) {
-		const marker = parseSetMarker(comment.body, provenance.repository, pr.number)!;
-		existingByPart.set(marker.part, comment);
+	for (const [index, comment] of (selected.set?.comments ?? []).entries()) {
+		// Interrupted sets have unreliable part markers; adopt creation order.
+		const part = selected.set?.consistent
+			? parseSetMarker(comment.body, provenance.repository, pr.number)!.part
+			: index + 1;
+		existingByPart.set(part, comment);
 	}
 	const tempDir = await mkdtemp(join(tmpdir(), "audit-trail-publish-"));
 	const bodyPath = join(tempDir, "comment.json");
