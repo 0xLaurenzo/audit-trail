@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
+import { appendFile, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -42,6 +42,70 @@ async function startedWorkflow(root: string): Promise<AuditWorkflow> {
 	await workflow.append({ harness: "pi", id: "session" }, resolvedRow);
 	return workflow;
 }
+
+test("a supplied transcript is snapshotted into .audit before the reviewer runs", async () => {
+	const root = await mkdtemp(join(tmpdir(), "audit-review-test-"));
+	try {
+		const workflow = await startedWorkflow(root);
+		const live = join(root, "live.jsonl");
+		await writeFile(live, '{"event":"one"}\n', "utf8");
+		let promptSeen = "";
+		const reviewer: ReviewerPort = {
+			review: async ({ prompt }) => {
+				promptSeen = prompt;
+				// The live session file keeps growing while the reviewer runs.
+				await appendFile(live, '{"event":"appended-during-review"}\n', "utf8");
+				return buildReviewOutputFixture({ verdict: "approve" });
+			},
+		};
+		await runIndependentReview({
+			workflow,
+			reviewer,
+			candidates: [{ model: "provider/model", mode: "cross-provider" }],
+			harnessName: "codex",
+			transcriptPath: live,
+		});
+		const snapshot = promptSeen.match(/^codex session: (.+)$/m)?.[1];
+		assert.ok(snapshot, "prompt references a transcript");
+		assert.notEqual(snapshot, live, "prompt references the snapshot, not the live file");
+		assert.ok(snapshot!.includes(join(".audit", "task.review-transcript.")));
+		assert.ok(snapshot!.endsWith(".jsonl"), "snapshot keeps the source extension");
+		assert.equal(
+			await readFile(snapshot!, "utf8"),
+			'{"event":"one"}\n',
+			"the snapshot excludes events appended while the reviewer ran",
+		);
+		assert.match(promptSeen, /still running/, "transcript prompts carry the in-flight invariant");
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+test("an unreadable transcript falls back to transcript-less review", async () => {
+	const root = await mkdtemp(join(tmpdir(), "audit-review-test-"));
+	try {
+		const workflow = await startedWorkflow(root);
+		let promptSeen = "";
+		const reviewer: ReviewerPort = {
+			review: async ({ prompt }) => {
+				promptSeen = prompt;
+				return buildReviewOutputFixture({ verdict: "approve" });
+			},
+		};
+		const result = await runIndependentReview({
+			workflow,
+			reviewer,
+			candidates: [{ model: "provider/model", mode: "cross-provider" }],
+			harnessName: "codex",
+			transcriptPath: join(root, "missing.jsonl"),
+		});
+		assert.equal(result.verdict, "approve");
+		assert.doesNotMatch(promptSeen, /codex session: /, "no transcript line for an unreadable file");
+		assert.doesNotMatch(promptSeen, /still running/, "the in-flight clause is omitted transcript-less");
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
+});
 
 test("the review-output schema parses canonical output and accepts case-insensitive protocol markers", () => {
 	const canonical = buildReviewOutputFixture({

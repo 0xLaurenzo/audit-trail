@@ -94,6 +94,10 @@ test("transcript-less review prompt and document target the TSV, diff, and repos
 	assert.match(prompt, /do not reveal private chain-of-thought/);
 	assert.match(prompt, /Design friction is not automatically blocking/);
 	assert.match(prompt, /missing or malformed design-friction section or verdict makes this review attempt invalid/i);
+	// The self-reference invariant: prior blocked artifacts are visible even
+	// transcript-less, but the in-flight-invocation clause is transcript-only.
+	assert.match(prompt, /You are the re-review: a prior blocked review artifact whose findings have since been addressed is not itself a blocking finding/);
+	assert.doesNotMatch(prompt, /still running/);
 	assert.doesNotMatch(prompt, /session transcript|session: /);
 	const output = buildReviewOutputFixture({ verdict: "approve" });
 	const document = buildReviewDocument({
@@ -123,6 +127,8 @@ test("review prompt keeps repository evidence when adding a Pi transcript", () =
 	assert.match(prompt, /pi JSONL session transcript as supplementary evidence/);
 	assert.match(prompt, /repository evidence and transcript moments/);
 	assert.match(prompt, /Pi session: \/sessions\/pi.jsonl/);
+	assert.match(prompt, /may end with the audit_review invocation that launched you still running/);
+	assert.match(prompt, /never evidence of an incomplete review lifecycle/);
 	assert.ok(prompt.includes(`"${REVIEW_OUTPUT_CONTRACT.verdict.prefix} approve"`));
 	const document = buildReviewDocument({
 		model: "openai/reviewer",

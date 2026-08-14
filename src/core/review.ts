@@ -22,7 +22,16 @@ export function buildReviewPrompt(input: ReviewPromptInput): string {
 	const sessionLine = input.transcriptPath
 		? `\n${harness === "pi" ? "Pi session" : `${harness} session`}: ${input.transcriptPath}`
 		: "";
-	return `You are an independent decision-trail reviewer. Do not redo a general line-by-line code review. Read ${sources}, then report only what a human should scrutinize. Check that logged rows map to real actions, evidence supports claims, consequential forks or pivots were not omitted, verification was not overstated, and choices are general rather than merely sufficient for the observed case. Flag weak evidence, skipped verification, symptom patches, unjustified assumptions, scope creep, and unresolved uncertainty. Point to exact decision IDs and ${evidenceAnchor}. Never modify files.\n\n${buildReviewOutputInstructions()}\n\nAudit log: ${input.logPath}${sessionLine}\nWorking directory: ${input.workingDirectory}`;
+	// Self-reference invariant: the reviewer's own invocation is necessarily
+	// visible in its evidence without a completion result, and prior blocked
+	// review artifacts stay visible after their findings are addressed. Without
+	// this clause reviewers block on their own reflection in a loop (issue #47).
+	const selfReference = `You are the re-review: a prior blocked review artifact whose findings have since been addressed is not itself a blocking finding, because the required follow-up review is the one you are performing now. Judge the current audit rows, diff, and repository state.${
+		input.transcriptPath
+			? " The session transcript may end with the audit_review invocation that launched you still running, followed by polling or wait events. That is expected \u2014 you are producing that invocation's verdict \u2014 so the current invocation's missing completion result is never evidence of an incomplete review lifecycle."
+			: ""
+	}`;
+	return `You are an independent decision-trail reviewer. Do not redo a general line-by-line code review. Read ${sources}, then report only what a human should scrutinize. Check that logged rows map to real actions, evidence supports claims, consequential forks or pivots were not omitted, verification was not overstated, and choices are general rather than merely sufficient for the observed case. Flag weak evidence, skipped verification, symptom patches, unjustified assumptions, scope creep, and unresolved uncertainty. Point to exact decision IDs and ${evidenceAnchor}. Never modify files.\n\n${selfReference}\n\n${buildReviewOutputInstructions()}\n\nAudit log: ${input.logPath}${sessionLine}\nWorking directory: ${input.workingDirectory}`;
 }
 
 export interface ReviewDocumentInput {
