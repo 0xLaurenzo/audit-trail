@@ -208,7 +208,13 @@ test("Codex MCP resumes another harness audit, attributes rows, and derives trut
 		assert.ok(invocation.includes("--ignore-user-config"));
 		assert.ok(invocation.includes("--ephemeral"));
 		assert.ok(invocation.includes("read-only"));
-		assert.match(invocation.at(-1)!, new RegExp(transcript.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+		const prompt = invocation.at(-1)!;
+		// The reviewer receives an immutable .audit snapshot, never the live
+		// hook-captured transcript, plus the self-reference invariant (issue #47).
+		assert.match(prompt, /\.audit[\\/]shared\.review-transcript\..+\.jsonl/);
+		assert.doesNotMatch(prompt, new RegExp(transcript.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+		assert.match(prompt, /may end with the audit_review invocation that launched you still running/);
+		assert.match(prompt, /You are the re-review/);
 
 		const listed: any = await server.handle({ jsonrpc: "2.0", id: 1, method: "tools/list" });
 		const schema = listed.result.tools.find((tool: any) => tool.name === "audit_review").inputSchema;
