@@ -261,7 +261,7 @@ export default function auditTrailExtension(pi: ExtensionAPI) {
 	});
 
 	pi.registerCommand("audit-review", {
-		description: "Review the active trail, preferring a cross-provider model: /audit-review [provider/model]",
+		description: "Review the trail; for Anthropic cross-provider review prefer claude-fable-5, then claude-opus-5: /audit-review [provider/model]",
 		handler: async (args, ctx) => {
 			const { wf, state, error } = await activeState(ctx);
 			if (error) {

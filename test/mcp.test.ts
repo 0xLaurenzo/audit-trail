@@ -70,6 +70,8 @@ test("mcp server initializes, lists tools, and drives the audit workflow", async
 			],
 		);
 		assert.equal(tools.find((tool: any) => tool.name === "audit_publish").inputSchema.properties.commentSetId.type, "string");
+		const reviewModelDescription = tools.find((tool: any) => tool.name === "audit_review").inputSchema.properties.model.description;
+		assert.ok(reviewModelDescription.indexOf("anthropic/claude-fable-5") < reviewModelDescription.indexOf("anthropic/claude-opus-5"));
 
 		const started = resultOf(
 			await server.handle(request(3, "tools/call", { name: "audit_start", arguments: { task: "MCP Task" } })),

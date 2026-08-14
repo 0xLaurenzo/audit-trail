@@ -3,8 +3,12 @@ import type { ReviewMode } from "./types.ts";
 
 /// Reviewer preference, most advanced first. Applied to order every candidate
 /// within each review tier (cross-provider, then cross-model, then the
-/// working model itself).
-export const REVIEW_MODEL_PREFERENCE = [/fable/i, /opus-4-8/i, /gpt-5\.6-sol/i];
+/// working model itself). Patterns match the full provider/model reference.
+export const REVIEW_MODEL_PREFERENCE = [
+	/^anthropic\/claude-fable-5(?:-|$)/i,
+	/^anthropic\/claude-opus-5(?:-|$)/i,
+	/gpt-5\.6-sol/i,
+];
 
 /** One reviewer attempt: the model as `provider/id` and its truthful relation to the working model. */
 export interface ReviewCandidate {
@@ -27,7 +31,7 @@ export function buildReviewerCandidates(
 	preference: RegExp[] = REVIEW_MODEL_PREFERENCE,
 ): ReviewCandidate[] {
 	const rank = (model: ReviewModel) => {
-		const index = preference.findIndex((pattern) => pattern.test(model.id));
+		const index = preference.findIndex((pattern) => pattern.test(`${model.provider}/${model.id}`));
 		return index === -1 ? preference.length : index;
 	};
 	const ordered = (models: ReviewModel[]) =>

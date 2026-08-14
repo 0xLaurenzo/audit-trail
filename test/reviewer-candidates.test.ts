@@ -8,6 +8,7 @@ const working: ReviewModel = { provider: "anthropic", id: "claude-opus-4-8" };
 test("candidates cover every tier in order: cross-provider, cross-model, then the working model", () => {
 	const catalog: ReviewModel[] = [
 		{ provider: "anthropic", id: "claude-opus-4-8" },
+		{ provider: "anthropic", id: "claude-opus-5" },
 		{ provider: "anthropic", id: "claude-fable-5" },
 		{ provider: "openai", id: "gpt-5.6-sol" },
 		{ provider: "zai", id: "glm-5" },
@@ -16,22 +17,30 @@ test("candidates cover every tier in order: cross-provider, cross-model, then th
 		{ model: "openai/gpt-5.6-sol", mode: "cross-provider" },
 		{ model: "zai/glm-5", mode: "cross-provider" },
 		{ model: "anthropic/claude-fable-5", mode: "cross-model" },
+		{ model: "anthropic/claude-opus-5", mode: "cross-model" },
 		{ model: "anthropic/claude-opus-4-8", mode: "same-model" },
 	]);
 });
 
-test("preference ordering applies to every candidate in a tier, with catalog order as tiebreak", () => {
+test("preference ordering names exact model families, with catalog order as tiebreak", () => {
+	const openaiWorking: ReviewModel = { provider: "openai", id: "gpt-5.5" };
 	const catalog: ReviewModel[] = [
-		{ provider: "zai", id: "glm-5" },
-		{ provider: "openai", id: "gpt-5.6-sol" },
-		{ provider: "mistral", id: "large-3" },
-		{ provider: "acme", id: "fable-6" },
+		{ provider: "anthropic", id: "claude-opus-4-8" },
+		{ provider: "acme", id: "claude-fable-5" },
+		{ provider: "anthropic", id: "claude-opus-5-fast" },
+		{ provider: "anthropic", id: "claude-fable-5" },
+		{ provider: "anthropic", id: "claude-fable-50" },
 	];
 	assert.deepEqual(
-		buildReviewerCandidates(catalog, working).map((candidate) => candidate.model),
-		// fable matches preference[0], gpt-5.6-sol preference[2]; the unmatched
-		// models follow in catalog order.
-		["acme/fable-6", "openai/gpt-5.6-sol", "zai/glm-5", "mistral/large-3", "anthropic/claude-opus-4-8"],
+		buildReviewerCandidates(catalog, openaiWorking).map((candidate) => candidate.model),
+		[
+			"anthropic/claude-fable-5",
+			"anthropic/claude-opus-5-fast",
+			"anthropic/claude-opus-4-8",
+			"acme/claude-fable-5",
+			"anthropic/claude-fable-50",
+			"openai/gpt-5.5",
+		],
 	);
 });
 

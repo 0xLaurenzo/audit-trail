@@ -110,7 +110,7 @@ audit-trail publish [pr-number-or-url] [--set <comment-set-id>]
 audit-trail close
 ```
 
-CLI rows are attributed as `cli/<user>@<host>` in the TSV `session` cell. `audit-trail review` runs the reviewer through a no-session `pi` subprocess against the TSV, Git diff, and repository (no transcript). Use `-C <dir>` to operate on another worktree.
+CLI rows are attributed as `cli/<user>@<host>` in the TSV `session` cell. `audit-trail review` runs the reviewer through a no-session `pi` subprocess against the TSV, Git diff, and repository (no transcript). When Anthropic is cross-provider, callers should prefer `anthropic/claude-fable-5`, then `anthropic/claude-opus-5`. Use `-C <dir>` to operate on another worktree.
 
 ## MCP server
 
@@ -188,7 +188,7 @@ For project-local activation, place the same shim in `.opencode/plugins/` inside
 export { AuditTrailPlugin } from "/path/to/audit-trail/src/adapters/opencode.ts";
 ```
 
-`audit_review` selects a reviewer across the configured OpenCode providers, preferring cross-provider, then cross-model, then the working model itself, and truthfully records the relation. The session transcript is captured with `opencode export` into `.audit/<task>.transcript.<session-id>.json` when available; otherwise the review runs transcript-less against the TSV, Git diff, and repository. The reviewer itself runs as a separate non-interactive `opencode run` subprocess using the built-in read-only `plan` agent with `--pure`, so it cannot load this plugin or mutate the worktree.
+`audit_review` selects a reviewer across the configured OpenCode providers, preferring cross-provider, then cross-model, then the working model itself, and truthfully records the relation. Within each tier it prefers `anthropic/claude-fable-5`, then `anthropic/claude-opus-5`; when Anthropic is the cross-provider option, callers selecting explicitly should use that same order. The session transcript is captured with `opencode export` into `.audit/<task>.transcript.<session-id>.json` when available; otherwise the review runs transcript-less against the TSV, Git diff, and repository. The reviewer itself runs as a separate non-interactive `opencode run` subprocess using the built-in read-only `plan` agent with `--pure`, so it cannot load this plugin or mutate the worktree.
 
 ## Commands
 
@@ -222,7 +222,7 @@ Add `.audit/` to `.gitignore` or `.git/info/exclude` if trails should remain loc
 
 ## Review model
 
-`/audit-review` selects a reviewer in preference order: a model from a different provider (`cross-provider`), then a different model from the same provider (`cross-model`), then the working model itself (`same-model`). The chosen mode is recorded in the review artifact and the review checkpoint. You can choose a model explicitly:
+`/audit-review` selects a reviewer in preference order: a model from a different provider (`cross-provider`), then a different model from the same provider (`cross-model`), then the working model itself (`same-model`). Within each tier, `anthropic/claude-fable-5` is preferred before `anthropic/claude-opus-5`; model variants such as `-fast` retain their family preference. The chosen mode is recorded in the review artifact and the review checkpoint. You can choose a model explicitly:
 
 ```text
 /audit-review openai/gpt-5.2

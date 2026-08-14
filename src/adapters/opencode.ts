@@ -260,12 +260,12 @@ export const AuditTrailPlugin = async ({ client, directory, runner: runnerOverri
 			}),
 			audit_review: tool({
 				description:
-					"Run an independent review of the active decision audit and record the checkpoint. Prefers a cross-provider reviewer; may take several minutes.",
+					"Run an independent review of the active decision audit and record the checkpoint. Prefers a cross-provider reviewer; when Anthropic is cross-provider, prefer anthropic/claude-fable-5, then anthropic/claude-opus-5. May take several minutes.",
 				args: {
 					model: z
 						.string()
 						.optional()
-						.describe("Reviewer as provider/model; omit to select a cross-provider model automatically"),
+						.describe("Reviewer as provider/model; omit to select automatically. For Anthropic cross-provider review prefer anthropic/claude-fable-5, then anthropic/claude-opus-5"),
 				},
 				execute: async (args, context) => {
 					const wf = await workflow();
