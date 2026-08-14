@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { cp, mkdir, mkdtemp, readFile, readlink, rm, symlink } from "node:fs/promises";
+import { cp, lstat, mkdir, mkdtemp, readFile, readlink, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
@@ -21,7 +21,25 @@ async function cliAvailable(command: string): Promise<boolean> {
 const hasCodex = await cliAvailable("codex");
 const hasClaude = await cliAvailable("claude");
 
-async function assertBarePluginRuns(cacheRoot: string): Promise<void> {
+async function callCodexMcp(bin: string, cwd: string, env: NodeJS.ProcessEnv, threadId: string): Promise<string> {
+	return new Promise((resolveCall, rejectCall) => {
+		const child = execFile(bin, ["mcp", "--harness", "codex"], { cwd, env, timeout: 10_000 }, (error, stdout, stderr) => {
+			if (error) return rejectCall(new Error(`installed Codex MCP failed: ${stderr || error.message}`));
+			const response = String(stdout)
+				.trim()
+				.split(/\r?\n/)
+				.map((line) => JSON.parse(line))
+				.find((message) => message.id === 2);
+			resolveCall(response?.result?.content?.[0]?.text ?? JSON.stringify(response));
+		});
+		child.stdin?.end(
+			`${JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18" } })}\n` +
+				`${JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "audit_start", arguments: { task: "marketplace-codex" }, _meta: { threadId } } })}\n`,
+		);
+	});
+}
+
+async function assertBarePluginRuns(cacheRoot: string, testCodexMcp = false): Promise<void> {
 	await assert.rejects(() => readFile(join(cacheRoot, "node_modules", "jsonc-parser", "package.json")), "cache must be a bare clone");
 	const bin = join(cacheRoot, "bin", "audit-trail");
 	const help = await execFileAsync(bin, ["help"]);
@@ -29,16 +47,22 @@ async function assertBarePluginRuns(cacheRoot: string): Promise<void> {
 	const worktree = await mkdtemp(join(tmpdir(), "audit-marketplace-wt-"));
 	const stateHome = await mkdtemp(join(tmpdir(), "audit-marketplace-state-"));
 	try {
+		const env = { ...process.env, XDG_STATE_HOME: stateHome };
 		for (const [command, payload] of [
 			["claude-hook", { hook_event_name: "SessionStart", session_id: "mk-1", source: "startup", cwd: worktree }],
-			["codex-hook", { hook_event_name: "SessionStart", session_id: "mk-2", cwd: worktree }],
+			["codex-hook", { hook_event_name: "SessionStart", session_id: "mk-2", model: "gpt-marketplace", cwd: worktree }],
 		] as const) {
 			await new Promise<void>((resolvePromise, reject) => {
-				const child = execFile(bin, [command], { env: { ...process.env, XDG_STATE_HOME: stateHome } }, (error) =>
+				const child = execFile(bin, [command], { env }, (error) =>
 					error ? reject(new Error(`${command} failed: ${error.message}`)) : resolvePromise(),
 				);
 				child.stdin?.end(JSON.stringify(payload));
 			});
+		}
+		if (testCodexMcp) {
+			assert.match(await callCodexMcp(bin, cacheRoot, env, "mk-2"), /Started decision audit/);
+			assert.match(await readFile(join(worktree, ".audit", "marketplace-codex.tsv"), "utf8"), /^id\tts\tsession/);
+			await assert.rejects(() => lstat(join(cacheRoot, ".audit")), /ENOENT/);
 		}
 	} finally {
 		await rm(worktree, { recursive: true, force: true });
@@ -109,7 +133,7 @@ test("real codex CLI installs the plugin from the repository marketplace", { ski
 		await execFileAsync("codex", ["plugin", "marketplace", "add", root], { env, timeout: 60_000 });
 		await execFileAsync("codex", ["plugin", "add", "audit-trail@audit-trail"], { env, timeout: 60_000 });
 		const version = JSON.parse(await readFile(join(checkout, ".codex-plugin", "plugin.json"), "utf8")).version;
-		await assertBarePluginRuns(join(home, "plugins", "cache", "audit-trail", "audit-trail", version));
+		await assertBarePluginRuns(join(home, "plugins", "cache", "audit-trail", "audit-trail", version), true);
 	} finally {
 		await rm(root, { recursive: true, force: true });
 		await rm(home, { recursive: true, force: true });

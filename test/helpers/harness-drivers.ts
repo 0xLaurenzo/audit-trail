@@ -13,7 +13,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { handleClaudeHook } from "../../src/adapters/claude-hook.ts";
 import { createClaudeSubprocessReviewer } from "../../src/adapters/claude-reviewer.ts";
 import { handleCodexHook } from "../../src/adapters/codex-hook.ts";
-import { codexMcpOptions } from "../../src/adapters/codex-mcp.ts";
+import { createCodexMcpHandler } from "../../src/adapters/codex-mcp.ts";
 import { AuditTrailPlugin } from "../../src/adapters/opencode.ts";
 import auditTrailExtension from "../../src/adapters/pi.ts";
 import type { CommandRunner, ExecResult, ReviewModel } from "../../src/core/ports.ts";
@@ -516,12 +516,22 @@ export const createCodexDriver: DriverFactory = async (root) => {
 			return { code: 0, stdout: "", stderr: "" };
 		},
 	};
-	const workflow = new AuditWorkflow(root, gitRunner);
-	const server = new McpAuditServer({
-		workflow,
-		runner: gitRunner,
-		...codexMcpOptions(root, codexRunner, "codex-contract-fallback", env),
-	});
+	const runner: CommandRunner = {
+		exec: (command, args, options) =>
+			command === "codex" ? codexRunner.exec(command, args, options) : gitRunner.exec(command, args, options),
+	};
+	const server = createCodexMcpHandler(root, () => runner, "codex-contract-fallback", env);
+	const call = async (name: string, args: object): Promise<string> => {
+		const response: any = await server.handle({
+			jsonrpc: "2.0",
+			id: 1,
+			method: "tools/call",
+			params: { name, arguments: args, _meta: { threadId: "codex-contract-session" } },
+		});
+		const text = response.result.content[0].text;
+		if (response.result.isError) throw new Error(text);
+		return text;
+	};
 	const hook = (payload: object) => handleCodexHook(JSON.stringify(payload), () => gitRunner, env);
 	await hook({
 		hook_event_name: "SessionStart",
@@ -543,23 +553,23 @@ export const createCodexDriver: DriverFactory = async (root) => {
 		reviewerScript,
 		github,
 		async start(task) {
-			await server.call("audit_start", { task });
+			await call("audit_start", { task });
 		},
 		async resume(task) {
-			await server.call("audit_resume", { task });
+			await call("audit_resume", { task });
 		},
 		async reopen(task) {
-			await server.call("audit_reopen", { task });
+			await call("audit_reopen", { task });
 		},
 		async decide(overrides) {
-			await server.call("audit_decision", { ...DEFAULT_DECISION, ...overrides });
+			await call("audit_decision", { ...DEFAULT_DECISION, ...overrides });
 		},
 		async status() {
-			return server.call("audit_status", {});
+			return call("audit_status", {});
 		},
-		review: (model) => outcome(() => server.call("audit_review", { model: model ?? "" })),
-		publish: () => outcome(() => server.call("audit_publish", {})),
-		close: () => outcome(() => server.call("audit_close", {})),
+		review: (model) => outcome(() => call("audit_review", { model: model ?? "" })),
+		publish: () => outcome(() => call("audit_publish", {})),
+		close: () => outcome(() => call("audit_close", {})),
 		async guidance() {
 			const result = await hook({
 				hook_event_name: "SessionStart",
