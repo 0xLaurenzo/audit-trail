@@ -113,13 +113,17 @@ const TOOLS: ToolDefinition[] = [
 	},
 	{
 		name: "audit_publish",
-		description: "Create or update readable audit comments with canonical TSV on the current checked-out branch's pull request.",
+		description: "Create or update this author's aggregate audit comment set on the current branch's pull request.",
 		inputSchema: {
 			type: "object",
 			properties: {
 				selector: {
 					type: "string",
 					description: "PR number or URL; defaults to the current branch. The PR must be in the provenance repository, match exact local HEAD, and descend from the audit start commit.",
+				},
+				commentSetId: {
+					type: "string",
+					description: "Existing set ID to update; required only when the authenticated author owns multiple aggregate sets on the PR.",
 				},
 			},
 		},
@@ -279,14 +283,13 @@ export class McpAuditServer {
 					rows,
 					rawTsv,
 					selector: optionalString(args, "selector"),
+					commentSetId: optionalString(args, "commentSetId"),
 				});
 				const lines = [
-					`Published audit in ${result.commentCount} readable comment${result.commentCount === 1 ? "" : "s"} with canonical TSV on PR #${result.prNumber}: ${result.commentUrl}`,
+					`Published audit to set ${result.commentSetId} (${result.componentCount} audit${result.componentCount === 1 ? "" : "s"} in ${result.commentCount} comment${result.commentCount === 1 ? "" : "s"}) on PR #${result.prNumber}: ${result.commentUrl}`,
 				];
-				if (result.foreignCommentCount) {
-					lines.push(
-						`Warning: ${result.foreignCommentCount} same-task audit comment${result.foreignCommentCount === 1 ? "" : "s"} from a different audit exist on this PR and were left untouched; remove them manually if unwanted.`,
-					);
+				if (result.legacyCommentCount) {
+					lines.push(`Warning: ${result.legacyCommentCount} legacy audit comment${result.legacyCommentCount === 1 ? " was" : "s were"} left untouched.`);
 				}
 				return lines.join("\n");
 			}

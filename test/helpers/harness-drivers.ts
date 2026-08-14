@@ -5,6 +5,7 @@
  * hooks + MCP server). Only external systems are simulated: Git, GitHub, and
  * the reviewer CLIs. The adapter code under test is the shipped code.
  */
+import { readFileSync } from "node:fs";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -74,6 +75,7 @@ export interface GitHubStub {
 
 export function createGitHubStub(root: string): GitHubStub {
 	const ok = (stdout: string): ExecResult => ({ code: 0, stdout: `${stdout}\n`, stderr: "" });
+	const comments: { id: number; html_url: string; body: string; user: { login: string } }[] = [];
 	const stub: GitHubStub = {
 		enabled: false,
 		prHeadOid: "head-contract",
@@ -103,12 +105,25 @@ export function createGitHubStub(root: string): GitHubStub {
 			}
 			if (args.some((arg) => arg.includes("/compare/"))) return ok("ahead");
 			if (args[1] === "user") return ok("reviewer");
-			if (args.some((arg) => arg.includes("comments?per_page=100"))) return ok(JSON.stringify([]));
+			if (args.some((arg) => arg.includes("comments?per_page=100"))) return ok(JSON.stringify([comments]));
 			const method = args[args.indexOf("--method") + 1];
 			if (method === "POST" || method === "PATCH") {
-				return ok(JSON.stringify({ html_url: "https://github.com/owner/repo/pull/7#issuecomment-1" }));
+				const inputPath = args[args.indexOf("--input") + 1];
+				const body = JSON.parse(readFileSync(inputPath, "utf8")).body as string;
+				const id = method === "POST" ? comments.length + 1 : Number(args[args.indexOf("--method") + 2].split("/").at(-1));
+				const comment = method === "POST"
+					? { id, html_url: `https://github.com/owner/repo/pull/7#issuecomment-${id}`, body, user: { login: "reviewer" } }
+					: comments.find((candidate) => candidate.id === id)!;
+				comment.body = body;
+				if (method === "POST") comments.push(comment);
+				return ok(JSON.stringify(comment));
 			}
-			if (method === "DELETE") return ok("");
+			if (method === "DELETE") {
+				const id = Number(args[args.indexOf("--method") + 2].split("/").at(-1));
+				const index = comments.findIndex((comment) => comment.id === id);
+				if (index !== -1) comments.splice(index, 1);
+				return ok("");
+			}
 			return { code: 1, stdout: "", stderr: `unexpected gh call: ${args.join(" ")}` };
 		},
 	};

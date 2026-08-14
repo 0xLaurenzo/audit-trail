@@ -360,7 +360,7 @@ ${OPENCODE_COMMAND_MARKER}Call the audit_review tool. If "$ARGUMENTS" is non-emp
 	"audit-publish": `---
 description: Publish the audit to the current branch's pull request
 ---
-${OPENCODE_COMMAND_MARKER}Call the audit_publish tool. If "$ARGUMENTS" is non-empty, pass it as the selector argument (PR number or URL); otherwise omit selector to target the current checked-out branch's PR. Report the tool output verbatim.
+${OPENCODE_COMMAND_MARKER}Call the audit_publish tool. Parse "$ARGUMENTS" as an optional PR number/URL and optional --set <comment-set-id>. Pass them as selector and commentSetId; omit absent values so the current branch and sole owned set are selected automatically. Report the tool output verbatim.
 `,
 	"audit-close": `---
 description: Close the audit once resolved and reviewed

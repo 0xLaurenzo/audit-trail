@@ -1,4 +1,4 @@
 ---
 description: Publish the audit to the current branch's pull request
 ---
-Call the audit_publish tool from the audit-trail MCP server. If "$ARGUMENTS" is non-empty, pass it as the selector argument (PR number or URL); otherwise omit selector to target the current checked-out branch's PR. Report the tool output verbatim.
+Call the audit_publish tool from the audit-trail MCP server. Parse "$ARGUMENTS" as an optional PR number/URL and optional --set <comment-set-id>. Pass them as selector and commentSetId; omit absent values so the current branch and sole owned set are selected automatically. Report the tool output verbatim.

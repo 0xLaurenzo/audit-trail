@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
+import { parseArgs } from "node:util";
 import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
@@ -322,8 +323,21 @@ export default function auditTrailExtension(pi: ExtensionAPI) {
 	});
 
 	pi.registerCommand("audit-publish", {
-		description: "Create or update readable audit comments with canonical TSV on the branch PR: /audit-publish [number-or-url]",
+		description: "Create/update an aggregate audit set: /audit-publish [number-or-url] [--set set-id]",
 		handler: async (args, ctx) => {
+			let publishArgs: ReturnType<typeof parseArgs>;
+			try {
+				publishArgs = parseArgs({
+					args: args.trim() ? args.trim().split(/\s+/) : [],
+					options: { set: { type: "string" } },
+					allowPositionals: true,
+					strict: true,
+				});
+				if (publishArgs.positionals.length > 1) throw new Error("expected at most one PR number or URL");
+			} catch (error: any) {
+				ctx.ui.notify(`Invalid publish arguments: ${error?.message ?? error}`, "error");
+				return;
+			}
 			const { wf, state, error } = await activeState(ctx);
 			if (error) {
 				ctx.ui.notify(`Audit state is unreadable: ${error}`, "error");
@@ -354,15 +368,16 @@ export default function auditTrailExtension(pi: ExtensionAPI) {
 					state: { ...state, auditId: await wf.ensureAuditId() },
 					rows,
 					rawTsv,
-					selector: args.trim() || undefined,
+					selector: publishArgs.positionals[0]?.trim() || undefined,
+					commentSetId: typeof publishArgs.values.set === "string" ? publishArgs.values.set.trim() || undefined : undefined,
 				});
 				ctx.ui.notify(
-					`Published audit in ${result.commentCount} readable comment${result.commentCount === 1 ? "" : "s"} with canonical TSV on PR #${result.prNumber}: ${result.commentUrl}`,
+					`Published audit to set ${result.commentSetId} (${result.componentCount} audit${result.componentCount === 1 ? "" : "s"} in ${result.commentCount} comment${result.commentCount === 1 ? "" : "s"}) on PR #${result.prNumber}: ${result.commentUrl}`,
 					"info",
 				);
-				if (result.foreignCommentCount) {
+				if (result.legacyCommentCount) {
 					ctx.ui.notify(
-						`Warning: ${result.foreignCommentCount} same-task audit comment${result.foreignCommentCount === 1 ? "" : "s"} from a different audit exist on this PR and were left untouched; remove them manually if unwanted.`,
+						`Warning: ${result.legacyCommentCount} legacy audit comment${result.legacyCommentCount === 1 ? " was" : "s were"} left untouched.`,
 						"warning",
 					);
 				}
