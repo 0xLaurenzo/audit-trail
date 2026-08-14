@@ -5,7 +5,9 @@ import { join } from "node:path";
 import test from "node:test";
 import type { CommandRunner } from "../src/core/ports.ts";
 import { captureGitProvenance, ensureProvenance, parseGitHubRemote } from "../src/core/provenance.ts";
+import { REVIEW_OUTPUT_CONTRACT } from "../src/core/review-output.ts";
 import { buildReviewDocument, buildReviewPrompt } from "../src/core/review.ts";
+import { buildReviewOutputFixture } from "./helpers/review-output.ts";
 
 class GitRunner implements CommandRunner {
 	async exec(_command: string, args: string[]) {
@@ -76,27 +78,37 @@ test("transcript-less review prompt and document target the TSV, diff, and repos
 	});
 	assert.match(prompt, /append-only TSV decision log, the Git diff against the audit's starting commit, and the repository/);
 	assert.match(prompt, /decision IDs and repository evidence/);
-	assert.match(prompt, /"VERDICT: approve"/);
-	assert.match(prompt, /"VERDICT: block"/);
+	for (const section of REVIEW_OUTPUT_CONTRACT.sections) {
+		assert.ok(prompt.includes(section.prompt), `prompt includes instructions for ${section.id}`);
+		assert.ok(prompt.includes(`"${section.defaultBody}"`), `prompt includes the canonical default for ${section.id}`);
+		const nonEmptyRule = section.nonEmptyWhen === "always"
+			? "must be non-empty"
+			: `must be non-empty for ${section.nonEmptyWhen}`;
+		assert.ok(prompt.includes(nonEmptyRule), `prompt includes the content rule for ${section.id}`);
+		if (section.heading) assert.ok(prompt.includes(`exact heading "${section.heading}"`));
+	}
+	for (const verdict of REVIEW_OUTPUT_CONTRACT.verdict.values) {
+		assert.ok(prompt.includes(`"${REVIEW_OUTPUT_CONTRACT.verdict.prefix} ${verdict}"`));
+	}
 	assert.match(prompt, /concrete challenges or walls that would be substantially simplified by a design-level change/);
-	assert.match(prompt, /exact heading "## Design-friction evaluation"/);
 	assert.match(prompt, /do not reveal private chain-of-thought/);
 	assert.match(prompt, /Design friction is not automatically blocking/);
 	assert.match(prompt, /missing or malformed design-friction section or verdict makes this review attempt invalid/i);
 	assert.doesNotMatch(prompt, /session transcript|session: /);
+	const output = buildReviewOutputFixture({ verdict: "approve" });
 	const document = buildReviewDocument({
 		model: "openai/reviewer",
 		reviewMode: "cross-model",
 		logPath: "/repo/.audit/core.tsv",
 		workingDirectory: "/repo",
 		rowCount: 2,
-		output: "No flags\n\n## Design-friction evaluation\n\nNone identified.\n\nVERDICT: approve\n",
+		output,
 		harnessName: "cli",
 		verdict: "approve",
 	});
 	assert.equal(
 		document,
-		"# Decision audit review\n\n- Reviewed by: openai/reviewer\n- Review mode: cross-model\n- Verdict: approve\n- Audit log: .audit/core.tsv\n- Decision rows reviewed: 2\n\nNo flags\n\n## Design-friction evaluation\n\nNone identified.\n\nVERDICT: approve\n",
+		`# Decision audit review\n\n- Reviewed by: openai/reviewer\n- Review mode: cross-model\n- Verdict: approve\n- Audit log: .audit/core.tsv\n- Decision rows reviewed: 2\n\n${output}`,
 	);
 });
 
@@ -111,7 +123,7 @@ test("review prompt keeps repository evidence when adding a Pi transcript", () =
 	assert.match(prompt, /pi JSONL session transcript as supplementary evidence/);
 	assert.match(prompt, /repository evidence and transcript moments/);
 	assert.match(prompt, /Pi session: \/sessions\/pi.jsonl/);
-	assert.match(prompt, /"VERDICT: approve"/);
+	assert.ok(prompt.includes(`"${REVIEW_OUTPUT_CONTRACT.verdict.prefix} approve"`));
 	const document = buildReviewDocument({
 		model: "openai/reviewer",
 		logPath: "/repo/.audit/core.tsv",

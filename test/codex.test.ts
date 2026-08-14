@@ -13,6 +13,7 @@ import type { CommandRunner, ExecResult } from "../src/core/ports.ts";
 import { AuditWorkflow } from "../src/core/workflow.ts";
 import { codexInstaller } from "../src/install/installers.ts";
 import { McpAuditServer } from "../src/mcp/server.ts";
+import { buildReviewOutputFixture } from "./helpers/review-output.ts";
 
 const execFileAsync = promisify(execFile);
 const noGit: CommandRunner = { exec: async () => ({ code: 1, stdout: "", stderr: "git unavailable" }) };
@@ -163,11 +164,7 @@ test("Codex MCP resumes another harness audit, attributes rows, and derives trut
 			calls.push([command, ...args]);
 			if (args[0] === "--version") return { code: 0, stdout: "codex-cli 0.133.0", stderr: "" };
 			const outputPath = args[args.indexOf("--output-last-message") + 1];
-			await writeFile(
-				outputPath,
-				"No flags\n\n## Design-friction evaluation\n\nNone identified.\n\nVERDICT: approve\n",
-				"utf8",
-			);
+			await writeFile(outputPath, buildReviewOutputFixture({ verdict: "approve" }), "utf8");
 			return { code: 0, stdout: "progress ignored", stderr: "" };
 		},
 	};

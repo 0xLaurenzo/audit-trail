@@ -8,6 +8,7 @@ import { readRows } from "../src/core/audit-store.ts";
 import type { CommandRunner, ReviewerPort } from "../src/core/ports.ts";
 import { AuditWorkflow } from "../src/core/workflow.ts";
 import { McpAuditServer, serveStdio } from "../src/mcp/server.ts";
+import { buildReviewOutputFixture } from "./helpers/review-output.ts";
 
 const noGit: CommandRunner = {
 	exec: async () => ({ code: 1, stdout: "", stderr: "git unavailable" }),
@@ -129,7 +130,7 @@ test("MCP publish rejects a blocking review before invoking GitHub", async () =>
 		};
 		const server = makeServer(
 			root,
-			{ review: async () => "Finding.\n\n## Design-friction evaluation\n\nNone identified.\n\nVERDICT: block\n" },
+			{ review: async () => buildReviewOutputFixture({ sections: { auditFindings: "Finding." }, verdict: "block" }) },
 			git,
 		);
 		await server.call("audit_start", { task: "task" });

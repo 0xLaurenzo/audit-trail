@@ -7,6 +7,7 @@ export * from "./lock.ts";
 export * from "./paths.ts";
 export * from "./ports.ts";
 export * from "./provenance.ts";
+export * from "./review-output.ts";
 export * from "./review.ts";
 export * from "./reviewer-candidates.ts";
 export * from "./status.ts";

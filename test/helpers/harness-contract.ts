@@ -10,6 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { readActiveAudit } from "../../src/core/active-state.ts";
+import { REVIEW_OUTPUT_CONTRACT } from "../../src/core/review-output.ts";
 import type { HarnessCapabilities, ShippedHarness } from "../../src/harness/capabilities.ts";
 import { SENSITIVE_STDERR, corruptActiveState, type DriverFactory, type HarnessDriver } from "./harness-drivers.ts";
 
@@ -185,7 +186,8 @@ export function registerHarnessConformance({ harness, capabilities, createDriver
 		const outcome = await driver.review(driver.explicitReviewModel);
 		assert.equal(outcome.completed, true, "a blocking review is a completed review, not a failure");
 		assert.match(outcome.message, /D0001 overstates verification\./, "blocking findings must be surfaced inline");
-		assert.match(outcome.message, /## Design-friction evaluation/, "the completed evaluation is surfaced with blocking findings");
+		const designHeading = REVIEW_OUTPUT_CONTRACT.sections.find((section) => section.id === "designFriction")!.heading!;
+		assert.ok(outcome.message.includes(designHeading), "the completed evaluation is surfaced with blocking findings");
 		assert.doesNotMatch(outcome.message, /VERDICT:\s*block/i, "the redundant terminal verdict must be stripped");
 		assert.match(outcome.message, /\.review\..*\.md/, "the canonical artifact path remains visible");
 		const recorded = await checkpoint(root);
@@ -204,7 +206,9 @@ export function registerHarnessConformance({ harness, capabilities, createDriver
 		assert.equal(outcome.completed, true);
 		assert.equal((await checkpoint(root))?.verdict, "approve");
 		const [artifact] = await reviewArtifacts(root);
-		assert.match(await readFile(join(root, ".audit", artifact), "utf8"), /## Design-friction evaluation\n\nNone identified\./);
+		const report = await readFile(join(root, ".audit", artifact), "utf8");
+		const designHeading = REVIEW_OUTPUT_CONTRACT.sections.find((section) => section.id === "designFriction")!.heading!;
+		assert.ok(report.includes(`${designHeading}\n\nNone identified.`));
 		const close = await driver.close();
 		assert.equal(close.completed, true, close.message);
 	});
