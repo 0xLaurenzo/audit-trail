@@ -90,7 +90,7 @@ The sections below document the shared state model, each harness integration, th
 
 ## Shared worktree state
 
-Exactly one audit may be active per Git worktree. The authoritative state lives in `.audit/active.json`, so any session in the same worktree — including concurrent ones — sees and contributes to the same audit; the audit survives session restarts and branch switches. Starting, resuming, and reopening are distinct operations: `start` only creates, `resume` requires the exact original name of the active audit, and `reopen` intentionally restores the exact matching `.audit/<slug>.closed.json` lifecycle. Different original names that normalize to the same slug are rejected. Audits closed before lifecycle versioning recorded original task names (version 1 state) can never be resumed or reopened — their identity cannot be proven — so reusing such a task name requires manually removing its `.audit/<slug>.closed.json` marker outside agent edit tools. Every mutation runs under an atomic cross-process lock at `.audit/.lock`, so concurrent appends cannot lose rows or allocate duplicate decision IDs. Agent write/edit tools cannot mutate anything under `.audit/` directly; only Audit Trail lifecycle surfaces may change active or archived artifacts. Abandoned locks from crashed processes are reclaimed automatically.
+Exactly one audit may be active per Git worktree. The authoritative state lives in `.audit/active.json`, so any session in the same worktree — including concurrent ones — sees and contributes to the same audit; the audit survives session restarts and branch switches. Starting, resuming, and reopening are distinct operations: `start` only creates, `resume` requires the exact original name of the active audit, and `reopen` intentionally restores the exact matching `.audit/<slug>.closed.json` or `.audit/<slug>.abandoned.json` lifecycle. Different original names that normalize to the same slug are rejected. Audits closed before lifecycle versioning recorded original task names (version 1 state) can never be resumed or reopened — their identity cannot be proven — so reusing such a task name requires manually removing its `.audit/<slug>.closed.json` marker outside agent edit tools. Every mutation runs under an atomic cross-process lock at `.audit/.lock`, so concurrent appends cannot lose rows or allocate duplicate decision IDs. Agent write/edit tools cannot mutate anything under `.audit/` directly; only Audit Trail lifecycle surfaces may change active or archived artifacts. Abandoned locks from crashed processes are reclaimed automatically.
 
 The TSV `session` cell is harness-qualified (for example `pi/<session-id>`), keeping contributions attributable when multiple harnesses share one audit.
 
@@ -107,6 +107,7 @@ audit-trail decision --phase core --origin "implementation discovery" \
 audit-trail status
 audit-trail review <provider/model> --mode cross-provider|cross-model|same-model
 audit-trail rollover <task> --reason "<text>" [--name <successor-task>]
+audit-trail abandon <task> --reason "<text>"
 audit-trail publish [pr-number-or-url] [--set <comment-set-id>]
 audit-trail close
 ```
@@ -198,6 +199,7 @@ export { AuditTrailPlugin } from "/path/to/audit-trail/src/adapters/opencode.ts"
 - `/audit-reopen <task>` — explicitly restore the exact matching closed lifecycle
 - `/audit-status` — show unresolved, low-confidence, and unsupported decisions, plus review freshness
 - `/audit-review [provider/model]` — review the log and pi session, preferring a cross-provider model
+- `/audit-abandon <task> --reason <text>` — archive an unpublishable audit as abandoned without implying review approval or publication; reopen restores it
 - `/audit-rollover <task> --reason <text> [--name <successor>]` — archive a rebase-diverged audit as an immutable abandoned segment and start a linked successor at the current HEAD
 - `/audit-publish [number-or-url] [--set set-id]` — add or replace this audit in the authenticated author's aggregate comment set on the current branch's PR
 - `/audit-close` — close only after all active rows are resolved and the latest audit bytes have been reviewed
@@ -241,6 +243,10 @@ The reviewer must finish with `VERDICT: approve` or `VERDICT: block`. The parser
 ## Publish to a pull request
 
 The audit captures its original branch and starting commit once and preserves them as immutable provenance. You may create or switch to the feature branch after starting; publication uses the current checked-out branch (or an explicit PR selector) and verifies that a later PR head descends from the pinned start commit.
+
+### Abandoning an audit
+
+Some audits become permanently unable to satisfy the review-and-publish path: the work was dropped, the PR merged from rewritten history, or the task is obsolete while its audit still occupies the worktree. `audit-trail abandon <exact-task> --reason "<text>"` archives the active audit as `.audit/<task>.abandoned.json` — an explicit terminal state distinct from close that never implies review approval or publication. The append-only record captures the reason, actor session, branch/HEAD, unresolved decision IDs, and review state at abandonment. TSV, provenance, and review artifacts are preserved unchanged and stay write-protected; the exact task name is required so the wrong worktree audit cannot be abandoned. Afterward `status` reports no active audit and lists abandoned terminal artifacts. `reopen <task>` restores an abandoned audit with every abandonment record retained; re-abandoning appends another record rather than rewriting history. Close gates are unchanged — abandonment is never a shortcut past review.
 
 ### Rebase rollover
 
