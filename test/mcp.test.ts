@@ -65,6 +65,7 @@ test("mcp server initializes, lists tools, and drives the audit workflow", async
 				"audit_decision",
 				"audit_status",
 				"audit_review",
+				"audit_abandon",
 				"audit_rollover",
 				"audit_publish",
 				"audit_close",
@@ -207,7 +208,7 @@ test("stdio transport frames responses and tolerates garbage lines", async () =>
 		assert.equal(lines.length, 2, "garbage, blank, and notification lines produce no responses");
 		assert.deepEqual(lines[0], { jsonrpc: "2.0", id: 1, result: {} });
 		assert.equal(lines[1].id, 2);
-		assert.equal(lines[1].result.tools.length, 9);
+		assert.equal(lines[1].result.tools.length, 10);
 	} finally {
 		await rm(root, { recursive: true, force: true });
 	}

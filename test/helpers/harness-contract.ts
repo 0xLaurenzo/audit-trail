@@ -93,6 +93,33 @@ export function registerHarnessConformance({ harness, capabilities, createDriver
 		assert.match(staleClose.message, /changed after the last review|stale/i);
 	});
 
+	contract("abandon archives without approval and reopen retains the record", async (driver, root) => {
+		await driver.start(TASK);
+		await driver.decide({ result: "open", decision: "Unresolved at abandonment" });
+		const wrongName = await driver.abandon("unrelated", "obsolete");
+		assert.equal(wrongName.completed, false, "abandon requires the exact task name");
+
+		const outcome = await driver.abandon(TASK, "obsolete");
+		assert.equal(outcome.completed, true, outcome.message);
+		assert.match(outcome.message, /without review approval or publication/);
+		const abandonedPath = join(root, ".audit", `${TASK}.abandoned.json`);
+		const abandoned = JSON.parse(await readFile(abandonedPath, "utf8"));
+		assert.equal(abandoned.abandonments.length, 1);
+		assert.equal(abandoned.abandonments[0].reason, "obsolete");
+		assert.deepEqual(abandoned.abandonments[0].unresolvedIds, ["D0001"]);
+		assert.equal(abandoned.abandonments[0].review, "none");
+		assert.equal(await readActiveAudit(root), undefined, "no audit remains active");
+		assert.match(await driver.status(), /abandoned: contract/i, "status identifies the abandoned terminal artifact");
+		assert.equal((await driver.attemptWrite(abandonedPath)).blocked, true, "abandoned lifecycle state remains managed");
+
+		await assert.rejects(() => driver.start(TASK), /reopen/i);
+		await driver.reopen(TASK);
+		const reopened = await readActiveAudit(root);
+		assert.equal(reopened?.reopenCount, 1);
+		assert.equal(reopened?.abandonments?.length, 1, "reopen retains the abandonment record");
+		assert.equal((await tsvRows(root)).length, 2, "decision rows survive abandon and reopen");
+	});
+
 	contract("rejects invalid decision enum values at the append boundary", async (driver, root) => {
 		await driver.start(TASK);
 		await assert.rejects(() => driver.decide({ origin: "vibes" }), /origin/i);

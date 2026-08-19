@@ -152,6 +152,31 @@ test("cli rejects invalid input with clear errors", async () => {
 	}
 });
 
+test("cli abandon archives without review and status lists the terminal artifact", async () => {
+	const root = await mkdtemp(join(tmpdir(), "audit-cli-test-"));
+	try {
+		assert.equal(await runCli(["-C", root, "start", "Stale Task"], capture()), 0);
+		const io = capture();
+		assert.equal(await runCli(["-C", root, "abandon"], io), 1);
+		assert.match(io.stderr.join("\n"), /Usage: audit-trail abandon/);
+		assert.equal(await runCli(["-C", root, "abandon", "Stale", "Task"], io), 1);
+		assert.match(io.stderr.join("\n"), /non-empty reason/);
+
+		const abandonIo = capture();
+		assert.equal(await runCli(["-C", root, "abandon", "Stale", "Task", "--reason", "obsolete"], abandonIo), 0);
+		assert.match(abandonIo.stdout.join("\n"), /without review approval or publication/);
+
+		const statusIo = capture();
+		assert.equal(await runCli(["-C", root, "status"], statusIo), 0);
+		assert.match(statusIo.stdout.join("\n"), /No audit is active in this worktree\./);
+		assert.match(statusIo.stdout.join("\n"), /abandoned: Stale Task \(/);
+
+		assert.equal(await runCli(["-C", root, "reopen", "Stale Task"], capture()), 0);
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
 test("CLI review records a blocking verdict and exits 1", async () => {
 	const root = await mkdtemp(join(tmpdir(), "audit-cli-test-"));
 	try {

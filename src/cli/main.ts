@@ -42,6 +42,8 @@ Commands:
   review <model>     Run an independent review with <provider/model>
   rollover <task>    Archive a rebase-diverged audit; start a linked successor
                      (--reason <text> required, --name <successor-task> optional)
+  abandon <task>     Archive the audit as abandoned without review or publication
+                     (--reason <text> required; reopen restores it later)
   publish [pr]       Create/update an aggregate audit set (--set <set-id>)
   close              Close the audit once resolved and reviewed
   mcp                Serve the audit tools as a local MCP server on stdio
@@ -190,11 +192,34 @@ async function commandDecision(workflow: AuditWorkflow, args: string[], io: CliI
 }
 
 async function commandStatus(workflow: AuditWorkflow, io: CliIo): Promise<number> {
-	const state = await requireActive(workflow);
+	const state = await workflow.active();
+	if (!state) {
+		io.out("No audit is active in this worktree.");
+		for (const abandoned of await workflow.abandonedAudits()) {
+			io.out(`abandoned: ${abandoned.taskName ?? abandoned.task}${abandoned.at ? ` (${abandoned.at})` : ""}`);
+		}
+		return 0;
+	}
 	const rows = await workflow.rows(state);
 	const currentSha = await workflow.currentSha(state);
 	const diverged = await workflow.provenanceDiverged(state);
 	for (const line of formatStatusLines(state, rows, currentSha, workflow.root, diverged)) io.out(line);
+	return 0;
+}
+
+async function commandAbandon(workflow: AuditWorkflow, args: string[], io: CliIo): Promise<number> {
+	const parsed = parseArgs({
+		args,
+		options: { reason: { type: "string" } },
+		allowPositionals: true,
+		strict: true,
+	});
+	const task = parsed.positionals.join(" ").trim();
+	if (!task) throw new Error("Usage: audit-trail abandon <exact-task> --reason <text>");
+	const result = await workflow.abandon(task, cliSession(), parsed.values.reason ?? "");
+	io.out(`Abandoned ${result.state.taskName ?? result.state.task} without review approval or publication: ${displayPath(result.abandonedPath, workflow.root)}`);
+	if (result.record.unresolvedIds.length) io.out(`unresolved at abandonment: ${result.record.unresolvedIds.join(", ")}`);
+	io.out("Reopen restores it with the abandonment record retained.");
 	return 0;
 }
 
@@ -459,6 +484,8 @@ export async function runCli(
 				return await commandReview(workflow, args, io, dependencies);
 			case "rollover":
 				return await commandRollover(workflow, args, io);
+			case "abandon":
+				return await commandAbandon(workflow, args, io);
 			case "publish":
 				return await commandPublish(workflow, args, io);
 			case "close":

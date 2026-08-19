@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { access, readFile } from "node:fs/promises";
+import { access, readdir, readFile } from "node:fs/promises";
 import { isAbsolute, join, relative } from "node:path";
 import {
 	abandonActiveAudit,
@@ -9,6 +9,7 @@ import {
 	readAbandonedAudit,
 	readActiveAudit,
 	readClosedAudit,
+	reopenAbandonedAudit,
 	reopenClosedAudit,
 	sha256Hex,
 	writeActiveAudit,
@@ -67,6 +68,21 @@ export interface CloseAuditResult {
 	state: AuditState;
 	blockers: string[];
 	closed: boolean;
+}
+
+export interface AbandonResult {
+	/** The archived audit's state at abandonment. */
+	state: AuditState;
+	record: AbandonmentRecord;
+	/** Terminal artifact holding the abandonment record. */
+	abandonedPath: string;
+}
+
+export interface AbandonedAuditSummary {
+	task: string;
+	taskName?: string;
+	/** Timestamp of the most recent abandonment record. */
+	at?: string;
 }
 
 export interface RolloverResult extends AuditLifecycleResult {
@@ -219,9 +235,7 @@ export class AuditWorkflow {
 		const abandoned = await readAbandonedAudit(this.root, task);
 		if (abandoned) {
 			this.assertTaskIdentity(abandoned, task, taskName, "start");
-			throw new Error(
-				`Audit ${JSON.stringify(taskName)} was abandoned (${abandonedStatePath(this.root, task)}). Choose a different task name.`,
-			);
+			throw new Error(`Audit ${JSON.stringify(taskName)} is abandoned. Use reopen instead of start.`);
 		}
 		for (const artifact of [join(".audit", `${task}.tsv`), join(".audit", `${task}.provenance.json`)]) {
 			try {
@@ -329,26 +343,13 @@ export class AuditWorkflow {
 					"Could not verify ancestry against HEAD (Git unavailable or start commit unknown); rollover refuses to archive a possibly publishable audit.",
 				);
 			}
-			const headResult = await this.runner.exec("git", ["rev-parse", "HEAD"], { timeout: 10_000 });
-			const head = headResult.code === 0 ? headResult.stdout.trim() : "";
-			const branchResult = await this.runner.exec("git", ["branch", "--show-current"], { timeout: 10_000 });
-			const branch = branchResult.code === 0 ? branchResult.stdout.trim() : "";
-			const rows = await readRows(state.logPath);
-			const record: AbandonmentRecord = {
-				at: this.now().toISOString(),
-				reason: trimmedReason,
-				session: qualifiedSession(session),
-				branch: branch || undefined,
-				head: head || undefined,
-				unresolvedIds: summarize(rows).unresolved.map((row) => row.id),
-				review: file.review?.verdict ?? "none",
-			};
+			const record = await this.buildAbandonmentRecord(file, state, session, trimmedReason);
 			const link: RolloverLink = {
 				auditId: file.auditId,
 				task: file.task,
 				taskName: file.taskName,
 				startCommit: state.provenance.startCommit,
-				head: head || "unknown",
+				head: record.head ?? "unknown",
 				abandonedAt: record.at,
 			};
 			// Verify the successor slug is claimable before archiving the
@@ -402,12 +403,83 @@ export class AuditWorkflow {
 				throw new Error(`Cannot reopen ${JSON.stringify(taskName)} while ${active.taskName ?? active.task} is active.`);
 			}
 			const closed = await readClosedAudit(this.root, task);
-			if (!closed) throw new Error(`No closed audit found for ${JSON.stringify(taskName)}.`);
-			this.assertTaskIdentity(closed, task, taskName, "reopen");
-			const reopened = await reopenClosedAudit(this.root, closed, this.now().toISOString());
+			const abandoned = closed ? undefined : await readAbandonedAudit(this.root, task);
+			const terminal = closed ?? abandoned;
+			if (!terminal) throw new Error(`No closed or abandoned audit found for ${JSON.stringify(taskName)}.`);
+			this.assertTaskIdentity(terminal, task, taskName, "reopen");
+			// Reopening from abandoned retains the append-only abandonment records.
+			const reopened = closed
+				? await reopenClosedAudit(this.root, closed, this.now().toISOString())
+				: await reopenAbandonedAudit(this.root, abandoned!, this.now().toISOString());
 			const result = await this.retryProvenance(reopened, session);
 			return { state: await this.stateFrom(result.file), provenanceError: result.provenanceError };
 		});
+	}
+
+	/** Best-effort worktree facts plus audit state for a truthful terminal record. */
+	private async buildAbandonmentRecord(
+		file: ActiveAuditFile,
+		state: AuditState,
+		session: SessionIdentity,
+		reason: string,
+	): Promise<AbandonmentRecord> {
+		const headResult = await this.runner.exec("git", ["rev-parse", "HEAD"], { timeout: 10_000 });
+		const branchResult = await this.runner.exec("git", ["branch", "--show-current"], { timeout: 10_000 });
+		const rows = await readRows(state.logPath);
+		return {
+			at: this.now().toISOString(),
+			reason,
+			session: qualifiedSession(session),
+			branch: (branchResult.code === 0 && branchResult.stdout.trim()) || undefined,
+			head: (headResult.code === 0 && headResult.stdout.trim()) || undefined,
+			unresolvedIds: summarize(rows).unresolved.map((row) => row.id),
+			review: file.review?.verdict ?? "none",
+		};
+	}
+
+	/**
+	 * Explicit terminal abandonment for an audit that cannot satisfy the normal
+	 * review-and-publish path. No close blockers apply: the record truthfully
+	 * states that review approval and publication did not complete. TSV,
+	 * provenance, and review artifacts are preserved unchanged; reopen restores
+	 * the audit while retaining every abandonment record.
+	 */
+	async abandon(taskInput: string, session: SessionIdentity, reason: string): Promise<AbandonResult> {
+		const { task, taskName } = this.taskIdentity(taskInput);
+		const trimmedReason = reason.trim();
+		if (!trimmedReason) throw new Error("Abandon requires a non-empty reason");
+		return this.lock(async () => {
+			const file = await readActiveAudit(this.root);
+			if (!file) throw new Error("No audit is active.");
+			this.assertTaskIdentity(file, task, taskName, "abandon");
+			if (await readAbandonedAudit(this.root, file.task)) {
+				throw new Error(`Abandoned lifecycle state already exists: ${abandonedStatePath(this.root, file.task)}`);
+			}
+			const state = await this.stateFrom(file);
+			const record = await this.buildAbandonmentRecord(file, state, session, trimmedReason);
+			await abandonActiveAudit(this.root, file, record);
+			return { state, record, abandonedPath: abandonedStatePath(this.root, file.task) };
+		});
+	}
+
+	/** Abandoned terminal artifacts in this worktree, newest record last. */
+	async abandonedAudits(): Promise<AbandonedAuditSummary[]> {
+		let entries: string[];
+		try {
+			entries = await readdir(join(this.root, ".audit"));
+		} catch {
+			return [];
+		}
+		const summaries: AbandonedAuditSummary[] = [];
+		for (const name of entries.filter((entry) => entry.endsWith(".abandoned.json")).sort()) {
+			try {
+				const file = await readAbandonedAudit(this.root, name.slice(0, -".abandoned.json".length));
+				if (file) summaries.push({ task: file.task, taskName: file.taskName, at: file.abandonments?.at(-1)?.at });
+			} catch {
+				// Unreadable terminal artifacts are skipped, not fatal to status.
+			}
+		}
+		return summaries;
 	}
 
 	async append(session: SessionIdentity, input: Omit<NewAuditRow, "session" | "entry">): Promise<AppendResult> {

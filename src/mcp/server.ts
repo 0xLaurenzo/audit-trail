@@ -120,6 +120,19 @@ const TOOLS: ToolDefinition[] = [
 		},
 	},
 	{
+		name: "audit_abandon",
+		description:
+			"Archive the active audit as abandoned when it cannot be reviewed or published. Never implies approval or publication; reopen restores it with the record retained.",
+		inputSchema: {
+			type: "object",
+			properties: {
+				task: { type: "string", description: "Exact task name of the active audit being abandoned" },
+				reason: { type: "string", description: "Why the audit cannot complete review and publication" },
+			},
+			required: ["task", "reason"],
+		},
+	},
+	{
 		name: "audit_rollover",
 		description:
 			"Archive a rebase-diverged audit as an immutable abandoned segment and start a linked successor at the current HEAD. Refuses while the start commit is still an ancestor of HEAD.",
@@ -259,11 +272,29 @@ export class McpAuditServer {
 			}
 			case "audit_status": {
 				const state = await this.workflow.active();
-				if (!state) return "No audit is active in this worktree.";
+				if (!state) {
+					const abandoned = await this.workflow.abandonedAudits();
+					return [
+						"No audit is active in this worktree.",
+						...abandoned.map((entry) => `abandoned: ${entry.taskName ?? entry.task}${entry.at ? ` (${entry.at})` : ""}`),
+					].join("\n");
+				}
 				const rows = await this.workflow.rows(state);
 				const sha = await this.workflow.currentSha(state);
 				const diverged = await this.workflow.provenanceDiverged(state);
 				return formatStatusLines(state, rows, sha, this.workflow.root, diverged).join("\n");
+			}
+			case "audit_abandon": {
+				const result = await this.workflow.abandon(
+					requireString(args, "task"),
+					await this.session(),
+					requireString(args, "reason"),
+				);
+				return [
+					`Abandoned ${result.state.taskName ?? result.state.task} without review approval or publication: ${result.abandonedPath}`,
+					...(result.record.unresolvedIds.length ? [`unresolved at abandonment: ${result.record.unresolvedIds.join(", ")}`] : []),
+					"Reopen restores it with the abandonment record retained.",
+				].join("\n");
 			}
 			case "audit_rollover": {
 				const result = await this.workflow.rollover(

@@ -128,7 +128,7 @@ test("start refuses orphaned artifacts and reopen requires a closed lifecycle", 
 		const workflow = new AuditWorkflow(root, noGit);
 		const session = { harness: "pi", id: "session-1" };
 		await assert.rejects(() => workflow.resume("task", session), /No audit is active/);
-		await assert.rejects(() => workflow.reopen("task", session), /No closed audit/);
+		await assert.rejects(() => workflow.reopen("task", session), /No closed or abandoned audit/);
 		await mkdir(join(root, ".audit"), { recursive: true });
 		await writeFile(join(root, ".audit", "task.tsv"), "orphan", "utf8");
 		await assert.rejects(() => workflow.start("task", session), /existing artifact has no lifecycle state/);
@@ -388,6 +388,43 @@ test("rollover refuses intact ancestry, unverifiable ancestry, wrong names, and 
 	}
 });
 
+test("re-abandonment after reopen appends records and preserves rows and history", async () => {
+	const root = await mkdtemp(join(tmpdir(), "audit-workflow-test-"));
+	try {
+		const session = { harness: "pi", id: "session-1" };
+		const wf = new AuditWorkflow(root, noGit);
+		await wf.start("Stale Task", session);
+		await wf.append(session, decisionInput);
+		await assert.rejects(() => wf.abandon("Stale Task", session, "  "), /non-empty reason/);
+		await assert.rejects(() => wf.abandon("Other", session, "reason"), /the audit task is Stale Task/);
+
+		const first = await wf.abandon("Stale Task", session, "pr merged without this audit");
+		assert.equal(first.record.review, "none");
+		assert.deepEqual(first.record.unresolvedIds, [], "verified rows are not unresolved");
+		assert.equal(await readActiveAudit(root), undefined);
+		assert.deepEqual(await wf.abandonedAudits(), [
+			{ task: "stale-task", taskName: "Stale Task", at: first.record.at },
+		]);
+
+		await wf.reopen("Stale Task", session);
+		const reopened = await readActiveAudit(root);
+		assert.equal(reopened?.reopenCount, 1);
+		assert.equal(reopened?.abandonments?.length, 1, "reopen retains the first record");
+
+		const second = await wf.abandon("Stale Task", session, "still obsolete");
+		const archived = await readAbandonedAudit(root, "stale-task");
+		assert.deepEqual(
+			archived?.abandonments?.map((record) => record.reason),
+			["pr merged without this audit", "still obsolete"],
+			"records append without rewriting history",
+		);
+		assert.equal(second.record.at, archived?.abandonments?.at(-1)?.at);
+		assert.match(await readFile(join(root, ".audit", "stale-task.tsv"), "utf8"), /A decision/);
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
 test("an abandoned task slug cannot be reclaimed by a rollover successor", async () => {
 	const root = await mkdtemp(join(tmpdir(), "audit-workflow-test-"));
 	try {
@@ -401,7 +438,7 @@ test("an abandoned task slug cannot be reclaimed by a rollover successor", async
 		// fail with the explicit abandoned error before anything is archived.
 		await assert.rejects(
 			() => wf.rollover("task (rebased)", session, "again", "task"),
-			/was abandoned .*Choose a different task name/,
+			/is abandoned\. Use reopen instead of start/,
 		);
 		assert.equal((await readActiveAudit(root))?.task, "task-rebased", "the successor stays active");
 		assert.equal(await readAbandonedAudit(root, "task-rebased"), undefined);

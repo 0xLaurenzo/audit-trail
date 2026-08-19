@@ -10,7 +10,7 @@ import {
 	activeStatePath,
 	buildActiveAuditGuidance,
 	formatBlockingReviewMessage,
-	isClosedStatePath,
+	isTerminalStatePath,
 	resolveWorktreeRoot,
 	runIndependentReview,
 	type AuditState,
@@ -194,8 +194,8 @@ export const AuditTrailPlugin = async ({ client, directory, runner: runnerOverri
 				}
 				return;
 			}
-			if (isClosedStatePath(wf.root, target)) {
-				throw new Error("Closed audit lifecycle state is extension-managed; use audit_reopen.");
+			if (isTerminalStatePath(wf.root, target)) {
+				throw new Error("Terminal audit lifecycle state (closed or abandoned) is extension-managed; use audit_reopen.");
 			}
 			if (!state) return;
 			const protectedPaths = [state.logPath, state.provenancePath, activeStatePath(wf.root)].filter(
@@ -286,6 +286,15 @@ export const AuditTrailPlugin = async ({ client, directory, runner: runnerOverri
 					}
 					return `Review saved: ${review.reviewPath} (${review.model}, ${review.mode}; ${review.rowCount} rows reviewed, verdict: approve)`;
 				},
+			}),
+			audit_abandon: tool({
+				description:
+					"Archive the active audit as abandoned when it cannot be reviewed or published. Never implies approval or publication; reopen restores it with the record retained.",
+				args: {
+					task: z.string().describe("Exact task name of the active audit being abandoned"),
+					reason: z.string().describe("Why the audit cannot complete review and publication"),
+				},
+				execute: async (args, context) => (await server(context)).call("audit_abandon", args),
 			}),
 			audit_rollover: tool({
 				description:

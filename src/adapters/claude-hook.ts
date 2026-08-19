@@ -4,7 +4,7 @@ import {
 	AuditWorkflow,
 	activeStatePath,
 	buildActiveAuditGuidance,
-	isClosedStatePath,
+	isTerminalStatePath,
 	resolveWorktreeRoot,
 	type AuditState,
 	type CommandRunner,
@@ -143,8 +143,8 @@ export async function handleClaudeHook(
 			}
 			return { exitCode: 0 };
 		}
-		if (isClosedStatePath(dirname(auditRoot), target)) {
-			return deny("Closed audit lifecycle state is extension-managed; use audit_reopen.");
+		if (isTerminalStatePath(dirname(auditRoot), target)) {
+			return deny("Terminal audit lifecycle state (closed or abandoned) is extension-managed; use audit_reopen.");
 		}
 		if (!lookup.state) return { exitCode: 0 };
 		const protectedPaths = [lookup.state.logPath, lookup.state.provenancePath, activeStatePath(lookup.root)].filter(
