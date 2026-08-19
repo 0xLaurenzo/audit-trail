@@ -51,8 +51,13 @@ export function abandonedStatePath(root: string, task: string): string {
 	return join(root, ".audit", `${task}.abandoned.json`);
 }
 
-export function isClosedStatePath(root: string, path: string): boolean {
-	return resolve(dirname(path)) === resolve(root, ".audit") && basename(path).endsWith(".closed.json");
+/** True for terminal lifecycle artifacts: `<task>.closed.json` and `<task>.abandoned.json`. */
+export function isTerminalStatePath(root: string, path: string): boolean {
+	const name = basename(path);
+	return (
+		resolve(dirname(path)) === resolve(root, ".audit")
+		&& (name.endsWith(".closed.json") || name.endsWith(".abandoned.json"))
+	);
 }
 
 async function readAuditState(path: string): Promise<ActiveAuditFile | undefined> {
@@ -124,14 +129,23 @@ export async function abandonActiveAudit(
 	return abandoned;
 }
 
-/** Atomic inverse of closeActiveAudit for an explicitly requested reopen. */
-export async function reopenClosedAudit(root: string, file: ActiveAuditFile, at: string): Promise<ActiveAuditFile> {
+/** Atomic inverse of close/abandon for an explicitly requested reopen. */
+async function reopenTerminalAudit(root: string, terminalPath: string, file: ActiveAuditFile, at: string): Promise<ActiveAuditFile> {
 	const reopened = {
 		...file,
 		lastReopenedAt: at,
 		reopenCount: (file.reopenCount ?? 0) + 1,
 	};
-	await writeAuditState(closedStatePath(root, file.task), reopened);
-	await rename(closedStatePath(root, file.task), activeStatePath(root));
+	await writeAuditState(terminalPath, reopened);
+	await rename(terminalPath, activeStatePath(root));
 	return reopened;
+}
+
+export function reopenClosedAudit(root: string, file: ActiveAuditFile, at: string): Promise<ActiveAuditFile> {
+	return reopenTerminalAudit(root, closedStatePath(root, file.task), file, at);
+}
+
+/** Reopening an abandoned audit retains its append-only abandonment records. */
+export function reopenAbandonedAudit(root: string, file: ActiveAuditFile, at: string): Promise<ActiveAuditFile> {
+	return reopenTerminalAudit(root, abandonedStatePath(root, file.task), file, at);
 }

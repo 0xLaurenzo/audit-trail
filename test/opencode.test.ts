@@ -210,7 +210,7 @@ test("opencode installer writes shim and commands idempotently without touching 
 		const shim = await readFile(join(configDir, "plugins", "audit-trail.ts"), "utf8");
 		assert.match(shim, /audit-trail-managed:v1/);
 		assert.match(shim, /export \{ AuditTrailPlugin \} from "\/opt\/audit-trail\/src\/adapters\/opencode\.ts"/);
-		for (const name of ["audit-start", "audit-resume", "audit-reopen", "audit-status", "audit-review", "audit-rollover", "audit-publish", "audit-close"]) {
+		for (const name of ["audit-start", "audit-resume", "audit-reopen", "audit-status", "audit-review", "audit-abandon", "audit-rollover", "audit-publish", "audit-close"]) {
 			const command = await readFile(join(configDir, "commands", `${name}.md`), "utf8");
 			assert.match(command, /^---\ndescription: /, `${name} has frontmatter`);
 			assert.match(command, /audit-trail-managed:v1/, `${name} has an ownership marker`);

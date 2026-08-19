@@ -14,7 +14,7 @@ import {
 	displayPath,
 	formatBlockingReviewMessage,
 	formatStatusLines,
-	isClosedStatePath,
+	isTerminalStatePath,
 	publishRawAudit,
 	runIndependentReview,
 	sha256Hex,
@@ -153,8 +153,8 @@ export default function auditTrailExtension(pi: ExtensionAPI) {
 			}
 			return;
 		}
-		if (isClosedStatePath(wf.root, inputPath)) {
-			return { block: true, reason: "Closed audit lifecycle state is extension-managed; use audit_reopen." };
+		if (isTerminalStatePath(wf.root, inputPath)) {
+			return { block: true, reason: "Terminal audit lifecycle state (closed or abandoned) is extension-managed; use audit_reopen." };
 		}
 		if (!state) return;
 		const protectedPaths = [state.logPath, state.provenancePath, activeStatePath(wf.root)].filter(
@@ -246,7 +246,14 @@ export default function auditTrailExtension(pi: ExtensionAPI) {
 				return;
 			}
 			if (!state) {
-				ctx.ui.notify("No decision audit is active in this worktree", "info");
+				const abandoned = await wf.abandonedAudits();
+				ctx.ui.notify(
+					[
+						"No decision audit is active in this worktree",
+						...abandoned.map((entry) => `abandoned: ${entry.taskName ?? entry.task}${entry.at ? ` (${entry.at})` : ""}`),
+					].join("\n"),
+					"info",
+				);
 				return;
 			}
 			const rows = await wf.rows(state);
@@ -258,6 +265,42 @@ export default function auditTrailExtension(pi: ExtensionAPI) {
 				formatStatusLines(state, rows, currentSha, wf.root, diverged).join("\n"),
 				stats.unresolved.length || stats.lowConfidence.length || stats.missingEvidence.length ? "warning" : "info",
 			);
+		},
+	});
+
+	pi.registerCommand("audit-abandon", {
+		description: "Archive an unpublishable audit as abandoned: /audit-abandon <exact-task> --reason <text>",
+		handler: async (args, ctx) => {
+			let parsed: ReturnType<typeof parseArgs>;
+			try {
+				parsed = parseArgs({
+					args: args.trim() ? args.trim().split(/\s+/) : [],
+					options: { reason: { type: "string" } },
+					allowPositionals: true,
+					strict: true,
+				});
+			} catch (error: any) {
+				ctx.ui.notify(`Invalid abandon arguments: ${error?.message ?? error}`, "error");
+				return;
+			}
+			try {
+				const wf = await workflow(ctx);
+				const result = await wf.abandon(
+					parsed.positionals.join(" ").trim(),
+					sessionIdentity(ctx),
+					String(parsed.values.reason ?? ""),
+				);
+				ctx.ui.notify(
+					[
+						`Abandoned ${result.state.taskName ?? result.state.task} without review approval or publication`,
+						...(result.record.unresolvedIds.length ? [`unresolved at abandonment: ${result.record.unresolvedIds.join(", ")}`] : []),
+						"Reopen restores it with the abandonment record retained.",
+					].join("\n"),
+					"info",
+				);
+			} catch (error: any) {
+				ctx.ui.notify(`Audit abandon failed: ${error?.message ?? error}`, "error");
+			}
 		},
 	});
 
