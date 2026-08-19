@@ -9,12 +9,14 @@ import test from "node:test";
 import {
 	activeStatePath,
 	closedStatePath,
+	readAbandonedAudit,
 	readActiveAudit,
 	readClosedAudit,
 	sha256Hex,
 	writeActiveAudit,
 } from "../src/core/active-state.ts";
 import type { CommandRunner } from "../src/core/ports.ts";
+import { formatStatusLines } from "../src/core/status.ts";
 import { AUDIT_HEADER, type NewAuditRow } from "../src/core/types.ts";
 import { AuditWorkflow, resolveWorktreeRoot } from "../src/core/workflow.ts";
 
@@ -264,6 +266,145 @@ test("resume retries provenance capture once Git becomes available", async () =>
 		assert.equal(resumed.state.provenance?.repository, "owner/repo");
 		assert.equal(resumed.state.provenance?.sessionId, "pi/session-1");
 		assert.ok((await readActiveAudit(root))?.provenancePath, "active.json records provenance after retry");
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+function scriptedGit(root: string, overrides: Record<string, { code: number; stdout: string }> = {}): CommandRunner {
+	return {
+		async exec(_command, args) {
+			const key = args.join(" ");
+			if (key in overrides) return { ...overrides[key], stderr: "" };
+			const outputs: Record<string, string> = {
+				"rev-parse --show-toplevel": root,
+				"remote get-url origin": "git@github.com:owner/repo.git",
+				"branch --show-current": "feature/task",
+				"rev-parse HEAD": "new-head-after-rebase",
+				"status --porcelain": "",
+			};
+			return { code: key in outputs ? 0 : 1, stdout: outputs[key] ?? "", stderr: "" };
+		},
+	};
+}
+
+test("provenanceDiverged distinguishes intact, rewritten, and unverifiable ancestry", async () => {
+	const root = await mkdtemp(join(tmpdir(), "audit-workflow-test-"));
+	try {
+		const session = { harness: "pi", id: "session-1" };
+		const ancestorKey = "merge-base --is-ancestor new-head-after-rebase HEAD";
+		const intact = new AuditWorkflow(root, scriptedGit(root, { [ancestorKey]: { code: 0, stdout: "" } }));
+		const started = await intact.start("task", session);
+		assert.equal(started.state.provenance?.startCommit, "new-head-after-rebase");
+		assert.equal(await intact.provenanceDiverged(started.state), false);
+
+		const rebased = new AuditWorkflow(root, scriptedGit(root, { [ancestorKey]: { code: 1, stdout: "" } }));
+		assert.equal(await rebased.provenanceDiverged(started.state), true);
+
+		const broken = new AuditWorkflow(root, scriptedGit(root, { [ancestorKey]: { code: 128, stdout: "" } }));
+		assert.equal(await broken.provenanceDiverged(started.state), undefined);
+		assert.equal(await new AuditWorkflow(root, noGit).provenanceDiverged({ ...started.state, provenance: undefined }), undefined);
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+test("rollover archives a diverged audit and starts a linked successor", async () => {
+	const root = await mkdtemp(join(tmpdir(), "audit-workflow-test-"));
+	try {
+		const session = { harness: "pi", id: "session-1" };
+		const startGit = scriptedGit(root, { "rev-parse HEAD": { code: 0, stdout: "old-start-commit" } });
+		const before = new AuditWorkflow(root, startGit);
+		const started = await before.start("Stacked Task", session);
+		await before.append(session, { ...decisionInput, result: "open" });
+
+		// After the rebase: HEAD moved and the old start commit is not an ancestor.
+		const after = new AuditWorkflow(root, scriptedGit(root, {
+			"merge-base --is-ancestor old-start-commit HEAD": { code: 1, stdout: "" },
+		}));
+		const result = await after.rollover("Stacked Task", session, "parent branch rebased under this audit");
+
+		const abandoned = await readAbandonedAudit(root, "stacked-task");
+		assert.ok(abandoned, "predecessor lifecycle state is archived as abandoned");
+		assert.equal(abandoned!.abandonments?.length, 1);
+		const record = abandoned!.abandonments![0];
+		assert.equal(record.reason, "parent branch rebased under this audit");
+		assert.equal(record.session, "pi/session-1");
+		assert.equal(record.head, "new-head-after-rebase");
+		assert.deepEqual(record.unresolvedIds, ["D0001"]);
+		assert.equal(record.review, "none");
+		assert.equal(result.abandonedTask, "stacked-task");
+
+		assert.equal(result.state.task, "stacked-task-rebased");
+		assert.equal(result.state.taskName, "Stacked Task (rebased)");
+		assert.equal(result.state.rolloverFrom?.task, "stacked-task");
+		assert.equal(result.state.rolloverFrom?.auditId, started.state.auditId);
+		assert.equal(result.state.rolloverFrom?.startCommit, "old-start-commit");
+		assert.equal(result.state.rolloverFrom?.head, "new-head-after-rebase");
+		assert.equal(result.state.provenance?.startCommit, "new-head-after-rebase", "successor provenance pins the post-rebase head");
+		assert.notEqual(result.state.auditId, started.state.auditId, "successor mints a fresh identity");
+
+		// Predecessor artifacts are untouched and the successor is the active audit.
+		assert.match(await readFile(join(root, ".audit", "stacked-task.tsv"), "utf8"), /A decision/);
+		assert.equal((await readActiveAudit(root))?.task, "stacked-task-rebased");
+
+		// Status surfaces divergence before publish/review and renders the link.
+		const divergedStatus = formatStatusLines(started.state, [], undefined, root, true);
+		assert.ok(divergedStatus.some((line) => line.includes("provenance diverged: rollover required")));
+		const successorStatus = formatStatusLines(result.state, [], undefined, root, false);
+		assert.ok(successorStatus.some((line) => line.startsWith("rolled over from: Stacked Task (old-start-co")));
+		assert.ok(!successorStatus.some((line) => line.includes("provenance diverged")));
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+test("rollover refuses intact ancestry, unverifiable ancestry, wrong names, and occupied successors", async () => {
+	const root = await mkdtemp(join(tmpdir(), "audit-workflow-test-"));
+	try {
+		const session = { harness: "pi", id: "session-1" };
+		const ancestorKey = "merge-base --is-ancestor new-head-after-rebase HEAD";
+		const intact = new AuditWorkflow(root, scriptedGit(root, { [ancestorKey]: { code: 0, stdout: "" } }));
+		await intact.start("task", session);
+		await assert.rejects(() => intact.rollover("task", session, "reason"), /still an ancestor of HEAD/);
+		await assert.rejects(() => intact.rollover("task", session, "   "), /non-empty reason/);
+		await assert.rejects(() => intact.rollover("other", session, "reason"), /the audit task is task/);
+		await assert.rejects(() => intact.rollover("task", session, "reason", "task"), /same slug/);
+
+		const unverifiable = new AuditWorkflow(root, scriptedGit(root, { [ancestorKey]: { code: 128, stdout: "" } }));
+		await assert.rejects(() => unverifiable.rollover("task", session, "reason"), /Could not verify ancestry/);
+
+		// A successor slug owned by existing artifacts refuses before archiving.
+		const diverged = new AuditWorkflow(root, scriptedGit(root, { [ancestorKey]: { code: 1, stdout: "" } }));
+		await writeFile(join(root, ".audit", "blocked.tsv"), `${AUDIT_HEADER}\n`, "utf8");
+		await assert.rejects(
+			() => diverged.rollover("task", session, "reason", "blocked"),
+			/existing artifact has no lifecycle state/,
+		);
+		assert.ok(await readActiveAudit(root), "the audit stays active when the successor is unavailable");
+		assert.equal(await readAbandonedAudit(root, "task"), undefined, "nothing was archived");
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+test("an abandoned task slug cannot be reclaimed by a rollover successor", async () => {
+	const root = await mkdtemp(join(tmpdir(), "audit-workflow-test-"));
+	try {
+		const session = { harness: "pi", id: "session-1" };
+		const ancestorKey = "merge-base --is-ancestor new-head-after-rebase HEAD";
+		const wf = new AuditWorkflow(root, scriptedGit(root, { [ancestorKey]: { code: 1, stdout: "" } }));
+		await wf.start("task", session);
+		const rolled = await wf.rollover("task", session, "rebase");
+		assert.equal(rolled.state.task, "task-rebased");
+		// Rolling the successor back onto the abandoned predecessor slug must
+		// fail with the explicit abandoned error before anything is archived.
+		await assert.rejects(
+			() => wf.rollover("task (rebased)", session, "again", "task"),
+			/was abandoned .*Choose a different task name/,
+		);
+		assert.equal((await readActiveAudit(root))?.task, "task-rebased", "the successor stays active");
+		assert.equal(await readAbandonedAudit(root, "task-rebased"), undefined);
 	} finally {
 		await rm(root, { recursive: true, force: true });
 	}

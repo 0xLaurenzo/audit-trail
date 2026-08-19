@@ -2,8 +2,11 @@ import { randomUUID } from "node:crypto";
 import { access, readFile } from "node:fs/promises";
 import { isAbsolute, join, relative } from "node:path";
 import {
+	abandonActiveAudit,
+	abandonedStatePath,
 	closeActiveAudit,
 	closedStatePath,
+	readAbandonedAudit,
 	readActiveAudit,
 	readClosedAudit,
 	reopenClosedAudit,
@@ -17,6 +20,7 @@ import { safeSlug } from "./paths.ts";
 import { directMutationQueue, type CommandRunner, type SessionIdentity } from "./ports.ts";
 import { ensureProvenance } from "./provenance.ts";
 import type {
+	AbandonmentRecord,
 	AuditRow,
 	AuditState,
 	GitProvenance,
@@ -24,8 +28,9 @@ import type {
 	ReviewMode,
 	ReviewSnapshot,
 	ReviewVerdict,
+	RolloverLink,
 } from "./types.ts";
-import { closeBlockers } from "./validation.ts";
+import { closeBlockers, summarize } from "./validation.ts";
 
 export function qualifiedSession(session: SessionIdentity): string {
 	return `${session.harness}/${session.id}`;
@@ -62,6 +67,14 @@ export interface CloseAuditResult {
 	state: AuditState;
 	blockers: string[];
 	closed: boolean;
+}
+
+export interface RolloverResult extends AuditLifecycleResult {
+	/** Slug of the archived predecessor audit. */
+	abandonedTask: string;
+	/** Terminal artifact holding the predecessor's abandonment record. */
+	abandonedPath: string;
+	link: RolloverLink;
 }
 
 /**
@@ -106,6 +119,7 @@ export class AuditWorkflow {
 			auditId: file.auditId,
 			logPath: this.absolute(file.logPath),
 			review: file.review,
+			rolloverFrom: file.rolloverFrom,
 		};
 		if (file.provenancePath) {
 			state.provenancePath = this.absolute(file.provenancePath);
@@ -191,45 +205,165 @@ export class AuditWorkflow {
 				);
 			}
 
-			const closed = await readClosedAudit(this.root, task);
-			if (closed) {
-				this.assertTaskIdentity(closed, task, taskName, "start");
-				throw new Error(`Audit ${JSON.stringify(taskName)} is closed. Use reopen instead of start.`);
-			}
+			return this.createAudit(task, taskName, session);
+		});
+	}
 
-			const logRel = join(".audit", `${task}.tsv`);
-			const provenanceRel = join(".audit", `${task}.provenance.json`);
-			for (const artifact of [logRel, provenanceRel]) {
-				try {
-					await access(this.absolute(artifact));
-					throw new Error(`Cannot start ${JSON.stringify(taskName)}: existing artifact has no lifecycle state: ${artifact}`);
-				} catch (error: any) {
-					if (error?.code !== "ENOENT") throw error;
-				}
-			}
-
-			let provenanceError: string | undefined;
-			let hasProvenance = false;
+	/** Reject task slugs already owned by closed, abandoned, or orphaned artifacts. */
+	private async assertTaskAvailable(task: string, taskName: string): Promise<void> {
+		const closed = await readClosedAudit(this.root, task);
+		if (closed) {
+			this.assertTaskIdentity(closed, task, taskName, "start");
+			throw new Error(`Audit ${JSON.stringify(taskName)} is closed. Use reopen instead of start.`);
+		}
+		const abandoned = await readAbandonedAudit(this.root, task);
+		if (abandoned) {
+			this.assertTaskIdentity(abandoned, task, taskName, "start");
+			throw new Error(
+				`Audit ${JSON.stringify(taskName)} was abandoned (${abandonedStatePath(this.root, task)}). Choose a different task name.`,
+			);
+		}
+		for (const artifact of [join(".audit", `${task}.tsv`), join(".audit", `${task}.provenance.json`)]) {
 			try {
-				await ensureProvenance(this.runner, task, qualifiedSession(session), this.absolute(provenanceRel));
-				hasProvenance = true;
+				await access(this.absolute(artifact));
+				throw new Error(`Cannot start ${JSON.stringify(taskName)}: existing artifact has no lifecycle state: ${artifact}`);
 			} catch (error: any) {
-				provenanceError = String(error?.message ?? error);
+				if (error?.code !== "ENOENT") throw error;
 			}
-			// If a racing log appeared after the orphan check, createLog fails and
-			// leaves both artifacts visible rather than attaching to them.
-			await this.store.createLog(this.absolute(logRel));
-			const file: ActiveAuditFile = {
-				version: 2,
-				task,
-				taskName,
-				auditId: randomUUID(),
-				logPath: logRel,
-				provenancePath: hasProvenance ? provenanceRel : undefined,
-				startedAt: this.now().toISOString(),
+		}
+	}
+
+	/** Shared creation body for start and rollover; must run under the lock. */
+	private async createAudit(
+		task: string,
+		taskName: string,
+		session: SessionIdentity,
+		rolloverFrom?: RolloverLink,
+	): Promise<AuditLifecycleResult> {
+		await this.assertTaskAvailable(task, taskName);
+		const logRel = join(".audit", `${task}.tsv`);
+		const provenanceRel = join(".audit", `${task}.provenance.json`);
+		let provenanceError: string | undefined;
+		let hasProvenance = false;
+		try {
+			await ensureProvenance(this.runner, task, qualifiedSession(session), this.absolute(provenanceRel));
+			hasProvenance = true;
+		} catch (error: any) {
+			provenanceError = String(error?.message ?? error);
+		}
+		// If a racing log appeared after the orphan check, createLog fails and
+		// leaves both artifacts visible rather than attaching to them.
+		await this.store.createLog(this.absolute(logRel));
+		const file: ActiveAuditFile = {
+			version: 2,
+			task,
+			taskName,
+			auditId: randomUUID(),
+			logPath: logRel,
+			provenancePath: hasProvenance ? provenanceRel : undefined,
+			startedAt: this.now().toISOString(),
+			rolloverFrom,
+		};
+		await writeActiveAudit(this.root, file);
+		return { state: await this.stateFrom(file), provenanceError };
+	}
+
+	/**
+	 * True when the audit's immutable start commit is provably no longer an
+	 * ancestor of the worktree HEAD (a rebase rewrote the range). Undefined when
+	 * there is no provenance or Git cannot answer; callers must not treat
+	 * undefined as diverged.
+	 */
+	async provenanceDiverged(state: AuditState): Promise<boolean | undefined> {
+		if (!state.provenance) return undefined;
+		try {
+			const result = await this.runner.exec(
+				"git",
+				["merge-base", "--is-ancestor", state.provenance.startCommit, "HEAD"],
+				{ timeout: 10_000 },
+			);
+			if (result.code === 0) return false;
+			if (result.code === 1) return true;
+			return undefined;
+		} catch {
+			return undefined;
+		}
+	}
+
+	/**
+	 * Explicit rebase rollover: archive the ancestry-diverged active audit as an
+	 * immutable abandoned segment and start a linked successor with fresh
+	 * provenance at the current HEAD. Refuses while the start commit still
+	 * descends into HEAD — a publishable audit must publish and close normally.
+	 * Never rewrites the predecessor's TSV, provenance, or review artifacts.
+	 */
+	async rollover(
+		taskInput: string,
+		session: SessionIdentity,
+		reason: string,
+		successorInput?: string,
+	): Promise<RolloverResult> {
+		const { task, taskName } = this.taskIdentity(taskInput);
+		const trimmedReason = reason.trim();
+		if (!trimmedReason) throw new Error("Rollover requires a non-empty reason");
+		const successor = this.taskIdentity(successorInput?.trim() || `${taskName} (rebased)`);
+		if (successor.task === task) {
+			throw new Error(`Successor task ${JSON.stringify(successor.taskName)} maps to the same slug as the audit being rolled over.`);
+		}
+		return this.lock(async () => {
+			const file = await readActiveAudit(this.root);
+			if (!file) throw new Error("No audit is active.");
+			this.assertTaskIdentity(file, task, taskName, "roll over");
+			const state = await this.stateFrom(file);
+			if (!state.provenance) {
+				throw new Error("This audit has no Git provenance; rollover requires a recorded start commit.");
+			}
+			const diverged = await this.provenanceDiverged(state);
+			if (diverged === false) {
+				throw new Error(
+					`Start commit ${state.provenance.startCommit.slice(0, 12)} is still an ancestor of HEAD; publish and close this audit normally instead of rolling over.`,
+				);
+			}
+			if (diverged === undefined) {
+				throw new Error(
+					"Could not verify ancestry against HEAD (Git unavailable or start commit unknown); rollover refuses to archive a possibly publishable audit.",
+				);
+			}
+			const headResult = await this.runner.exec("git", ["rev-parse", "HEAD"], { timeout: 10_000 });
+			const head = headResult.code === 0 ? headResult.stdout.trim() : "";
+			const branchResult = await this.runner.exec("git", ["branch", "--show-current"], { timeout: 10_000 });
+			const branch = branchResult.code === 0 ? branchResult.stdout.trim() : "";
+			const rows = await readRows(state.logPath);
+			const record: AbandonmentRecord = {
+				at: this.now().toISOString(),
+				reason: trimmedReason,
+				session: qualifiedSession(session),
+				branch: branch || undefined,
+				head: head || undefined,
+				unresolvedIds: summarize(rows).unresolved.map((row) => row.id),
+				review: file.review?.verdict ?? "none",
 			};
-			await writeActiveAudit(this.root, file);
-			return { state: await this.stateFrom(file), provenanceError };
+			const link: RolloverLink = {
+				auditId: file.auditId,
+				task: file.task,
+				taskName: file.taskName,
+				startCommit: state.provenance.startCommit,
+				head: head || "unknown",
+				abandonedAt: record.at,
+			};
+			// Verify the successor slug is claimable before archiving the
+			// predecessor, so a name collision cannot strand the worktree between
+			// audits. A later createAudit failure still leaves the predecessor
+			// safely archived and the successor startable manually.
+			await this.assertTaskAvailable(successor.task, successor.taskName);
+			await abandonActiveAudit(this.root, file, record);
+			const result = await this.createAudit(successor.task, successor.taskName, session, link);
+			return {
+				...result,
+				abandonedTask: file.task,
+				abandonedPath: abandonedStatePath(this.root, file.task),
+				link,
+			};
 		});
 	}
 

@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
-import type { ReviewSnapshot } from "./types.ts";
+import type { AbandonmentRecord, ReviewSnapshot, RolloverLink } from "./types.ts";
 
 /**
  * Authoritative active-audit state for one Git worktree. All harness sessions
@@ -24,6 +24,10 @@ interface AuditFileFields {
 	lastReopenedAt?: string;
 	reopenCount?: number;
 	review?: ReviewSnapshot;
+	/** Append-only terminal records; present once the audit has been abandoned. */
+	abandonments?: AbandonmentRecord[];
+	/** Present on a successor audit created by a rebase rollover. */
+	rolloverFrom?: RolloverLink;
 }
 
 /** Version 2 adds the exact user-facing task name and lifecycle metadata. */
@@ -41,6 +45,10 @@ export function activeStatePath(root: string): string {
 
 export function closedStatePath(root: string, task: string): string {
 	return join(root, ".audit", `${task}.closed.json`);
+}
+
+export function abandonedStatePath(root: string, task: string): string {
+	return join(root, ".audit", `${task}.abandoned.json`);
 }
 
 export function isClosedStatePath(root: string, path: string): boolean {
@@ -79,6 +87,10 @@ export function readClosedAudit(root: string, task: string): Promise<ActiveAudit
 	return readAuditState(closedStatePath(root, task));
 }
 
+export function readAbandonedAudit(root: string, task: string): Promise<ActiveAuditFile | undefined> {
+	return readAuditState(abandonedStatePath(root, task));
+}
+
 export function writeActiveAudit(root: string, file: ActiveAuditFile): Promise<void> {
 	return writeAuditState(activeStatePath(root), file);
 }
@@ -93,6 +105,23 @@ export async function closeActiveAudit(root: string, file: ActiveAuditFile, at: 
 	await writeActiveAudit(root, closed);
 	await rename(activeStatePath(root), closedStatePath(root, file.task));
 	return closed;
+}
+
+/**
+ * Active -> abandoned transition: the audit terminates without review
+ * approval or publication. Same metadata-first + rename pattern as close, so
+ * a failed rename leaves the audit active for a safe retry. TSV, provenance,
+ * and review artifacts are never touched.
+ */
+export async function abandonActiveAudit(
+	root: string,
+	file: ActiveAuditFile,
+	record: AbandonmentRecord,
+): Promise<ActiveAuditFile> {
+	const abandoned = { ...file, abandonments: [...(file.abandonments ?? []), record] };
+	await writeActiveAudit(root, abandoned);
+	await rename(activeStatePath(root), abandonedStatePath(root, file.task));
+	return abandoned;
 }
 
 /** Atomic inverse of closeActiveAudit for an explicitly requested reopen. */

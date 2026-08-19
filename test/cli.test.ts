@@ -133,6 +133,12 @@ test("cli rejects invalid input with clear errors", async () => {
 		assert.equal(await runCli(["-C", root, "publish"], io), 1);
 		assert.match(io.stderr.join("\n"), /no Git provenance/);
 
+		const badRollover = capture();
+		assert.equal(await runCli(["-C", root, "rollover"], badRollover), 1);
+		assert.match(badRollover.stderr.join("\n"), /Usage: audit-trail rollover/);
+		assert.equal(await runCli(["-C", root, "rollover", "task", "--reason", "rebase"], badRollover), 1);
+		assert.match(badRollover.stderr.join("\n"), /no Git provenance/);
+
 		const badPublish = capture();
 		assert.equal(await runCli(["-C", root, "publish", "1", "2"], badPublish), 1);
 		assert.match(badPublish.stderr.join("\n"), /at most one PR/);

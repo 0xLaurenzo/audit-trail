@@ -287,6 +287,16 @@ export const AuditTrailPlugin = async ({ client, directory, runner: runnerOverri
 					return `Review saved: ${review.reviewPath} (${review.model}, ${review.mode}; ${review.rowCount} rows reviewed, verdict: approve)`;
 				},
 			}),
+			audit_rollover: tool({
+				description:
+					"Archive a rebase-diverged audit as an immutable abandoned segment and start a linked successor at the current HEAD. Refuses while the start commit is still an ancestor of HEAD.",
+				args: {
+					task: z.string().describe("Exact task name of the active audit being rolled over"),
+					reason: z.string().describe("Why the audit cannot publish from its original start commit"),
+					name: z.string().optional().describe("Successor task name; defaults to '<task> (rebased)'"),
+				},
+				execute: async (args, context) => (await server(context)).call("audit_rollover", args),
+			}),
 			audit_publish: tool({
 				description:
 					"Create or update this author's aggregate audit comment set on the current checked-out branch's pull request.",

@@ -253,10 +253,49 @@ export default function auditTrailExtension(pi: ExtensionAPI) {
 			const stats = summarize(rows);
 			updateStatus(ctx, state, rows);
 			const currentSha = await wf.currentSha(state);
+			const diverged = await wf.provenanceDiverged(state);
 			ctx.ui.notify(
-				formatStatusLines(state, rows, currentSha, wf.root).join("\n"),
+				formatStatusLines(state, rows, currentSha, wf.root, diverged).join("\n"),
 				stats.unresolved.length || stats.lowConfidence.length || stats.missingEvidence.length ? "warning" : "info",
 			);
+		},
+	});
+
+	pi.registerCommand("audit-rollover", {
+		description: "Archive a rebase-diverged audit and start a linked successor: /audit-rollover <exact-task> --reason <text> [--name <successor>]",
+		handler: async (args, ctx) => {
+			let parsed: ReturnType<typeof parseArgs>;
+			try {
+				parsed = parseArgs({
+					args: args.trim() ? args.trim().split(/\s+/) : [],
+					options: { reason: { type: "string" }, name: { type: "string" } },
+					allowPositionals: true,
+					strict: true,
+				});
+			} catch (error: any) {
+				ctx.ui.notify(`Invalid rollover arguments: ${error?.message ?? error}`, "error");
+				return;
+			}
+			try {
+				const wf = await workflow(ctx);
+				const result = await wf.rollover(
+					parsed.positionals.join(" ").trim(),
+					sessionIdentity(ctx),
+					String(parsed.values.reason ?? ""),
+					typeof parsed.values.name === "string" ? parsed.values.name : undefined,
+				);
+				ctx.ui.notify(
+					[
+						`Archived ${result.abandonedTask} as abandoned (no review approval or publication)`,
+						`Started linked audit: ${displayPath(result.state.logPath, wf.root)}`,
+						`Record one decision citing git range-diff ${result.link.startCommit.slice(0, 12)}..${result.link.head.slice(0, 12)} evidence for the rebase.`,
+					].join("\n"),
+					"info",
+				);
+				if (result.provenanceError) ctx.ui.notify(`Provenance unavailable: ${result.provenanceError}`, "warning");
+			} catch (error: any) {
+				ctx.ui.notify(`Audit rollover failed: ${error?.message ?? error}`, "error");
+			}
 		},
 	});
 

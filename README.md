@@ -106,6 +106,7 @@ audit-trail decision --phase core --origin "implementation discovery" \
   --decision "..." --why "..." --confidence high --evidence "file:1" --result verified
 audit-trail status
 audit-trail review <provider/model> --mode cross-provider|cross-model|same-model
+audit-trail rollover <task> --reason "<text>" [--name <successor-task>]
 audit-trail publish [pr-number-or-url] [--set <comment-set-id>]
 audit-trail close
 ```
@@ -197,6 +198,7 @@ export { AuditTrailPlugin } from "/path/to/audit-trail/src/adapters/opencode.ts"
 - `/audit-reopen <task>` — explicitly restore the exact matching closed lifecycle
 - `/audit-status` — show unresolved, low-confidence, and unsupported decisions, plus review freshness
 - `/audit-review [provider/model]` — review the log and pi session, preferring a cross-provider model
+- `/audit-rollover <task> --reason <text> [--name <successor>]` — archive a rebase-diverged audit as an immutable abandoned segment and start a linked successor at the current HEAD
 - `/audit-publish [number-or-url] [--set set-id]` — add or replace this audit in the authenticated author's aggregate comment set on the current branch's PR
 - `/audit-close` — close only after all active rows are resolved and the latest audit bytes have been reviewed
 
@@ -239,6 +241,10 @@ The reviewer must finish with `VERDICT: approve` or `VERDICT: block`. The parser
 ## Publish to a pull request
 
 The audit captures its original branch and starting commit once and preserves them as immutable provenance. You may create or switch to the feature branch after starting; publication uses the current checked-out branch (or an explicit PR selector) and verifies that a later PR head descends from the pinned start commit.
+
+### Rebase rollover
+
+A rebase rewrites ancestry, so an audit started before the rebase can never publish: its pinned start commit is no longer an ancestor of any PR head. `audit-trail status` detects this early (`provenance diverged: rollover required`) via a local `git merge-base --is-ancestor` check. `audit-trail rollover <task> --reason "<text>"` then archives the active audit as an immutable `.audit/<task>.abandoned.json` segment — recording reason, session, branch/HEAD, unresolved decisions, and review state, and explicitly never implying review approval or publication — and starts a linked successor audit (default name `<task> (rebased)`) with fresh provenance pinned to the post-rebase HEAD. The successor records a `rolloverFrom` link (predecessor audit ID, task, and `startCommit..head` range) shown in status, and publishes normally through the unchanged ancestry guard. Rollover refuses while the start commit still descends into HEAD, when ancestry cannot be verified, and when the successor name collides with existing artifacts — checked before anything is archived. Patch equivalence is deliberately human-verified: record one decision in the successor citing `git range-diff` evidence, where the independent reviewer will see it. The predecessor's TSV, provenance, and review artifacts are never modified; an abandoned slug cannot be restarted.
 
 After reviewing the latest decisions, publish to the pull request associated with the current checked-out branch:
 
