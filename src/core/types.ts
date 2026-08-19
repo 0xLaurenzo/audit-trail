@@ -88,6 +88,34 @@ export interface GitProvenance {
 	sessionId: string;
 }
 
+/**
+ * Terminal record for an audit archived without review approval or
+ * publication. Append-only: re-abandonment after a reopen appends another
+ * record rather than rewriting history.
+ */
+export interface AbandonmentRecord {
+	at: string;
+	reason: string;
+	session: string;
+	branch?: string;
+	head?: string;
+	unresolvedIds: string[];
+	/** Review state at abandonment; never implies publication. */
+	review: "approve" | "block" | "none";
+}
+
+/** Link from a post-rebase successor audit to its archived predecessor. */
+export interface RolloverLink {
+	auditId?: string;
+	task: string;
+	taskName?: string;
+	/** The predecessor's immutable pre-rebase start commit. */
+	startCommit: string;
+	/** Worktree HEAD at rollover time. */
+	head: string;
+	abandonedAt: string;
+}
+
 export interface AuditState {
 	/** Filesystem-safe task slug. */
 	task: string;
@@ -99,6 +127,8 @@ export interface AuditState {
 	provenancePath?: string;
 	provenance?: GitProvenance;
 	review?: ReviewSnapshot;
+	/** Present on a successor audit created by a rebase rollover. */
+	rolloverFrom?: RolloverLink;
 }
 
 export interface AuditStats {

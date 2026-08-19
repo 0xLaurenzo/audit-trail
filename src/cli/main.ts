@@ -40,6 +40,8 @@ Commands:
   decision           Append one decision row (see options below)
   status             Show audit status and unresolved decision IDs
   review <model>     Run an independent review with <provider/model>
+  rollover <task>    Archive a rebase-diverged audit; start a linked successor
+                     (--reason <text> required, --name <successor-task> optional)
   publish [pr]       Create/update an aggregate audit set (--set <set-id>)
   close              Close the audit once resolved and reviewed
   mcp                Serve the audit tools as a local MCP server on stdio
@@ -191,7 +193,25 @@ async function commandStatus(workflow: AuditWorkflow, io: CliIo): Promise<number
 	const state = await requireActive(workflow);
 	const rows = await workflow.rows(state);
 	const currentSha = await workflow.currentSha(state);
-	for (const line of formatStatusLines(state, rows, currentSha, workflow.root)) io.out(line);
+	const diverged = await workflow.provenanceDiverged(state);
+	for (const line of formatStatusLines(state, rows, currentSha, workflow.root, diverged)) io.out(line);
+	return 0;
+}
+
+async function commandRollover(workflow: AuditWorkflow, args: string[], io: CliIo): Promise<number> {
+	const parsed = parseArgs({
+		args,
+		options: { reason: { type: "string" }, name: { type: "string" } },
+		allowPositionals: true,
+		strict: true,
+	});
+	const task = parsed.positionals.join(" ").trim();
+	if (!task) throw new Error("Usage: audit-trail rollover <exact-task> --reason <text> [--name <successor-task>]");
+	const result = await workflow.rollover(task, cliSession(), parsed.values.reason ?? "", parsed.values.name);
+	io.out(`Archived ${result.abandonedTask} as abandoned (no review approval or publication): ${displayPath(result.abandonedPath, workflow.root)}`);
+	io.out(`Started linked audit: ${displayPath(result.state.logPath, workflow.root)}`);
+	io.out(`Record one decision in the new audit citing \`git range-diff ${result.link.startCommit.slice(0, 12)}..${result.link.head.slice(0, 12)}\` evidence for the rebase.`);
+	if (result.provenanceError) io.err(`Provenance unavailable: ${result.provenanceError}`);
 	return 0;
 }
 
@@ -437,6 +457,8 @@ export async function runCli(
 				return await commandStatus(workflow, io);
 			case "review":
 				return await commandReview(workflow, args, io, dependencies);
+			case "rollover":
+				return await commandRollover(workflow, args, io);
 			case "publish":
 				return await commandPublish(workflow, args, io);
 			case "close":
