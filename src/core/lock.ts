@@ -9,8 +9,8 @@ export interface WorktreeLockOptions {
 	timeoutMs?: number;
 	/**
 	 * A held lock older than this is considered abandoned. Keep this well above
-	 * the longest expected hold: a live same-host owner is detected via its PID,
-	 * but cross-host expiry relies on age alone.
+	 * the longest expected hold: a live same-PID-scope owner is detected via its
+	 * PID, but cross-scope expiry relies on age alone.
 	 */
 	staleMs?: number;
 	/** Poll interval while waiting. */
@@ -23,12 +23,12 @@ interface LockOwner {
 	pid: number;
 	/** Diagnostic only; never used for ownership or reclamation. */
 	hostname: string;
-	/** PID-probe validity domain; kill(pid, 0) evidence counts only within it. */
-	scope: string;
+	/** PID-probe validity domain; absent when strong scope evidence is unavailable. */
+	scope?: string;
 	acquiredAt: string;
 }
 
-let cachedScope: string | undefined;
+let cachedScope: string | null | undefined;
 
 /**
  * Identity of the space in which this process's PIDs are meaningful. On Linux
@@ -36,19 +36,21 @@ let cachedScope: string | undefined;
  * one host (same kernel, different namespaces) never treat each other's PIDs
  * as probe-able — a live foreign lock must age out via staleMs instead of
  * being reclaimed on false ESRCH evidence. Elsewhere PID namespaces do not
- * exist and the hostname preserves the previous same-host fast path.
+ * exist, or either `/proc` value is unavailable, no scope is claimed and
+ * staleMs is the only reclamation path. Hostname is diagnostic data, not
+ * proof that another process's PID is visible.
  */
-export function processScope(): string {
+export function processScope(): string | undefined {
 	if (cachedScope === undefined) {
 		try {
 			const bootId = readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
 			const pidNamespace = readlinkSync("/proc/self/ns/pid");
-			cachedScope = `linux:${bootId}:${pidNamespace}`;
+			cachedScope = bootId && pidNamespace ? `linux:${bootId}:${pidNamespace}` : null;
 		} catch {
-			cachedScope = `host:${hostname()}`;
+			cachedScope = null;
 		}
 	}
-	return cachedScope;
+	return cachedScope ?? undefined;
 }
 
 function sleep(ms: number): Promise<void> {
@@ -148,7 +150,8 @@ async function reclaimIfStale(lockDir: string, staleMs: number): Promise<boolean
 		// (e.g. two containers both named "localhost") must never qualify.
 		// Outside the scope, and for recycled PIDs that merely look alive,
 		// age-based expiry is the only reclamation path.
-		const dead = owner.scope === processScope() && Number.isInteger(owner.pid) && !pidAlive(owner.pid);
+		const scope = processScope();
+		const dead = scope !== undefined && owner.scope === scope && Number.isInteger(owner.pid) && !pidAlive(owner.pid);
 		const expired = Number.isFinite(age) && age > staleMs;
 		if (dead || expired) return removeLockIfOwnerMatches(lockDir, raw);
 		return false;
@@ -167,7 +170,7 @@ async function reclaimIfStale(lockDir: string, staleMs: number): Promise<boolean
 
 /**
  * Cross-process mutual exclusion for one Git worktree's `.audit/` state.
- * Acquisition is an atomic `mkdir`; abandoned locks (dead same-host owner or
+ * Acquisition is an atomic `mkdir`; abandoned locks (dead same-scope owner or
  * expired age) are reclaimed so a crashed harness cannot wedge the audit.
  */
 export async function withWorktreeLock<T>(

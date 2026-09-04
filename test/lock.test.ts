@@ -21,16 +21,20 @@ async function plantLock(root: string, owner: PlantedOwner): Promise<void> {
 	await writeFile(join(lockDir, "owner.json"), JSON.stringify({ token: "planted-token", scope: processScope(), ...owner }), "utf8");
 }
 
-test("a lock held by a dead same-scope process is reclaimed", async () => {
-	const root = await mkdtemp(join(tmpdir(), "audit-lock-test-"));
-	try {
-		await plantLock(root, { pid: 999_999_999, hostname: hostname(), acquiredAt: new Date().toISOString() });
-		const result = await withWorktreeLock(root, async () => "ran", { timeoutMs: 2_000 });
-		assert.equal(result, "ran");
-	} finally {
-		await rm(root, { recursive: true, force: true });
-	}
-});
+test(
+	"a lock held by a dead same-scope process is reclaimed",
+	{ skip: processScope() === undefined ? "strong PID scope evidence unavailable" : false },
+	async () => {
+		const root = await mkdtemp(join(tmpdir(), "audit-lock-test-"));
+		try {
+			await plantLock(root, { pid: 999_999_999, hostname: hostname(), acquiredAt: new Date().toISOString() });
+			const result = await withWorktreeLock(root, async () => "ran", { timeoutMs: 2_000 });
+			assert.equal(result, "ran");
+		} finally {
+			await rm(root, { recursive: true, force: true });
+		}
+	},
+);
 
 test("a dead-looking PID from another scope is never fast-reclaimed", async () => {
 	const root = await mkdtemp(join(tmpdir(), "audit-lock-test-"));
@@ -55,7 +59,25 @@ test("a dead-looking PID from another scope is never fast-reclaimed", async () =
 	}
 });
 
-test("acquisition records a random token and the process scope", async () => {
+test("a lock without strong scope evidence is never fast-reclaimed", async () => {
+	const root = await mkdtemp(join(tmpdir(), "audit-lock-test-"));
+	try {
+		await plantLock(root, {
+			pid: 999_999_999,
+			hostname: hostname(),
+			scope: undefined,
+			acquiredAt: new Date().toISOString(),
+		});
+		await assert.rejects(
+			() => withWorktreeLock(root, async () => "ran", { timeoutMs: 250, pollMs: 25 }),
+			/Timed out waiting for the audit lock/,
+		);
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+test("acquisition records a random token and the process scope when available", async () => {
 	const root = await mkdtemp(join(tmpdir(), "audit-lock-test-"));
 	try {
 		let owner: any;
