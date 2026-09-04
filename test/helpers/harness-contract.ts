@@ -135,6 +135,13 @@ export function registerHarnessConformance({ harness, capabilities, createDriver
 		assert.equal(unrelated.blocked, false);
 	});
 
+	gated("managedFileGuard", "blocks direct writes anywhere under .audit even while idle", async (driver, root) => {
+		const managed = await driver.attemptWrite(join(root, ".audit", "archived.tsv"));
+		assert.equal(managed.blocked, true, "terminal and future audit artifacts stay managed without active.json");
+		assert.match(managed.reason ?? "", /extension-managed|lifecycle tools/);
+		assert.equal((await driver.attemptWrite(join(root, "src", "ok.ts"))).blocked, false);
+	});
+
 	gated("managedFileGuard", "fails closed over .audit when active state is unreadable", async (driver, root) => {
 		await driver.start(TASK);
 		await corruptActiveState(root);

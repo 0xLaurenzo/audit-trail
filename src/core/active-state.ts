@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { basename, dirname, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { AbandonmentRecord, ReviewSnapshot, RolloverLink } from "./types.ts";
 
 /**
@@ -51,8 +51,10 @@ export function abandonedStatePath(root: string, task: string): string {
 	return join(root, ".audit", `${task}.abandoned.json`);
 }
 
-export function isClosedStatePath(root: string, path: string): boolean {
-	return resolve(dirname(path)) === resolve(root, ".audit") && basename(path).endsWith(".closed.json");
+/** Agent file tools must never mutate audit-owned state or artifacts directly. */
+export function isAuditManagedPath(root: string, path: string): boolean {
+	const rel = relative(resolve(root, ".audit"), resolve(path));
+	return rel === "" || (!isAbsolute(rel) && rel !== ".." && !rel.startsWith(`..${sep}`));
 }
 
 async function readAuditState(path: string): Promise<ActiveAuditFile | undefined> {
@@ -108,8 +110,8 @@ export async function closeActiveAudit(root: string, file: ActiveAuditFile, at: 
 }
 
 /**
- * Active -> abandoned transition: the audit terminates without review
- * approval or publication. Same metadata-first + rename pattern as close, so
+ * Active -> abandoned transition: the audit terminates without implying
+ * review approval or publication. Same metadata-first + rename pattern as close, so
  * a failed rename leaves the audit active for a safe retry. TSV, provenance,
  * and review artifacts are never touched.
  */

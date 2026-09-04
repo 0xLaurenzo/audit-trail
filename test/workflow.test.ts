@@ -18,7 +18,7 @@ import {
 import type { CommandRunner } from "../src/core/ports.ts";
 import { formatStatusLines } from "../src/core/status.ts";
 import { AUDIT_HEADER, type NewAuditRow } from "../src/core/types.ts";
-import { AuditWorkflow, resolveWorktreeRoot } from "../src/core/workflow.ts";
+import { AuditWorkflow, ROLLOVER_RANGE_DIFF_GUIDANCE, resolveWorktreeRoot } from "../src/core/workflow.ts";
 
 const run = promisify(execFile);
 const noGit: CommandRunner = {
@@ -287,6 +287,13 @@ function scriptedGit(root: string, overrides: Record<string, { code: number; std
 		},
 	};
 }
+
+test("rollover guidance requires two explicit range-diff ranges", () => {
+	assert.match(
+		ROLLOVER_RANGE_DIFF_GUIDANCE,
+		/git range-diff <old-base>\.\.<old-tip> <new-base>\.\.<new-tip>/,
+	);
+});
 
 test("provenanceDiverged distinguishes intact, rewritten, and unverifiable ancestry", async () => {
 	const root = await mkdtemp(join(tmpdir(), "audit-workflow-test-"));

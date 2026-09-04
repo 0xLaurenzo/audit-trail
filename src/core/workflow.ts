@@ -69,6 +69,9 @@ export interface CloseAuditResult {
 	closed: boolean;
 }
 
+export const ROLLOVER_RANGE_DIFF_GUIDANCE =
+	"Record one decision in the new audit citing valid git range-diff <old-base>..<old-tip> <new-base>..<new-tip> evidence for the rebase.";
+
 export interface RolloverResult extends AuditLifecycleResult {
 	/** Slug of the archived predecessor audit. */
 	abandonedTask: string;

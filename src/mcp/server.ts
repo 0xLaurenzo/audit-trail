@@ -16,7 +16,7 @@ import {
 	type NewAuditRow,
 	type ReviewMode,
 } from "../core/types.ts";
-import type { AuditWorkflow } from "../core/workflow.ts";
+import { ROLLOVER_RANGE_DIFF_GUIDANCE, type AuditWorkflow } from "../core/workflow.ts";
 import { readFile } from "node:fs/promises";
 
 /** Newest first; initialize echoes the client's version when supported. */
@@ -273,9 +273,9 @@ export class McpAuditServer {
 					optionalString(args, "name"),
 				);
 				return [
-					`Archived ${result.abandonedTask} as abandoned (no review approval or publication): ${result.abandonedPath}`,
+					`Archived ${result.abandonedTask} as abandoned (this state does not imply review approval or publication): ${result.abandonedPath}`,
 					`Started linked audit: ${result.state.logPath}`,
-					`Record one decision in the new audit citing git range-diff ${result.link.startCommit.slice(0, 12)}..${result.link.head.slice(0, 12)} evidence for the rebase.`,
+					ROLLOVER_RANGE_DIFF_GUIDANCE,
 					...(result.provenanceError ? [`Provenance unavailable: ${result.provenanceError}`] : []),
 				].join("\n");
 			}

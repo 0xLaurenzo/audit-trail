@@ -20,7 +20,7 @@ import {
 	type NewAuditRow,
 	type ReviewMode,
 } from "../core/types.ts";
-import { AuditWorkflow, resolveWorktreeRoot } from "../core/workflow.ts";
+import { AuditWorkflow, ROLLOVER_RANGE_DIFF_GUIDANCE, resolveWorktreeRoot } from "../core/workflow.ts";
 import { handleClaudeHook } from "../adapters/claude-hook.ts";
 import { createClaudeSubprocessReviewer } from "../adapters/claude-reviewer.ts";
 import { readClaudeSessionState } from "../adapters/claude-session.ts";
@@ -208,9 +208,9 @@ async function commandRollover(workflow: AuditWorkflow, args: string[], io: CliI
 	const task = parsed.positionals.join(" ").trim();
 	if (!task) throw new Error("Usage: audit-trail rollover <exact-task> --reason <text> [--name <successor-task>]");
 	const result = await workflow.rollover(task, cliSession(), parsed.values.reason ?? "", parsed.values.name);
-	io.out(`Archived ${result.abandonedTask} as abandoned (no review approval or publication): ${displayPath(result.abandonedPath, workflow.root)}`);
+	io.out(`Archived ${result.abandonedTask} as abandoned (this state does not imply review approval or publication): ${displayPath(result.abandonedPath, workflow.root)}`);
 	io.out(`Started linked audit: ${displayPath(result.state.logPath, workflow.root)}`);
-	io.out(`Record one decision in the new audit citing \`git range-diff ${result.link.startCommit.slice(0, 12)}..${result.link.head.slice(0, 12)}\` evidence for the rebase.`);
+	io.out(ROLLOVER_RANGE_DIFF_GUIDANCE);
 	if (result.provenanceError) io.err(`Provenance unavailable: ${result.provenanceError}`);
 	return 0;
 }

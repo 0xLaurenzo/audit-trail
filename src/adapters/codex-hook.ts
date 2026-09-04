@@ -1,10 +1,9 @@
 import { realpath } from "node:fs/promises";
-import { basename, dirname, resolve, sep } from "node:path";
+import { basename, dirname, resolve } from "node:path";
 import {
 	AuditWorkflow,
-	activeStatePath,
 	buildActiveAuditGuidance,
-	isClosedStatePath,
+	isAuditManagedPath,
 	resolveWorktreeRoot,
 	type AuditState,
 	type CommandRunner,
@@ -132,26 +131,13 @@ export async function handleCodexHook(
 		const targets = await Promise.all(patchTargets(input, cwd).map(canonicalPath));
 		const auditRoot = await canonicalPath(resolve(lookup.root, ".audit"));
 		const mentionsAudit = /(?:^|[\\/])\.audit[\\/]/m.test(rawCommand);
-		if (lookup.error) {
-			if (mentionsAudit || targets.some((target) => target === auditRoot || target.startsWith(`${auditRoot}${sep}`))) {
-				return deny(`Audit state is unreadable (${lookup.error}); refusing writes under .audit/.`);
-			}
-			return { exitCode: 0 };
-		}
-		if (targets.some((target) => isClosedStatePath(dirname(auditRoot), target))) {
-			return deny("Closed audit lifecycle state is extension-managed; use audit_reopen.");
-		}
-		if (!lookup.state) return { exitCode: 0 };
-		const protectedPaths = [lookup.state.logPath, lookup.state.provenancePath, activeStatePath(lookup.root)].filter(
-			(path): path is string => Boolean(path),
+		const targetsAudit = targets.some((target) => isAuditManagedPath(dirname(auditRoot), target));
+		if (!targetsAudit && (targets.length || !mentionsAudit)) return { exitCode: 0 };
+		return deny(
+			lookup.error
+				? `Audit state is unreadable (${lookup.error}); refusing writes under .audit/.`
+				: "Audit artifacts are extension-managed; use audit lifecycle tools instead of editing .audit directly.",
 		);
-		const canonicalProtected = await Promise.all(protectedPaths.map(canonicalPath));
-		if (targets.some((target) => canonicalProtected.includes(target))) {
-			return deny("Audit state and Git provenance are extension-managed; use the audit_decision tool for corrections.");
-		}
-		if (!targets.length && mentionsAudit) {
-			return deny("Could not identify the audit patch target safely; use the audit_decision tool for audit changes.");
-		}
 	}
 
 	return { exitCode: 0 };

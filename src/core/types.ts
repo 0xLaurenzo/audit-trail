@@ -89,7 +89,7 @@ export interface GitProvenance {
 }
 
 /**
- * Terminal record for an audit archived without review approval or
+ * Terminal record for an audit archived without implying review approval or
  * publication. Append-only: re-abandonment after a reopen appends another
  * record rather than rewriting history.
  */
