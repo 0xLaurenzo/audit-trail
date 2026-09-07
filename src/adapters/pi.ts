@@ -7,14 +7,14 @@ import { Type } from "typebox";
 import {
 	AuditWorkflow,
 	ORIGIN_VALUES,
-	activeStatePath,
+	ROLLOVER_RANGE_DIFF_GUIDANCE,
 	buildActiveAuditGuidance,
 	buildReviewerCandidates,
 	resolveWorktreeRoot,
 	displayPath,
 	formatBlockingReviewMessage,
 	formatStatusLines,
-	isClosedStatePath,
+	isAuditManagedPath,
 	publishRawAudit,
 	runIndependentReview,
 	sha256Hex,
@@ -141,31 +141,16 @@ export default function auditTrailExtension(pi: ExtensionAPI) {
 
 	pi.on("tool_call", async (event, ctx) => {
 		if (event.toolName !== "write" && event.toolName !== "edit") return;
-		const { wf, state, error } = await activeState(ctx);
+		const { wf, error } = await activeState(ctx);
 		const input = event.input as { path?: unknown };
 		const inputPath = typeof input.path === "string" ? resolve(ctx.cwd, input.path) : undefined;
-		if (!inputPath) return;
-		if (error) {
-			// Fail closed: with unreadable active-audit state, protect the whole
-			// .audit directory instead of silently disabling the guard.
-			if (inputPath.startsWith(`${resolve(wf.root, ".audit")}/`)) {
-				return { block: true, reason: `Audit state is unreadable (${error}); refusing writes under .audit/.` };
-			}
-			return;
-		}
-		if (isClosedStatePath(wf.root, inputPath)) {
-			return { block: true, reason: "Closed audit lifecycle state is extension-managed; use audit_reopen." };
-		}
-		if (!state) return;
-		const protectedPaths = [state.logPath, state.provenancePath, activeStatePath(wf.root)].filter(
-			(path): path is string => Boolean(path),
-		);
-		if (protectedPaths.some((path) => inputPath === resolve(path))) {
-			return {
-				block: true,
-				reason: "Audit state and Git provenance are extension-managed; use audit_decision for corrections.",
-			};
-		}
+		if (!inputPath || !isAuditManagedPath(wf.root, inputPath)) return;
+		return {
+			block: true,
+			reason: error
+				? `Audit state is unreadable (${error}); refusing writes under .audit/.`
+				: "Audit artifacts are extension-managed; use audit lifecycle tools instead of editing .audit directly.",
+		};
 	});
 
 	pi.registerTool({
@@ -253,10 +238,49 @@ export default function auditTrailExtension(pi: ExtensionAPI) {
 			const stats = summarize(rows);
 			updateStatus(ctx, state, rows);
 			const currentSha = await wf.currentSha(state);
+			const diverged = await wf.provenanceDiverged(state);
 			ctx.ui.notify(
-				formatStatusLines(state, rows, currentSha, wf.root).join("\n"),
+				formatStatusLines(state, rows, currentSha, wf.root, diverged).join("\n"),
 				stats.unresolved.length || stats.lowConfidence.length || stats.missingEvidence.length ? "warning" : "info",
 			);
+		},
+	});
+
+	pi.registerCommand("audit-rollover", {
+		description: "Archive a rebase-diverged audit and start a linked successor: /audit-rollover <exact-task> --reason <text> [--name <successor>]",
+		handler: async (args, ctx) => {
+			let parsed: ReturnType<typeof parseArgs>;
+			try {
+				parsed = parseArgs({
+					args: args.trim() ? args.trim().split(/\s+/) : [],
+					options: { reason: { type: "string" }, name: { type: "string" } },
+					allowPositionals: true,
+					strict: true,
+				});
+			} catch (error: any) {
+				ctx.ui.notify(`Invalid rollover arguments: ${error?.message ?? error}`, "error");
+				return;
+			}
+			try {
+				const wf = await workflow(ctx);
+				const result = await wf.rollover(
+					parsed.positionals.join(" ").trim(),
+					sessionIdentity(ctx),
+					String(parsed.values.reason ?? ""),
+					typeof parsed.values.name === "string" ? parsed.values.name : undefined,
+				);
+				ctx.ui.notify(
+					[
+						`Archived ${result.abandonedTask} as abandoned (this state does not imply review approval or publication)`,
+						`Started linked audit: ${displayPath(result.state.logPath, wf.root)}`,
+						ROLLOVER_RANGE_DIFF_GUIDANCE,
+					].join("\n"),
+					"info",
+				);
+				if (result.provenanceError) ctx.ui.notify(`Provenance unavailable: ${result.provenanceError}`, "warning");
+			} catch (error: any) {
+				ctx.ui.notify(`Audit rollover failed: ${error?.message ?? error}`, "error");
+			}
 		},
 	});
 

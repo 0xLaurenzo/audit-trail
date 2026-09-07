@@ -357,6 +357,11 @@ description: Run an independent review of the active decision audit
 ---
 ${OPENCODE_COMMAND_MARKER}Call the audit_review tool. If "$ARGUMENTS" is non-empty, pass it as the model argument (provider/model); otherwise omit model so a cross-provider reviewer is selected automatically. When Anthropic is cross-provider, prefer anthropic/claude-fable-5, then anthropic/claude-opus-5. The review may take several minutes. Report the tool output verbatim.
 `,
+	"audit-rollover": `---
+description: Archive a rebase-diverged audit and start a linked successor
+---
+${OPENCODE_COMMAND_MARKER}Call the audit_rollover tool. Parse "$ARGUMENTS" as the exact task name, a required --reason <text>, and an optional --name <successor-task>; pass them as task, reason, and name. Report the tool output verbatim, including the range-diff instruction.
+`,
 	"audit-publish": `---
 description: Publish the audit to the current branch's pull request
 ---

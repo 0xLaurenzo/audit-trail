@@ -337,7 +337,7 @@ test("the shipped plugin manifest, hooks, MCP config, and commands are consisten
 	assert.equal(mcp.mcpServers["audit-trail"].command, "${CLAUDE_PLUGIN_ROOT}/bin/audit-trail");
 	assert.deepEqual(mcp.mcpServers["audit-trail"].args, ["mcp", "--harness", "claude"]);
 
-	for (const name of ["audit-start", "audit-resume", "audit-reopen", "audit-status", "audit-review", "audit-publish", "audit-close"]) {
+	for (const name of ["audit-start", "audit-resume", "audit-reopen", "audit-status", "audit-review", "audit-rollover", "audit-publish", "audit-close"]) {
 		const command = await readFile(join(packageRoot, manifest.commands, `${name}.md`), "utf8");
 		assert.match(command, /^---\ndescription: /, `${name} has frontmatter`);
 		assert.match(command, new RegExp(`${name.replace("-", "_")} tool`), `${name} instructs its tool`);
