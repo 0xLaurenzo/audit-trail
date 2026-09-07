@@ -8,6 +8,7 @@ import { publishRawAudit } from "../core/github-publisher.ts";
 import { runIndependentReview } from "../core/independent-review.ts";
 import { displayPath } from "../core/paths.ts";
 import { formatBlockingReviewMessage } from "../core/review.ts";
+import { REVIEW_MODEL_ALLOWLIST, assertAllowedReviewModel } from "../core/reviewer-candidates.ts";
 import type { CommandRunner, ReviewerPort, SessionIdentity } from "../core/ports.ts";
 import { formatStatusLines } from "../core/status.ts";
 import { reviewBlocker } from "../core/validation.ts";
@@ -22,12 +23,17 @@ import {
 } from "../core/types.ts";
 import { AuditWorkflow, ROLLOVER_RANGE_DIFF_GUIDANCE, resolveWorktreeRoot } from "../core/workflow.ts";
 import { handleClaudeHook } from "../adapters/claude-hook.ts";
-import { createClaudeSubprocessReviewer } from "../adapters/claude-reviewer.ts";
+import { createClaudeSubprocessReviewer, selectClaudeReviewCandidates } from "../adapters/claude-reviewer.ts";
 import { readClaudeSessionState } from "../adapters/claude-session.ts";
 import { handleCodexHook } from "../adapters/codex-hook.ts";
 import { createCodexMcpHandler } from "../adapters/codex-mcp.ts";
 import { createPiSubprocessReviewer } from "../adapters/pi-reviewer.ts";
 import { McpAuditServer, serveStdio, type McpServerOptions } from "../mcp/server.ts";
+
+const CLAUDE_REVIEW_MODELS = REVIEW_MODEL_ALLOWLIST
+	.filter((entry) => entry.providers.some((provider) => provider === "anthropic"))
+	.map(({ model }) => model)
+	.join(", ");
 
 const HELP = `audit-trail — append-only decision auditing for one Git worktree
 
@@ -39,7 +45,7 @@ Commands:
   reopen <task>      Explicitly restore the matching closed audit
   decision           Append one decision row (see options below)
   status             Show audit status and unresolved decision IDs
-  review <model>     Run an independent review with <provider/model>
+  review <model>     Run an independent review with an allowed <provider/model>
   rollover <task>    Archive a rebase-diverged audit; start a linked successor
                      (--reason <text> required, --name <successor-task> optional)
   abandon <task>     Archive the audit without marking it reviewed, published, or complete
@@ -266,6 +272,7 @@ async function commandReview(
 		return 1;
 	}
 	const mode = oneOf(REVIEW_MODES, values.mode, "mode") as ReviewMode;
+	assertAllowedReviewModel(model);
 	await requireActive(workflow);
 	io.out(`Reviewing with ${model} (${mode})...`);
 	const review = await runIndependentReview({
@@ -315,6 +322,19 @@ async function commandMcp(
 				return { harness: "claude", id: state?.sessionId ?? cliSession().id };
 			},
 			reviewer: createClaudeSubprocessReviewer(runner),
+			reviewCandidates: async (reviewArgs) => {
+				const state = await readClaudeSessionState(workflow.root);
+				return selectClaudeReviewCandidates(reviewArgs.model, state?.model);
+			},
+			reviewTool: {
+				description: `Run an independent Claude review. Omit model to try the fixed allowed order (${CLAUDE_REVIEW_MODELS}); mode is derived against the captured working model.`,
+				inputSchema: {
+					type: "object",
+					properties: {
+						model: { type: "string", description: `Optional allowed Anthropic model ID: ${CLAUDE_REVIEW_MODELS}` },
+					},
+				},
+			},
 			reviewTranscriptPath: async () => {
 				const transcript = (await readClaudeSessionState(workflow.root))?.transcriptPath;
 				if (!transcript) return undefined;

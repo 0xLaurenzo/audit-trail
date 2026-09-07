@@ -2,7 +2,11 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { CommandRunner, ReviewerPort, ReviewerRequest } from "../core/ports.ts";
-import type { ReviewCandidate } from "../core/reviewer-candidates.ts";
+import {
+	REVIEW_MODEL_ALLOWLIST,
+	assertAllowedReviewModel,
+	type ReviewCandidate,
+} from "../core/reviewer-candidates.ts";
 
 /** Derive truthful Codex review provenance from a hook-captured working model. */
 export function selectCodexReviewCandidates(requested: unknown, working: string | undefined): ReviewCandidate[] {
@@ -10,13 +14,22 @@ export function selectCodexReviewCandidates(requested: unknown, working: string 
 		throw new Error("Codex SessionStart did not provide a working model; start a new trusted Codex session before review");
 	}
 	const requestedText = typeof requested === "string" ? requested.trim() : "";
-	if (requestedText.includes("/") && !requestedText.startsWith("openai/")) {
-		throw new Error("Codex reviews require an OpenAI model ID or openai/<model-id>");
+	if (requestedText.includes("/")) {
+		assertAllowedReviewModel(requestedText);
+		if (!/^openai(?:-codex)?\//.test(requestedText)) {
+			throw new Error("Codex reviews require an OpenAI model ID or openai/<model-id>");
+		}
 	}
-	const workingModel = working.replace(/^openai\//, "");
-	const model = requestedText.replace(/^openai\//, "") || workingModel;
-	if (!model) throw new Error("Codex reviews require an OpenAI model ID or openai/<model-id>");
-	return [{ model: `openai/${model}`, mode: model === workingModel ? "same-model" : "cross-model" }];
+	const workingModel = working.replace(/^openai(?:-codex)?\//, "");
+	if (requestedText) {
+		const model = requestedText.replace(/^openai(?:-codex)?\//, "");
+		const reference = `openai/${model}`;
+		assertAllowedReviewModel(reference);
+		return [{ model: reference, mode: model === workingModel ? "same-model" : "cross-model" }];
+	}
+	return REVIEW_MODEL_ALLOWLIST
+		.filter((entry) => entry.providers.some((provider) => provider === "openai"))
+		.map(({ model }) => ({ model: `openai/${model}`, mode: model === workingModel ? "same-model" : "cross-model" }));
 }
 
 /** Run an isolated, ephemeral, read-only Codex child for independent review. */
