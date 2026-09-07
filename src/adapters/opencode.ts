@@ -18,7 +18,14 @@ import {
 } from "../core/index.ts";
 import { McpAuditServer } from "../mcp/server.ts";
 import { createOpencodeSubprocessReviewer } from "./opencode-reviewer.ts";
-import { buildReviewerCandidates, type ReviewCandidate } from "../core/reviewer-candidates.ts";
+import {
+	REVIEW_MODEL_ALLOWLIST_TEXT,
+	assertAllowedReviewModel,
+	buildReviewerCandidates,
+	noAllowedReviewModelsError,
+	sameReviewProvider,
+	type ReviewCandidate,
+} from "../core/reviewer-candidates.ts";
 
 export interface ReviewModelRef {
 	provider: string;
@@ -28,9 +35,9 @@ export interface ReviewModelRef {
 /**
  * Build the ordered reviewer candidate list with truthful modes. An explicit
  * request pins exactly one candidate (strict, no fallback); automatic
- * selection returns every cross-provider model, then every same-provider
- * different-model candidate, then the working model itself, so runtime
- * failures can advance through the tiers.
+ * selection returns allowed cross-provider models, then allowed same-provider
+ * candidates, then an allowed working model, so runtime failures can advance
+ * without ever reaching an unmaintained model.
  */
 export function selectOpencodeReviewerCandidates(
 	available: ReviewModelRef[],
@@ -45,6 +52,7 @@ export function selectOpencodeReviewerCandidates(
 	}
 	if (requested) {
 		if (!requested.includes("/")) throw new Error(`Review model must be provider/model: ${requested}`);
+		assertAllowedReviewModel(requested);
 		let model = available.find((candidate) => `${candidate.provider}/${candidate.id}` === requested);
 		if (!model) {
 			// With a populated catalog an unknown model is a typo; without one
@@ -54,10 +62,12 @@ export function selectOpencodeReviewerCandidates(
 			model = { provider: requested.slice(0, slash), id: requested.slice(slash + 1) };
 		}
 		const mode: ReviewMode =
-			model.provider !== working.provider ? "cross-provider" : model.id !== working.id ? "cross-model" : "same-model";
+			!sameReviewProvider(model.provider, working.provider) ? "cross-provider" : model.id !== working.id ? "cross-model" : "same-model";
 		return [{ model: `${model.provider}/${model.id}`, mode }];
 	}
-	return buildReviewerCandidates(available, working);
+	const candidates = buildReviewerCandidates(available, working);
+	if (!candidates.length) throw noAllowedReviewModelsError();
+	return candidates;
 }
 
 export interface OpencodeClientLike {
@@ -247,12 +257,12 @@ export const AuditTrailPlugin = async ({ client, directory, runner: runnerOverri
 			}),
 			audit_review: tool({
 				description:
-					"Run an independent review of the active decision audit and record the checkpoint. Prefers a cross-provider reviewer; when Anthropic is cross-provider, prefer anthropic/claude-fable-5, then anthropic/claude-opus-5. May take several minutes.",
+					`Run an independent review using only the maintained model allowlist (${REVIEW_MODEL_ALLOWLIST_TEXT}); omit model to select automatically. May take several minutes.`,
 				args: {
 					model: z
 						.string()
 						.optional()
-						.describe("Reviewer as provider/model; omit to select automatically. For Anthropic cross-provider review prefer anthropic/claude-fable-5, then anthropic/claude-opus-5"),
+						.describe(`Allowed reviewer as provider/model; omit to select automatically. Families: ${REVIEW_MODEL_ALLOWLIST_TEXT}`),
 				},
 				execute: async (args, context) => {
 					const wf = await workflow();

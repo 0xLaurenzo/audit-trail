@@ -185,6 +185,29 @@ export function registerHarnessConformance({ harness, capabilities, createDriver
 		assert.equal(unrelated.blocked, false, "unrelated writes stay allowed even with unreadable state");
 	});
 
+	contract("rejects a non-allowlisted explicit reviewer before execution", async (driver, root) => {
+		await driver.start(TASK);
+		await driver.decide();
+		const outcome = await driver.review("openai/gpt-5.4");
+		assert.equal(outcome.completed, false);
+		assert.match(outcome.message, /Unsupported review model.*Allowed review model families/i);
+		assert.deepEqual(driver.attemptedModels(), [], "unsupported models never reach the reviewer runtime");
+		assert.deepEqual(await reviewArtifacts(root), []);
+		assert.equal(await checkpoint(root), undefined);
+	});
+
+	gated("automaticReviewerSelection", "automatic review falls back only through the maintained order", async (driver, root) => {
+		await driver.start(TASK);
+		await driver.decide();
+		const [first, second] = driver.automaticReviewModels;
+		assert.ok(first && second, "automatic selection contract requires two maintained candidates");
+		driver.reviewerScript[second] = "approve";
+		const outcome = await driver.review();
+		assert.equal(outcome.completed, true, outcome.message);
+		assert.deepEqual(driver.attemptedModels(), [first, second]);
+		assert.equal((await checkpoint(root))?.model, second);
+	});
+
 	contract("a failed explicit review records no artifact or checkpoint and never falls back", async (driver, root) => {
 		await driver.start(TASK);
 		await driver.decide();
@@ -339,16 +362,13 @@ export function registerModelDiscoveryConformance({ harness, capabilities, creat
 				await run(driver, root);
 			}));
 
-	// With DEFAULT_CATALOG and the anthropic working model, the deterministic
-	// candidate order is: openai/gpt-5.6-sol, openai/fable-5 (cross-provider),
-	// anthropic/claude-fable-5, anthropic/claude-opus-5 (cross-model), then
-	// anthropic/claude-opus-4-8 (same-model).
-	const [firstCross, secondCross, firstCrossModel, secondCrossModel, sameModel] = [
+	// DEFAULT_CATALOG also contains old/unlisted models, which must never enter
+	// this deterministic allowed-only order.
+	const [firstCross, secondCross, firstCrossModel, sameModel] = [
+		"openai-codex/gpt-6-astra",
 		"openai/gpt-5.6-sol",
-		"openai/fable-5",
 		"anthropic/claude-fable-5",
 		"anthropic/claude-opus-5",
-		"anthropic/claude-opus-4-8",
 	];
 
 	contract("retries within the cross-provider tier", async (driver, root) => {
@@ -371,11 +391,11 @@ export function registerModelDiscoveryConformance({ harness, capabilities, creat
 		assert.equal(recorded?.mode, "cross-model");
 	});
 
-	contract("falls back to the working model itself as the final same-model candidate", async (driver, root) => {
+	contract("falls back to the allowed working model as the final same-model candidate", async (driver, root) => {
 		driver.reviewerScript[sameModel] = "approve";
 		const outcome = await driver.review();
 		assert.equal(outcome.completed, true, outcome.message);
-		assert.deepEqual(driver.attemptedModels(), [firstCross, secondCross, firstCrossModel, secondCrossModel, sameModel]);
+		assert.deepEqual(driver.attemptedModels(), [firstCross, secondCross, firstCrossModel, sameModel]);
 		const recorded = await checkpoint(root);
 		assert.equal(recorded?.model, sameModel);
 		assert.equal(recorded?.mode, "same-model");
@@ -398,17 +418,31 @@ export function registerModelDiscoveryConformance({ harness, capabilities, creat
 		assert.equal((await checkpoint(root))?.model, secondCross);
 	});
 
-	contract("total failure attempts each candidate once and reports safe diagnostics", async (driver, root) => {
+	contract("total failure attempts each allowed candidate once and reports safe diagnostics", async (driver, root) => {
 		const outcome = await driver.review();
 		assert.equal(outcome.completed, false);
 		const attempts = driver.attemptedModels();
-		assert.deepEqual(attempts, [firstCross, secondCross, firstCrossModel, secondCrossModel, sameModel]);
+		assert.deepEqual(attempts, [firstCross, secondCross, firstCrossModel, sameModel]);
 		assert.equal(new Set(attempts).size, attempts.length, "each candidate is attempted at most once");
 		for (const model of attempts) {
 			assert.ok(outcome.message.includes(model), `diagnostics name ${model}`);
 		}
 		assert.doesNotMatch(outcome.message, /sk-contract-secret|req-contract-private/, "no raw stderr in diagnostics");
 		assert.ok(!outcome.message.includes(SENSITIVE_STDERR));
+		assert.deepEqual(await reviewArtifacts(root), []);
+		assert.equal(await checkpoint(root), undefined);
+	});
+
+	contract("fails closed when neither the catalog nor working model is allowed", async (driver, root) => {
+		await driver.setWorkingModel({ provider: "anthropic", id: "claude-opus-4-8" });
+		await driver.setCatalog([
+			{ provider: "anthropic", id: "claude-opus-4-8" },
+			{ provider: "openai", id: "gpt-5.4" },
+		]);
+		const outcome = await driver.review();
+		assert.equal(outcome.completed, false);
+		assert.match(outcome.message, /No allowed review model is available/);
+		assert.deepEqual(driver.attemptedModels(), []);
 		assert.deepEqual(await reviewArtifacts(root), []);
 		assert.equal(await checkpoint(root), undefined);
 	});

@@ -7,7 +7,9 @@ import { Type } from "typebox";
 import {
 	AuditWorkflow,
 	ORIGIN_VALUES,
+	REVIEW_MODEL_ALLOWLIST_TEXT,
 	ROLLOVER_RANGE_DIFF_GUIDANCE,
+	assertAllowedReviewModel,
 	buildActiveAuditGuidance,
 	buildReviewerCandidates,
 	resolveWorktreeRoot,
@@ -15,7 +17,9 @@ import {
 	formatBlockingReviewMessage,
 	formatStatusLines,
 	isAuditManagedPath,
+	noAllowedReviewModelsError,
 	publishRawAudit,
+	sameReviewProvider,
 	runIndependentReview,
 	sha256Hex,
 	summarize,
@@ -41,11 +45,16 @@ export function selectPiReviewerCandidates(
 	requested?: string,
 ): ReviewCandidate[] {
 	if (!working) throw new Error("Working model metadata is unavailable; cannot determine a truthful review mode");
-	if (!requested) return buildReviewerCandidates(available, working);
+	if (!requested) {
+		const candidates = buildReviewerCandidates(available, working);
+		if (!candidates.length) throw noAllowedReviewModelsError();
+		return candidates;
+	}
+	assertAllowedReviewModel(requested);
 	const model = available.find((candidate) => `${candidate.provider}/${candidate.id}` === requested);
 	if (!model) throw new Error(`Review model unavailable: ${requested}`);
 	const mode: ReviewMode =
-		model.provider !== working.provider ? "cross-provider" : model.id !== working.id ? "cross-model" : "same-model";
+		!sameReviewProvider(model.provider, working.provider) ? "cross-provider" : model.id !== working.id ? "cross-model" : "same-model";
 	return [{ model: requested, mode }];
 }
 
@@ -315,7 +324,7 @@ export default function auditTrailExtension(pi: ExtensionAPI) {
 	});
 
 	pi.registerCommand("audit-review", {
-		description: "Review the trail; for Anthropic cross-provider review prefer claude-fable-5, then claude-opus-5: /audit-review [provider/model]",
+		description: `Review with the maintained allowlist; omit model to select automatically (${REVIEW_MODEL_ALLOWLIST_TEXT}): /audit-review [provider/model]`,
 		handler: async (args, ctx) => {
 			const { wf, state, error } = await activeState(ctx);
 			if (error) {

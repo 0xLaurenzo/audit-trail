@@ -204,7 +204,7 @@ test("Codex MCP resumes another harness audit, attributes rows, and derives trut
 				hook_event_name: "SessionStart",
 				session_id: "codex-session-9",
 				transcript_path: transcript,
-				model: "gpt-working",
+				model: "gpt-5.6-sol",
 				cwd: root,
 			}),
 			() => noGit,
@@ -227,9 +227,9 @@ test("Codex MCP resumes another harness audit, attributes rows, and derives trut
 		});
 		const row = (await workflow.rows((await workflow.active())!))[0];
 		assert.equal(row.session, "codex/codex-session-9");
-		await server.call("audit_review", { model: "gpt-reviewer" });
+		await server.call("audit_review", { model: "gpt-6-astra" });
 		const checkpoint = (await workflow.active())?.review;
-		assert.equal(checkpoint?.model, "openai/gpt-reviewer");
+		assert.equal(checkpoint?.model, "openai/gpt-6-astra");
 		assert.equal(checkpoint?.mode, "cross-model");
 		const invocation = calls.find((call) => call[1] === "exec")!;
 		assert.ok(invocation.includes("--ignore-user-config"));
@@ -247,6 +247,7 @@ test("Codex MCP resumes another harness audit, attributes rows, and derives trut
 		const schema = listed.result.tools.find((tool: any) => tool.name === "audit_review").inputSchema;
 		assert.equal(schema.required, undefined);
 		assert.deepEqual(Object.keys(schema.properties), ["model"]);
+		assert.match(schema.properties.model.description, /gpt-6-astra.*gpt-5\.6-sol/);
 	} finally {
 		await rm(root, { recursive: true, force: true });
 		await rm(stateHome, { recursive: true, force: true });
@@ -269,8 +270,8 @@ test("Codex MCP routes concurrent thread calls to hook-recorded worktrees", asyn
 	};
 	try {
 		for (const [sessionId, cwd, model] of [
-			["thread-a", rootA, "gpt-a"],
-			["thread-b", rootB, "gpt-b"],
+			["thread-a", rootA, "gpt-6-astra"],
+			["thread-b", rootB, "gpt-5.6-sol"],
 		] as const) {
 			await handleCodexHook(
 				JSON.stringify({ hook_event_name: "SessionStart", session_id: sessionId, model, cwd }),
@@ -297,7 +298,7 @@ test("Codex MCP routes concurrent thread calls to hook-recorded worktrees", asyn
 		const stateA = await new AuditWorkflow(rootA, noGit).active();
 		assert.equal((await new AuditWorkflow(rootA, noGit).rows(stateA!))[0].session, "codex/thread-a");
 		assert.deepEqual(stateA?.review && { model: stateA.review.model, mode: stateA.review.mode }, {
-			model: "openai/gpt-a",
+			model: "openai/gpt-6-astra",
 			mode: "same-model",
 		});
 
@@ -320,13 +321,15 @@ test("Codex MCP routes concurrent thread calls to hook-recorded worktrees", asyn
 });
 
 test("Codex reviewer selection and subprocess enforce truthful isolated execution", async () => {
-	assert.deepEqual(selectCodexReviewCandidates(undefined, "gpt-work"), [
-		{ model: "openai/gpt-work", mode: "same-model" },
+	assert.deepEqual(selectCodexReviewCandidates(undefined, "gpt-5.6-sol"), [
+		{ model: "openai/gpt-6-astra", mode: "cross-model" },
+		{ model: "openai/gpt-5.6-sol", mode: "same-model" },
 	]);
-	assert.deepEqual(selectCodexReviewCandidates("openai/gpt-other", "gpt-work"), [
-		{ model: "openai/gpt-other", mode: "cross-model" },
+	assert.deepEqual(selectCodexReviewCandidates("openai/gpt-6-astra", "gpt-5.6-sol"), [
+		{ model: "openai/gpt-6-astra", mode: "cross-model" },
 	]);
-	assert.throws(() => selectCodexReviewCandidates("anthropic/claude", "gpt-work"), /OpenAI/);
+	assert.throws(() => selectCodexReviewCandidates("openai/gpt-5.4", "gpt-5.6-sol"), /Unsupported review model/);
+	assert.throws(() => selectCodexReviewCandidates("anthropic/claude-fable-5", "gpt-5.6-sol"), /OpenAI/);
 	assert.throws(() => selectCodexReviewCandidates(undefined, undefined), /SessionStart/);
 
 	const calls: string[][] = [];
@@ -340,7 +343,7 @@ test("Codex reviewer selection and subprocess enforce truthful isolated executio
 	};
 	const report = await createCodexSubprocessReviewer(runner).review({
 		prompt: "Review",
-		model: "openai/gpt-review",
+		model: "openai/gpt-6-astra",
 		mode: "cross-model",
 		workingDirectory: "/repo",
 	});
@@ -349,7 +352,7 @@ test("Codex reviewer selection and subprocess enforce truthful isolated executio
 	assert.deepEqual(args.slice(0, 2), ["codex", "exec"]);
 	assert.ok(args.includes("--ignore-user-config") && args.includes("--ephemeral"));
 	assert.deepEqual(args.slice(args.indexOf("--sandbox"), args.indexOf("--sandbox") + 2), ["--sandbox", "read-only"]);
-	assert.ok(!args.includes("openai/gpt-review"), "provider prefix is stripped");
+	assert.ok(!args.includes("openai/gpt-6-astra"), "provider prefix is stripped");
 	await assert.rejects(
 		() => createCodexSubprocessReviewer(runner).review({ prompt: "x", model: "anthropic/x", mode: "cross-provider", workingDirectory: "/" }),
 		/openai\/<model-id>/,
@@ -367,6 +370,8 @@ test("Codex plugin bundle is internally consistent", async () => {
 	const skill = await readFile(join(root, "skills", "audit-trail", "SKILL.md"), "utf8");
 	assert.match(skill, /^---\nname: audit-trail\ndescription: .+\n---/);
 	assert.match(skill, /audit_start/);
+	assert.ok(skill.indexOf("gpt-6-astra") < skill.indexOf("gpt-5.6-sol"));
+	assert.doesNotMatch(skill, /gpt-5\.4/);
 	const hooks = JSON.parse(await readFile(join(root, "hooks", "hooks.json"), "utf8"));
 	assert.match(hooks.hooks.SessionStart[0].matcher, /startup.*resume.*clear.*compact/);
 	assert.equal(hooks.hooks.PreToolUse[0].matcher, "apply_patch|Edit|Write");

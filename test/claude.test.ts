@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { handleClaudeHook } from "../src/adapters/claude-hook.ts";
-import { createClaudeSubprocessReviewer } from "../src/adapters/claude-reviewer.ts";
+import { createClaudeSubprocessReviewer, selectClaudeReviewCandidates } from "../src/adapters/claude-reviewer.ts";
 import {
 	claudeSessionStatePath,
 	readClaudeSessionState,
@@ -187,6 +187,18 @@ test("claude-harness MCP attribution resolves the hook state per call with a fal
 	}
 });
 
+test("Claude reviewer selection is fixed to allowed Anthropic models", () => {
+	assert.deepEqual(selectClaudeReviewCandidates(undefined, "claude-opus-5"), [
+		{ model: "anthropic/claude-fable-5", mode: "cross-model" },
+		{ model: "anthropic/claude-opus-5", mode: "same-model" },
+	]);
+	assert.deepEqual(selectClaudeReviewCandidates("claude-fable-5-fast", "claude-opus-5"), [
+		{ model: "anthropic/claude-fable-5-fast", mode: "cross-model" },
+	]);
+	assert.throws(() => selectClaudeReviewCandidates("anthropic/claude-opus-4-8", "claude-opus-5"), /Unsupported review model/);
+	assert.throws(() => selectClaudeReviewCandidates("openai/gpt-6-astra", "claude-opus-5"), /Anthropic/);
+});
+
 test("claude reviewer validates provenance and runs headless read-only", async () => {
 	const calls: { command: string; args: string[] }[] = [];
 	const runner: CommandRunner = {
@@ -198,7 +210,7 @@ test("claude reviewer validates provenance and runs headless read-only", async (
 	};
 	const output = await createClaudeSubprocessReviewer(runner).review({
 		prompt: "Review the audit.",
-		model: "anthropic/claude-opus-4-8",
+		model: "anthropic/claude-opus-5",
 		mode: "cross-model",
 		workingDirectory: "/repo",
 	});
@@ -207,7 +219,7 @@ test("claude reviewer validates provenance and runs headless read-only", async (
 	const args = calls[1].args;
 	assert.equal(calls[1].command, "claude");
 	assert.equal(args[0], "-p");
-	assert.deepEqual(args.slice(1, 3), ["--model", "claude-opus-4-8"], "provider prefix stripped for the claude CLI");
+	assert.deepEqual(args.slice(1, 3), ["--model", "claude-opus-5"], "provider prefix stripped for the claude CLI");
 	assert.deepEqual(
 		args.slice(args.indexOf("--tools"), args.indexOf("--tools") + 2),
 		["--tools", "Read,Grep,Glob"],
@@ -341,6 +353,10 @@ test("the shipped plugin manifest, hooks, MCP config, and commands are consisten
 		const command = await readFile(join(packageRoot, manifest.commands, `${name}.md`), "utf8");
 		assert.match(command, /^---\ndescription: /, `${name} has frontmatter`);
 		assert.match(command, new RegExp(`${name.replace("-", "_")} tool`), `${name} instructs its tool`);
+		if (name === "audit-review") {
+			assert.ok(command.indexOf("anthropic/claude-fable-5") < command.indexOf("anthropic/claude-opus-5"));
+			assert.match(command, /never supply or infer the mode yourself/i);
+		}
 	}
 	// The launcher referenced by hooks and MCP config exists in the checkout.
 	await lstat(join(packageRoot, "bin", "audit-trail"));

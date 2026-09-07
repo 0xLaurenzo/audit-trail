@@ -3,7 +3,11 @@ import { extname, resolve } from "node:path";
 import { sha256Hex } from "./active-state.ts";
 import { parseRows } from "./audit-store.ts";
 import type { ReviewerPort } from "./ports.ts";
-import type { ReviewCandidate } from "./reviewer-candidates.ts";
+import {
+	assertAllowedReviewModel,
+	noAllowedReviewModelsError,
+	type ReviewCandidate,
+} from "./reviewer-candidates.ts";
 import { parseReviewOutput } from "./review-output.ts";
 import { buildReviewDocument, buildReviewPrompt, writeReviewArtifact } from "./review.ts";
 import type { ReviewMode, ReviewVerdict } from "./types.ts";
@@ -87,7 +91,8 @@ export function summarizeReviewerFailure(error: unknown): string {
  */
 export async function runIndependentReview(input: IndependentReviewInput): Promise<IndependentReviewResult> {
 	const { workflow, reviewer, candidates } = input;
-	if (!candidates.length) throw new Error("No reviewer candidates are available.");
+	if (!candidates.length) throw noAllowedReviewModelsError();
+	for (const candidate of candidates) assertAllowedReviewModel(candidate.model);
 	const state = await workflow.active();
 	if (!state) throw new Error("No audit is active. Start one with audit-trail start <task>.");
 	// Snapshot the transcript like the TSV bytes: harness session files keep

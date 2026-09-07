@@ -1,4 +1,33 @@
 import type { CommandRunner, ReviewerPort, ReviewerRequest } from "../core/ports.ts";
+import {
+	REVIEW_MODEL_ALLOWLIST,
+	assertAllowedReviewModel,
+	type ReviewCandidate,
+} from "../core/reviewer-candidates.ts";
+
+/** Fixed Anthropic allowlist with truthful modes derived from hook-captured model metadata. */
+export function selectClaudeReviewCandidates(requested: unknown, working: string | undefined): ReviewCandidate[] {
+	if (!working) {
+		throw new Error("Claude SessionStart did not provide a working model; start a new Claude session before review");
+	}
+	const requestedText = typeof requested === "string" ? requested.trim() : "";
+	if (requestedText.includes("/")) {
+		assertAllowedReviewModel(requestedText);
+		if (!requestedText.startsWith("anthropic/")) {
+			throw new Error("Claude reviews require an Anthropic model ID or anthropic/<model-id>");
+		}
+	}
+	const workingModel = working.replace(/^anthropic\//, "");
+	if (requestedText) {
+		const model = requestedText.replace(/^anthropic\//, "");
+		const reference = `anthropic/${model}`;
+		assertAllowedReviewModel(reference);
+		return [{ model: reference, mode: model === workingModel ? "same-model" : "cross-model" }];
+	}
+	return REVIEW_MODEL_ALLOWLIST
+		.filter((entry) => entry.providers.some((provider) => provider === "anthropic"))
+		.map(({ model }) => ({ model: `anthropic/${model}`, mode: model === workingModel ? "same-model" : "cross-model" }));
+}
 
 /**
  * ReviewerPort implementation that runs non-interactive Claude Code. Headless

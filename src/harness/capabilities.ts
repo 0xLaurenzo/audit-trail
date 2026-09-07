@@ -19,9 +19,9 @@ export interface HarnessCapabilities {
 	/** Bump when the capability shape changes so declarations stay reviewable. */
 	version: 1;
 	/**
-	 * Catalog-driven reviewer fallback across independence tiers (issue #29):
-	 * cross-provider candidates, then same-provider/different-model, then the
-	 * working model itself.
+	 * Automatic reviewer selection from the maintained allowlist. Harnesses with
+	 * model discovery preserve independence tiers; provider-bound harnesses use
+	 * their fixed allowed-provider order and derive mode from the working model.
 	 */
 	automaticReviewerSelection: boolean;
 	/** Reviewer model catalog discovery at review time. */
@@ -53,10 +53,8 @@ export const HARNESS_CAPABILITIES: Record<ShippedHarness, HarnessCapabilities> =
 	},
 	claude: {
 		version: 1,
-		// The claude CLI reviewer only runs anthropic/<model-id> models and
-		// rejects cross-provider mode, so catalog-driven tier fallback cannot
-		// be implemented truthfully; reviews are explicit model + mode.
-		automaticReviewerSelection: false,
+		// No catalog discovery; fixed Fable/Opus fallback stays provider-bound.
+		automaticReviewerSelection: true,
 		modelDiscovery: false,
 		transcriptSupport: true,
 		systemPromptInjection: true,
@@ -64,9 +62,8 @@ export const HARNESS_CAPABILITIES: Record<ShippedHarness, HarnessCapabilities> =
 	},
 	codex: {
 		version: 1,
-		// Codex exec can use the captured OpenAI working model or an explicit
-		// OpenAI model, but exposes no provider/model catalog for tiered fallback.
-		automaticReviewerSelection: false,
+		// No catalog discovery; fixed Astra/Sol fallback stays provider-bound.
+		automaticReviewerSelection: true,
 		modelDiscovery: false,
 		transcriptSupport: true,
 		systemPromptInjection: true,

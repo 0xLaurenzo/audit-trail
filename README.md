@@ -82,7 +82,7 @@ While an audit is active, every harness injects guidance so the agent records re
 audit-trail start issue-42-rate-limiting
 audit-trail decision --phase core --origin "user requirement" --decision "..." \
   --why "..." --confidence high --evidence "src/x.ts:10" --result verified
-audit-trail review openai/gpt-5.2 --mode cross-provider
+audit-trail review openai/gpt-6-astra --mode cross-provider
 audit-trail publish && audit-trail close
 ```
 
@@ -112,7 +112,7 @@ audit-trail publish [pr-number-or-url] [--set <comment-set-id>]
 audit-trail close
 ```
 
-CLI rows are attributed as `cli/<user>@<host>` in the TSV `session` cell. `audit-trail review` runs the reviewer through a no-session `pi` subprocess against the TSV, Git diff, and repository (no transcript). When Anthropic is cross-provider, callers should prefer `anthropic/claude-fable-5`, then `anthropic/claude-opus-5`. Use `-C <dir>` to operate on another worktree.
+CLI rows are attributed as `cli/<user>@<host>` in the TSV `session` cell. `audit-trail review` runs an allowlisted reviewer through a no-session `pi` subprocess against the TSV, Git diff, and repository (no transcript); unsupported model arguments fail before execution. Use `-C <dir>` to operate on another worktree.
 
 ## MCP server
 
@@ -149,7 +149,7 @@ The plugin provides:
 - **Guidance injection**: the `SessionStart` hook adds the active-audit instructions as additional context whenever the worktree has an active audit.
 - **A write guard**: a `PreToolUse` hook denies `Write`/`Edit` of the TSV, provenance, `active.json`, and closed lifecycle markers (including when no audit is active), failing closed over `.audit/` when audit state is unreadable.
 
-`audit_review` runs the reviewer through non-interactive `claude -p` with a read-only tool allowlist, `--strict-mcp-config` (the reviewer cannot reach this or any MCP server), and no session persistence. Claude-run reviewers are Anthropic models, so pass the reviewer as `anthropic/<model-id>` and record `cross-model` or `same-model` truthfully — the `/audit-trail:audit-review` command encodes this. The hook-captured session transcript is included in the review when readable; otherwise the review falls back to the TSV, Git diff, and repository.
+`audit_review` runs the reviewer through non-interactive `claude -p` with a read-only tool allowlist, `--strict-mcp-config` (the reviewer cannot reach this or any MCP server), and no session persistence. Omitting `model` tries the fixed Anthropic allowlist in order: `claude-fable-5`, then `claude-opus-5`; an explicit model must belong to one of those families. The server compares each candidate with the hook-captured working model and records `cross-model` or `same-model` truthfully—an older working model is never a fallback. The session transcript is included when readable; otherwise review falls back to the TSV, Git diff, and repository.
 
 Trust implications: enabling the plugin means Claude Code runs the plugin's hook commands at session start and before `Write`/`Edit` calls, and starts the bundled MCP server, all with your user privileges from the linked package. MCP tool calls remain subject to Claude Code's per-server permission approval (pre-authorize `mcp__plugin_audit-trail_audit-trail` in allowed tools for headless use).
 
@@ -169,7 +169,7 @@ The plugin provides the shared `audit_start`, `audit_resume`, `audit_reopen`, `a
 
 A `PreToolUse` hook protects extension-managed audit files, including closed lifecycle markers when no audit is active, from direct `apply_patch`/`Edit`/`Write` changes and fails closed over `.audit/` when state is unreadable. This is a guardrail for direct edit tools, not a shell sandbox. Plugin hooks and the local MCP server run with your user privileges, so inspect the linked package and approve MCP tools according to your Codex policy.
 
-`audit_review` runs an isolated child through `codex exec --ignore-user-config --ephemeral --sandbox read-only`. Omitting `model` uses the hook-captured working model and records `same-model`; specifying a different OpenAI model records `cross-model` and remains pinned if it fails. Codex does not claim cross-provider review or catalog-driven model discovery. If `SessionStart` did not capture a model, review fails clearly rather than guessing provenance.
+`audit_review` runs an isolated child through `codex exec --ignore-user-config --ephemeral --sandbox read-only`. Omitting `model` tries the fixed OpenAI allowlist in order: `gpt-6-astra`, then `gpt-5.6-sol`; an explicit model must belong to one of those families and remains pinned if it fails. The hook-captured working model is used only to derive truthful `cross-model` or `same-model` metadata—an older working model is never a fallback. Codex does not claim cross-provider review or catalog discovery. If `SessionStart` did not capture a model, review fails clearly rather than guessing provenance.
 
 ## OpenCode
 
@@ -190,7 +190,7 @@ For project-local activation, place the same shim in `.opencode/plugins/` inside
 export { AuditTrailPlugin } from "/path/to/audit-trail/src/adapters/opencode.ts";
 ```
 
-`audit_review` selects a reviewer across the configured OpenCode providers, preferring cross-provider, then cross-model, then the working model itself, and truthfully records the relation. Within each tier it prefers `anthropic/claude-fable-5`, then `anthropic/claude-opus-5`; when Anthropic is the cross-provider option, callers selecting explicitly should use that same order. The session transcript is captured with `opencode export` into `.audit/<task>.transcript.<session-id>.json` when available; otherwise the review runs transcript-less against the TSV, Git diff, and repository. The reviewer itself runs as a separate non-interactive `opencode run` subprocess using the built-in read-only `plan` agent with `--pure`, so it cannot load this plugin or mutate the worktree.
+`audit_review` filters configured OpenCode models through the core allowlist, then prefers cross-provider, cross-model, and finally the working model only when that model is itself allowed; it truthfully records the relation. Unlisted catalog and explicit models are rejected rather than used as fallback. The session transcript is captured with `opencode export` into `.audit/<task>.transcript.<session-id>.json` when available; otherwise the review runs transcript-less against the TSV, Git diff, and repository. The reviewer itself runs as a separate non-interactive `opencode run` subprocess using the built-in read-only `plan` agent with `--pure`, so it cannot load this plugin or mutate the worktree.
 
 ## Commands
 
@@ -226,10 +226,19 @@ Add `.audit/` to `.gitignore` or `.git/info/exclude` if trails should remain loc
 
 ## Review model
 
-`/audit-review` selects a reviewer in preference order: a model from a different provider (`cross-provider`), then a different model from the same provider (`cross-model`), then the working model itself (`same-model`). Within each tier, `anthropic/claude-fable-5` is preferred before `anthropic/claude-opus-5`; model variants such as `-fast` retain their family preference. The chosen mode is recorded in the review artifact and the review checkpoint. You can choose a model explicitly:
+The harness-neutral core owns this ordered review-model allowlist:
+
+1. `anthropic/claude-fable-5`
+2. `anthropic/claude-opus-5`
+3. `openai/gpt-6-astra`
+4. `openai/gpt-5.6-sol`
+
+The OpenAI runtime alias `openai-codex` is also accepted. Exact families and deliberate hyphen-suffixed variants such as `-fast` are allowed; other providers, lookalikes, and older models are rejected before evidence snapshots or reviewer execution. Catalog-driven selection first filters to this list, then preserves truthful independence tiers (`cross-provider`, `cross-model`, `same-model`) and uses list order within each tier. The working model is a fallback only when allowlisted. Provider-bound Claude and Codex runtimes automatically try only their allowed families. If no allowed model is available, review fails closed without an artifact or checkpoint.
+
+You can pin an allowed model explicitly:
 
 ```text
-/audit-review openai/gpt-5.2
+/audit-review openai/gpt-6-astra
 ```
 
 The reviewer runs through a `ReviewerPort`: harness adapters may supply a native reviewer runtime, and the default implementation spawns a separate no-session `pi` process with read-only tools (it fails fast when `pi` is not installed).
@@ -255,7 +264,7 @@ A rebase rewrites ancestry, so an audit started before the rebase can never publ
 After reviewing the latest decisions, publish to the pull request associated with the current checked-out branch:
 
 ```text
-/audit-review openai/gpt-5.2
+/audit-review openai/gpt-6-astra
 /audit-publish
 ```
 
