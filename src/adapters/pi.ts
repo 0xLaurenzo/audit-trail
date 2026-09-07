@@ -7,14 +7,14 @@ import { Type } from "typebox";
 import {
 	AuditWorkflow,
 	ORIGIN_VALUES,
-	activeStatePath,
+	ROLLOVER_RANGE_DIFF_GUIDANCE,
 	buildActiveAuditGuidance,
 	buildReviewerCandidates,
 	resolveWorktreeRoot,
 	displayPath,
 	formatBlockingReviewMessage,
 	formatStatusLines,
-	isClosedStatePath,
+	isAuditManagedPath,
 	publishRawAudit,
 	runIndependentReview,
 	sha256Hex,
@@ -76,6 +76,23 @@ const AuditDecisionParams = Type.Object({
 	result: Result,
 	supersedes: Type.Optional(Type.String({ description: "Prior decision ID replaced by this row, such as D0003" })),
 });
+
+function parseTaskReasonArgs(raw: string, allowName = false): { task: string; reason: string; name?: string } {
+	const input = raw.trim();
+	const reasonMarker = /(?:^|\s)--reason(?:=|\s+)/.exec(input);
+	if (!reasonMarker) return { task: input, reason: "" };
+	const task = input.slice(0, reasonMarker.index).trim();
+	let reason = input.slice(reasonMarker.index + reasonMarker[0].length).trim();
+	let name: string | undefined;
+	if (allowName) {
+		const nameMarker = /(?:^|\s)--name(?:=|\s+)/.exec(reason);
+		if (nameMarker) {
+			name = reason.slice(nameMarker.index + nameMarker[0].length).trim();
+			reason = reason.slice(0, nameMarker.index).trim();
+		}
+	}
+	return { task, reason, name };
+}
 
 function updateStatus(ctx: ExtensionContext, state: AuditState | undefined, rows: AuditRow[] = []): void {
 	if (!state) {
@@ -141,31 +158,16 @@ export default function auditTrailExtension(pi: ExtensionAPI) {
 
 	pi.on("tool_call", async (event, ctx) => {
 		if (event.toolName !== "write" && event.toolName !== "edit") return;
-		const { wf, state, error } = await activeState(ctx);
+		const { wf, error } = await activeState(ctx);
 		const input = event.input as { path?: unknown };
 		const inputPath = typeof input.path === "string" ? resolve(ctx.cwd, input.path) : undefined;
-		if (!inputPath) return;
-		if (error) {
-			// Fail closed: with unreadable active-audit state, protect the whole
-			// .audit directory instead of silently disabling the guard.
-			if (inputPath.startsWith(`${resolve(wf.root, ".audit")}/`)) {
-				return { block: true, reason: `Audit state is unreadable (${error}); refusing writes under .audit/.` };
-			}
-			return;
-		}
-		if (isClosedStatePath(wf.root, inputPath)) {
-			return { block: true, reason: "Closed audit lifecycle state is extension-managed; use audit_reopen." };
-		}
-		if (!state) return;
-		const protectedPaths = [state.logPath, state.provenancePath, activeStatePath(wf.root)].filter(
-			(path): path is string => Boolean(path),
-		);
-		if (protectedPaths.some((path) => inputPath === resolve(path))) {
-			return {
-				block: true,
-				reason: "Audit state and Git provenance are extension-managed; use audit_decision for corrections.",
-			};
-		}
+		if (!inputPath || !isAuditManagedPath(wf.root, inputPath)) return;
+		return {
+			block: true,
+			reason: error
+				? `Audit state is unreadable (${error}); refusing writes under .audit/.`
+				: "Audit artifacts are extension-managed; use audit lifecycle tools instead of editing .audit directly.",
+		};
 	});
 
 	pi.registerTool({
@@ -246,17 +248,69 @@ export default function auditTrailExtension(pi: ExtensionAPI) {
 				return;
 			}
 			if (!state) {
-				ctx.ui.notify("No decision audit is active in this worktree", "info");
+				const abandoned = await wf.abandonedAudits();
+				ctx.ui.notify(
+					[
+						"No decision audit is active in this worktree",
+						...abandoned.map((entry) => `abandoned: ${entry.taskName ?? entry.task}${entry.at ? ` (${entry.at})` : ""}`),
+					].join("\n"),
+					"info",
+				);
 				return;
 			}
 			const rows = await wf.rows(state);
 			const stats = summarize(rows);
 			updateStatus(ctx, state, rows);
 			const currentSha = await wf.currentSha(state);
+			const diverged = await wf.provenanceDiverged(state);
 			ctx.ui.notify(
-				formatStatusLines(state, rows, currentSha, wf.root).join("\n"),
+				formatStatusLines(state, rows, currentSha, wf.root, diverged).join("\n"),
 				stats.unresolved.length || stats.lowConfidence.length || stats.missingEvidence.length ? "warning" : "info",
 			);
+		},
+	});
+
+	pi.registerCommand("audit-abandon", {
+		description: "Archive an unpublishable audit as abandoned: /audit-abandon <exact-task> --reason <text>",
+		handler: async (args, ctx) => {
+			const parsed = parseTaskReasonArgs(args);
+			try {
+				const wf = await workflow(ctx);
+				const result = await wf.abandon(parsed.task, sessionIdentity(ctx), parsed.reason);
+				ctx.ui.notify(
+					[
+						`Abandoned ${result.state.taskName ?? result.state.task}; this state does not imply review approval or publication`,
+						`review at abandonment: ${result.record.review}`,
+						...(result.record.unresolvedIds.length ? [`unresolved at abandonment: ${result.record.unresolvedIds.join(", ")}`] : []),
+						"Reopen restores it with the abandonment record retained.",
+					].join("\n"),
+					"info",
+				);
+			} catch (error: any) {
+				ctx.ui.notify(`Audit abandon failed: ${error?.message ?? error}`, "error");
+			}
+		},
+	});
+
+	pi.registerCommand("audit-rollover", {
+		description: "Archive a rebase-diverged audit and start a linked successor: /audit-rollover <exact-task> --reason <text> [--name <successor>]",
+		handler: async (args, ctx) => {
+			const parsed = parseTaskReasonArgs(args, true);
+			try {
+				const wf = await workflow(ctx);
+				const result = await wf.rollover(parsed.task, sessionIdentity(ctx), parsed.reason, parsed.name);
+				ctx.ui.notify(
+					[
+						`Archived ${result.abandonedTask} as abandoned (this state does not imply review approval or publication)`,
+						`Started linked audit: ${displayPath(result.state.logPath, wf.root)}`,
+						ROLLOVER_RANGE_DIFF_GUIDANCE,
+					].join("\n"),
+					"info",
+				);
+				if (result.provenanceError) ctx.ui.notify(`Provenance unavailable: ${result.provenanceError}`, "warning");
+			} catch (error: any) {
+				ctx.ui.notify(`Audit rollover failed: ${error?.message ?? error}`, "error");
+			}
 		},
 	});
 

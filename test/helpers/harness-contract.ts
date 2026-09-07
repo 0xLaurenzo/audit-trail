@@ -93,6 +93,39 @@ export function registerHarnessConformance({ harness, capabilities, createDriver
 		assert.match(staleClose.message, /changed after the last review|stale/i);
 	});
 
+	contract("abandon archives without approval and reopen retains the record", async (driver, root) => {
+		await driver.start(TASK);
+		await driver.decide({ result: "open", decision: "Unresolved at abandonment" });
+		const wrongName = await driver.abandon("unrelated", "obsolete");
+		assert.equal(wrongName.completed, false, "abandon requires the exact task name");
+
+		const outcome = await driver.abandon(TASK, "no longer needed");
+		assert.equal(outcome.completed, true, outcome.message);
+		assert.match(outcome.message, /does not imply review approval or publication/);
+		assert.match(outcome.message, /review at abandonment: none/);
+		const abandonedPath = join(root, ".audit", `${TASK}.abandoned.json`);
+		const abandoned = JSON.parse(await readFile(abandonedPath, "utf8"));
+		assert.equal(abandoned.abandonments.length, 1);
+		assert.equal(abandoned.abandonments[0].reason, "no longer needed");
+		assert.deepEqual(abandoned.abandonments[0].unresolvedIds, ["D0001"]);
+		assert.equal(abandoned.abandonments[0].review, "none");
+		assert.equal(await readActiveAudit(root), undefined, "no audit remains active");
+		assert.match(await driver.status(), /abandoned: contract/i, "status identifies the abandoned terminal artifact");
+		assert.equal((await driver.attemptWrite(abandonedPath)).blocked, true, "abandoned lifecycle state remains managed");
+		assert.equal(
+			(await driver.attemptWrite(join(root, ".audit", `${TASK}.tsv`))).blocked,
+			true,
+			"the abandoned canonical TSV remains managed",
+		);
+
+		await assert.rejects(() => driver.start(TASK), /reopen/i);
+		await driver.reopen(TASK);
+		const reopened = await readActiveAudit(root);
+		assert.equal(reopened?.reopenCount, 1);
+		assert.equal(reopened?.abandonments?.length, 1, "reopen retains the abandonment record");
+		assert.equal((await tsvRows(root)).length, 2, "decision rows survive abandon and reopen");
+	});
+
 	contract("rejects invalid decision enum values at the append boundary", async (driver, root) => {
 		await driver.start(TASK);
 		await assert.rejects(() => driver.decide({ origin: "vibes" }), /origin/i);
@@ -133,6 +166,13 @@ export function registerHarnessConformance({ harness, capabilities, createDriver
 		assert.equal(state.blocked, true);
 		const unrelated = await driver.attemptWrite(join(root, "src", "ok.ts"));
 		assert.equal(unrelated.blocked, false);
+	});
+
+	gated("managedFileGuard", "blocks direct writes anywhere under .audit even while idle", async (driver, root) => {
+		const managed = await driver.attemptWrite(join(root, ".audit", "archived.tsv"));
+		assert.equal(managed.blocked, true, "terminal and future audit artifacts stay managed without active.json");
+		assert.match(managed.reason ?? "", /extension-managed|lifecycle tools/);
+		assert.equal((await driver.attemptWrite(join(root, "src", "ok.ts"))).blocked, false);
 	});
 
 	gated("managedFileGuard", "fails closed over .audit when active state is unreadable", async (driver, root) => {

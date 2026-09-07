@@ -7,10 +7,9 @@ import {
 	CONFIDENCE_VALUES,
 	ORIGIN_VALUES,
 	RESULT_VALUES,
-	activeStatePath,
 	buildActiveAuditGuidance,
 	formatBlockingReviewMessage,
-	isClosedStatePath,
+	isAuditManagedPath,
 	resolveWorktreeRoot,
 	runIndependentReview,
 	type AuditState,
@@ -185,25 +184,13 @@ export const AuditTrailPlugin = async ({ client, directory, runner: runnerOverri
 			const filePath = output?.args?.filePath;
 			if (typeof filePath !== "string" || !filePath) return;
 			const target = resolve(directory, filePath);
-			const { wf, state, error } = await activeState();
-			if (error) {
-				// Fail closed: with unreadable active-audit state, protect the whole
-				// .audit directory instead of silently disabling the guard.
-				if (target.startsWith(`${resolve(wf.root, ".audit")}/`)) {
-					throw new Error(`Audit state is unreadable (${error}); refusing writes under .audit/.`);
-				}
-				return;
-			}
-			if (isClosedStatePath(wf.root, target)) {
-				throw new Error("Closed audit lifecycle state is extension-managed; use audit_reopen.");
-			}
-			if (!state) return;
-			const protectedPaths = [state.logPath, state.provenancePath, activeStatePath(wf.root)].filter(
-				(path): path is string => Boolean(path),
+			const { wf, error } = await activeState();
+			if (!isAuditManagedPath(wf.root, target)) return;
+			throw new Error(
+				error
+					? `Audit state is unreadable (${error}); refusing writes under .audit/.`
+					: "Audit artifacts are extension-managed; use audit lifecycle tools instead of editing .audit directly.",
 			);
-			if (protectedPaths.some((path) => target === resolve(path))) {
-				throw new Error("Audit state and Git provenance are extension-managed; use audit_decision for corrections.");
-			}
 		},
 
 		tool: {
@@ -286,6 +273,25 @@ export const AuditTrailPlugin = async ({ client, directory, runner: runnerOverri
 					}
 					return `Review saved: ${review.reviewPath} (${review.model}, ${review.mode}; ${review.rowCount} rows reviewed, verdict: approve)`;
 				},
+			}),
+			audit_abandon: tool({
+				description:
+					"Archive the active audit as abandoned when it cannot be reviewed or published. Never implies approval or publication; reopen restores it with the record retained.",
+				args: {
+					task: z.string().describe("Exact task name of the active audit being abandoned"),
+					reason: z.string().describe("Why the audit cannot complete review and publication"),
+				},
+				execute: async (args, context) => (await server(context)).call("audit_abandon", args),
+			}),
+			audit_rollover: tool({
+				description:
+					"Archive a rebase-diverged audit as an immutable abandoned segment and start a linked successor at the current HEAD. Refuses while the start commit is still an ancestor of HEAD.",
+				args: {
+					task: z.string().describe("Exact task name of the active audit being rolled over"),
+					reason: z.string().describe("Why the audit cannot publish from its original start commit"),
+					name: z.string().optional().describe("Successor task name; defaults to '<task> (rebased)'"),
+				},
+				execute: async (args, context) => (await server(context)).call("audit_rollover", args),
 			}),
 			audit_publish: tool({
 				description:

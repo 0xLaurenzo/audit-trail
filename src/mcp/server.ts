@@ -16,7 +16,7 @@ import {
 	type NewAuditRow,
 	type ReviewMode,
 } from "../core/types.ts";
-import type { AuditWorkflow } from "../core/workflow.ts";
+import { ROLLOVER_RANGE_DIFF_GUIDANCE, type AuditWorkflow } from "../core/workflow.ts";
 import { readFile } from "node:fs/promises";
 
 /** Newest first; initialize echoes the client's version when supported. */
@@ -117,6 +117,33 @@ const TOOLS: ToolDefinition[] = [
 				},
 			},
 			required: ["model", "mode"],
+		},
+	},
+	{
+		name: "audit_abandon",
+		description:
+			"Archive the active audit as abandoned when it cannot be reviewed or published. Never implies approval or publication; reopen restores it with the record retained.",
+		inputSchema: {
+			type: "object",
+			properties: {
+				task: { type: "string", description: "Exact task name of the active audit being abandoned" },
+				reason: { type: "string", description: "Why the audit cannot complete review and publication" },
+			},
+			required: ["task", "reason"],
+		},
+	},
+	{
+		name: "audit_rollover",
+		description:
+			"Archive a rebase-diverged audit as an immutable abandoned segment and start a linked successor at the current HEAD. Refuses while the start commit is still an ancestor of HEAD.",
+		inputSchema: {
+			type: "object",
+			properties: {
+				task: { type: "string", description: "Exact task name of the active audit being rolled over" },
+				reason: { type: "string", description: "Why the audit cannot publish from its original start commit" },
+				name: { type: "string", description: "Successor task name; defaults to '<task> (rebased)'" },
+			},
+			required: ["task", "reason"],
 		},
 	},
 	{
@@ -245,10 +272,44 @@ export class McpAuditServer {
 			}
 			case "audit_status": {
 				const state = await this.workflow.active();
-				if (!state) return "No audit is active in this worktree.";
+				if (!state) {
+					const abandoned = await this.workflow.abandonedAudits();
+					return [
+						"No audit is active in this worktree.",
+						...abandoned.map((entry) => `abandoned: ${entry.taskName ?? entry.task}${entry.at ? ` (${entry.at})` : ""}`),
+					].join("\n");
+				}
 				const rows = await this.workflow.rows(state);
 				const sha = await this.workflow.currentSha(state);
-				return formatStatusLines(state, rows, sha, this.workflow.root).join("\n");
+				const diverged = await this.workflow.provenanceDiverged(state);
+				return formatStatusLines(state, rows, sha, this.workflow.root, diverged).join("\n");
+			}
+			case "audit_abandon": {
+				const result = await this.workflow.abandon(
+					requireString(args, "task"),
+					await this.session(),
+					requireString(args, "reason"),
+				);
+				return [
+					`Abandoned ${result.state.taskName ?? result.state.task}; this state does not imply review approval or publication: ${result.abandonedPath}`,
+					`review at abandonment: ${result.record.review}`,
+					...(result.record.unresolvedIds.length ? [`unresolved at abandonment: ${result.record.unresolvedIds.join(", ")}`] : []),
+					"Reopen restores it with the abandonment record retained.",
+				].join("\n");
+			}
+			case "audit_rollover": {
+				const result = await this.workflow.rollover(
+					requireString(args, "task"),
+					await this.session(),
+					requireString(args, "reason"),
+					optionalString(args, "name"),
+				);
+				return [
+					`Archived ${result.abandonedTask} as abandoned (this state does not imply review approval or publication): ${result.abandonedPath}`,
+					`Started linked audit: ${result.state.logPath}`,
+					ROLLOVER_RANGE_DIFF_GUIDANCE,
+					...(result.provenanceError ? [`Provenance unavailable: ${result.provenanceError}`] : []),
+				].join("\n");
 			}
 			case "audit_review": {
 				let candidates: ReviewCandidate[];

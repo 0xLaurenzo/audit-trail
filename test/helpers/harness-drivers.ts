@@ -141,6 +141,7 @@ export interface HarnessDriver {
 	start(task: string): Promise<void>;
 	resume(task: string): Promise<void>;
 	reopen(task: string): Promise<void>;
+	abandon(task: string, reason: string): Promise<OperationOutcome>;
 	decide(overrides?: Partial<DecisionInput>): Promise<void>;
 	status(): Promise<string>;
 	review(model?: string): Promise<OperationOutcome>;
@@ -268,6 +269,10 @@ export const createPiDriver: DriverFactory = async (root) => {
 			const result = await runCommand("audit-reopen", task);
 			if (result.level === "error") throw new Error(result.message);
 		},
+		async abandon(task, reason) {
+			const result = await runCommand("audit-abandon", `${task} --reason ${reason}`);
+			return { completed: result.level !== "error", message: result.message };
+		},
 		async decide(overrides) {
 			await tools.get("audit_decision").execute("call-1", { ...DEFAULT_DECISION, ...overrides }, undefined, undefined, ctx);
 		},
@@ -371,6 +376,7 @@ export const createOpencodeDriver: DriverFactory = async (root) => {
 		},
 		review: (model) => outcome(() => hooks.tool.audit_review.execute({ model }, context)),
 		publish: () => outcome(() => hooks.tool.audit_publish.execute({}, context)),
+		abandon: (task, reason) => outcome(() => hooks.tool.audit_abandon.execute({ task, reason }, context)),
 		close: () => outcome(() => hooks.tool.audit_close.execute({}, context)),
 		async guidance() {
 			const output = { system: [] as string[] };
@@ -462,6 +468,7 @@ export const createClaudeDriver: DriverFactory = async (root) => {
 		// The claude reviewer runs same-provider models only; mode is explicit.
 		review: (model) => outcome(() => server.call("audit_review", { model: model ?? "", mode: "cross-model" })),
 		publish: () => outcome(() => server.call("audit_publish", {})),
+		abandon: (task, reason) => outcome(() => server.call("audit_abandon", { task, reason })),
 		close: () => outcome(() => server.call("audit_close", {})),
 		async guidance() {
 			const result = await hook({ hook_event_name: "SessionStart", session_id: "claude-contract-session", cwd: root });
@@ -569,6 +576,7 @@ export const createCodexDriver: DriverFactory = async (root) => {
 		},
 		review: (model) => outcome(() => call("audit_review", { model: model ?? "" })),
 		publish: () => outcome(() => call("audit_publish", {})),
+		abandon: (task, reason) => outcome(() => call("audit_abandon", { task, reason })),
 		close: () => outcome(() => call("audit_close", {})),
 		async guidance() {
 			const result = await hook({

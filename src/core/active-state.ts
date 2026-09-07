@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { basename, dirname, join, resolve } from "node:path";
-import type { ReviewSnapshot } from "./types.ts";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import type { AbandonmentRecord, ReviewSnapshot, RolloverLink } from "./types.ts";
 
 /**
  * Authoritative active-audit state for one Git worktree. All harness sessions
@@ -24,6 +24,10 @@ interface AuditFileFields {
 	lastReopenedAt?: string;
 	reopenCount?: number;
 	review?: ReviewSnapshot;
+	/** Append-only terminal records; present once the audit has been abandoned. */
+	abandonments?: AbandonmentRecord[];
+	/** Present on a successor audit created by a rebase rollover. */
+	rolloverFrom?: RolloverLink;
 }
 
 /** Version 2 adds the exact user-facing task name and lifecycle metadata. */
@@ -43,8 +47,14 @@ export function closedStatePath(root: string, task: string): string {
 	return join(root, ".audit", `${task}.closed.json`);
 }
 
-export function isClosedStatePath(root: string, path: string): boolean {
-	return resolve(dirname(path)) === resolve(root, ".audit") && basename(path).endsWith(".closed.json");
+export function abandonedStatePath(root: string, task: string): string {
+	return join(root, ".audit", `${task}.abandoned.json`);
+}
+
+/** Agent file tools must never mutate audit-owned state or artifacts directly. */
+export function isAuditManagedPath(root: string, path: string): boolean {
+	const rel = relative(resolve(root, ".audit"), resolve(path));
+	return rel === "" || (!isAbsolute(rel) && rel !== ".." && !rel.startsWith(`..${sep}`));
 }
 
 async function readAuditState(path: string): Promise<ActiveAuditFile | undefined> {
@@ -79,6 +89,10 @@ export function readClosedAudit(root: string, task: string): Promise<ActiveAudit
 	return readAuditState(closedStatePath(root, task));
 }
 
+export function readAbandonedAudit(root: string, task: string): Promise<ActiveAuditFile | undefined> {
+	return readAuditState(abandonedStatePath(root, task));
+}
+
 export function writeActiveAudit(root: string, file: ActiveAuditFile): Promise<void> {
 	return writeAuditState(activeStatePath(root), file);
 }
@@ -95,14 +109,40 @@ export async function closeActiveAudit(root: string, file: ActiveAuditFile, at: 
 	return closed;
 }
 
-/** Atomic inverse of closeActiveAudit for an explicitly requested reopen. */
-export async function reopenClosedAudit(root: string, file: ActiveAuditFile, at: string): Promise<ActiveAuditFile> {
+/**
+ * Active -> abandoned transition: the audit terminates without implying
+ * review approval or publication. Same metadata-first + rename pattern as close, so
+ * a failed rename leaves the audit active for a safe retry. TSV, provenance,
+ * and review artifacts are never touched.
+ */
+export async function abandonActiveAudit(
+	root: string,
+	file: ActiveAuditFile,
+	record: AbandonmentRecord,
+): Promise<ActiveAuditFile> {
+	const abandoned = { ...file, abandonments: [...(file.abandonments ?? []), record] };
+	await writeActiveAudit(root, abandoned);
+	await rename(activeStatePath(root), abandonedStatePath(root, file.task));
+	return abandoned;
+}
+
+/** Atomic inverse of close/abandon for an explicitly requested reopen. */
+async function reopenTerminalAudit(root: string, terminalPath: string, file: ActiveAuditFile, at: string): Promise<ActiveAuditFile> {
 	const reopened = {
 		...file,
 		lastReopenedAt: at,
 		reopenCount: (file.reopenCount ?? 0) + 1,
 	};
-	await writeAuditState(closedStatePath(root, file.task), reopened);
-	await rename(closedStatePath(root, file.task), activeStatePath(root));
+	await writeAuditState(terminalPath, reopened);
+	await rename(terminalPath, activeStatePath(root));
 	return reopened;
+}
+
+export function reopenClosedAudit(root: string, file: ActiveAuditFile, at: string): Promise<ActiveAuditFile> {
+	return reopenTerminalAudit(root, closedStatePath(root, file.task), file, at);
+}
+
+/** Reopening an abandoned audit retains its append-only abandonment records. */
+export function reopenAbandonedAudit(root: string, file: ActiveAuditFile, at: string): Promise<ActiveAuditFile> {
+	return reopenTerminalAudit(root, abandonedStatePath(root, file.task), file, at);
 }

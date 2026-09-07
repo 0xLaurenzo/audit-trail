@@ -133,6 +133,12 @@ test("cli rejects invalid input with clear errors", async () => {
 		assert.equal(await runCli(["-C", root, "publish"], io), 1);
 		assert.match(io.stderr.join("\n"), /no Git provenance/);
 
+		const badRollover = capture();
+		assert.equal(await runCli(["-C", root, "rollover"], badRollover), 1);
+		assert.match(badRollover.stderr.join("\n"), /Usage: audit-trail rollover/);
+		assert.equal(await runCli(["-C", root, "rollover", "task", "--reason", "rebase"], badRollover), 1);
+		assert.match(badRollover.stderr.join("\n"), /no Git provenance/);
+
 		const badPublish = capture();
 		assert.equal(await runCli(["-C", root, "publish", "1", "2"], badPublish), 1);
 		assert.match(badPublish.stderr.join("\n"), /at most one PR/);
@@ -141,6 +147,32 @@ test("cli rejects invalid input with clear errors", async () => {
 
 		assert.equal(await runCli(["-C", root, "unknown-command"], io), 1);
 		assert.match(io.stderr.join("\n"), /Unknown command: unknown-command/);
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+test("cli abandon archives without review and status lists the terminal artifact", async () => {
+	const root = await mkdtemp(join(tmpdir(), "audit-cli-test-"));
+	try {
+		assert.equal(await runCli(["-C", root, "start", "Stale Task"], capture()), 0);
+		const io = capture();
+		assert.equal(await runCli(["-C", root, "abandon"], io), 1);
+		assert.match(io.stderr.join("\n"), /Usage: audit-trail abandon/);
+		assert.equal(await runCli(["-C", root, "abandon", "Stale", "Task"], io), 1);
+		assert.match(io.stderr.join("\n"), /non-empty reason/);
+
+		const abandonIo = capture();
+		assert.equal(await runCli(["-C", root, "abandon", "Stale", "Task", "--reason", "obsolete"], abandonIo), 0);
+		assert.match(abandonIo.stdout.join("\n"), /does not imply review approval or publication/);
+		assert.match(abandonIo.stdout.join("\n"), /review at abandonment: none/);
+
+		const statusIo = capture();
+		assert.equal(await runCli(["-C", root, "status"], statusIo), 0);
+		assert.match(statusIo.stdout.join("\n"), /No audit is active in this worktree\./);
+		assert.match(statusIo.stdout.join("\n"), /abandoned: Stale Task \(/);
+
+		assert.equal(await runCli(["-C", root, "reopen", "Stale Task"], capture()), 0);
 	} finally {
 		await rm(root, { recursive: true, force: true });
 	}
