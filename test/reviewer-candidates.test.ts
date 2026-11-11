@@ -37,6 +37,7 @@ test("the allowlist admits deliberate variants and provider aliases, not lookali
 		"openai/gpt-5.6-sol",
 		"anthropic/claude-fable-5-2",
 		"anthropic/claude-opus-5-20260801",
+		"openai/gpt-6-astra-2-fast-20260801",
 	]) {
 		assert.equal(isAllowedReviewModel(model), true, model);
 	}
@@ -50,6 +51,11 @@ test("the allowlist admits deliberate variants and provider aliases, not lookali
 		"openai/gpt-6-astra-nano",
 		"anthropic/claude-opus-5-haiku",
 		"openai/gpt-6-astra-",
+		"openai/gpt-6-astra-fast-fast",
+		"openai/gpt-6-astra-20260801-fast",
+		"openai/gpt-6-astra-123",
+		"openai/gpt-6-astra-2-3",
+		"openai/gpt-6-astra[1m]",
 	]) {
 		assert.equal(isAllowedReviewModel(model), false, model);
 	}

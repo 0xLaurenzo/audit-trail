@@ -11,10 +11,12 @@ export const REVIEW_MODEL_ALLOWLIST = [
 
 export const REVIEW_MODEL_ALLOWLIST_TEXT = REVIEW_MODEL_ALLOWLIST.map(({ family }) => family).join(", ");
 
-// Point release (`-2`), then serving variants: `-fast` or a dated snapshot (`-20260801`).
-const ALLOWED_VARIANT = /^(?:-\d{1,2})?(?:-fast|-\d{8})*$/;
-// Serving decorations that do not change which model answers; `[1m]` is a context-window tag.
-const SERVING_VARIANT = /(?:-fast|-\d{8}|\[[^\]]*\])+$/;
+// One grammar for admission and identity: <family>[-N][-fast][-YYYYMMDD], each at most once, in this order.
+// `-N` is a point release (a distinct model); the rest is serving decoration of the same model.
+const SERVING_VARIANT = "(?:-fast)?(?:-\\d{8})?";
+const ALLOWED_VARIANT = new RegExp(`^(?:-\\d{1,2})?${SERVING_VARIANT}$`);
+// Working-model IDs may also carry Claude Code's `[1m]` context-window tag.
+const SERVING_SUFFIX = new RegExp(`${SERVING_VARIANT}(?:\\[1m\\])?$`);
 
 /** Exact family or one of the deliberate variants above, from an approved provider. */
 export function reviewModelRank(reference: string): number | undefined {
@@ -45,7 +47,7 @@ export function sameReviewProvider(left: string, right: string): boolean {
  */
 export function reviewModeFor(reviewer: ReviewModel, working: ReviewModel): ReviewMode {
 	if (!sameReviewProvider(reviewer.provider, working.provider)) return "cross-provider";
-	const identity = (id: string) => id.toLowerCase().replace(SERVING_VARIANT, "");
+	const identity = (id: string) => id.toLowerCase().replace(SERVING_SUFFIX, "");
 	return identity(reviewer.id) === identity(working.id) ? "same-model" : "cross-model";
 }
 
