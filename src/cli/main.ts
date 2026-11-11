@@ -8,7 +8,7 @@ import { publishRawAudit } from "../core/github-publisher.ts";
 import { runIndependentReview } from "../core/independent-review.ts";
 import { displayPath } from "../core/paths.ts";
 import { formatBlockingReviewMessage } from "../core/review.ts";
-import { REVIEW_MODEL_ALLOWLIST, assertAllowedReviewModel } from "../core/reviewer-candidates.ts";
+import { assertAllowedReviewModel, providerReviewModels } from "../core/reviewer-candidates.ts";
 import type { CommandRunner, ReviewerPort, SessionIdentity } from "../core/ports.ts";
 import { formatStatusLines } from "../core/status.ts";
 import { reviewBlocker } from "../core/validation.ts";
@@ -30,10 +30,7 @@ import { createCodexMcpHandler } from "../adapters/codex-mcp.ts";
 import { createPiSubprocessReviewer } from "../adapters/pi-reviewer.ts";
 import { McpAuditServer, serveStdio, type McpServerOptions } from "../mcp/server.ts";
 
-const CLAUDE_REVIEW_MODELS = REVIEW_MODEL_ALLOWLIST
-	.filter((entry) => entry.providers.some((provider) => provider === "anthropic"))
-	.map(({ model }) => model)
-	.join(", ");
+const CLAUDE_REVIEW_MODELS = providerReviewModels("anthropic").join(", ");
 
 const HELP = `audit-trail — append-only decision auditing for one Git worktree
 

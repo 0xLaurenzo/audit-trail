@@ -19,7 +19,7 @@ import {
 	isAuditManagedPath,
 	noAllowedReviewModelsError,
 	publishRawAudit,
-	sameReviewProvider,
+	reviewModeFor,
 	runIndependentReview,
 	sha256Hex,
 	summarize,
@@ -53,8 +53,7 @@ export function selectPiReviewerCandidates(
 	assertAllowedReviewModel(requested);
 	const model = available.find((candidate) => `${candidate.provider}/${candidate.id}` === requested);
 	if (!model) throw new Error(`Review model unavailable: ${requested}`);
-	const mode: ReviewMode =
-		!sameReviewProvider(model.provider, working.provider) ? "cross-provider" : model.id !== working.id ? "cross-model" : "same-model";
+	const mode = reviewModeFor(model, working);
 	return [{ model: requested, mode }];
 }
 

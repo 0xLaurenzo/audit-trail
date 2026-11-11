@@ -7,7 +7,7 @@ import {
 	type McpRequestHandler,
 	type McpServerOptions,
 } from "../mcp/server.ts";
-import { REVIEW_MODEL_ALLOWLIST } from "../core/reviewer-candidates.ts";
+import { providerReviewModels } from "../core/reviewer-candidates.ts";
 import { createCodexSubprocessReviewer, selectCodexReviewCandidates } from "./codex-reviewer.ts";
 import {
 	findCodexSessionState,
@@ -15,10 +15,7 @@ import {
 	type CodexSessionState,
 } from "./codex-session.ts";
 
-const CODEX_REVIEW_MODELS = REVIEW_MODEL_ALLOWLIST
-	.filter((entry) => entry.providers.some((provider) => provider === "openai"))
-	.map(({ model }) => model)
-	.join(", ");
+const CODEX_REVIEW_MODELS = providerReviewModels("openai").join(", ");
 
 type CodexMcpOptions = Pick<
 	McpServerOptions,

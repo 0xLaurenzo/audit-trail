@@ -291,19 +291,19 @@ test("an empty blocking report is invalid and falls back without recording the e
 			reviewer: {
 				review: async (request) => {
 					attempted.push(request.model);
-					return request.model === "anthropic/claude-fable-5-empty-block"
+					return request.model === "anthropic/claude-fable-5"
 						? `${designHeading}\nNone identified.\n${verdictPrefix} block\n`
 						: buildReviewOutputFixture({ verdict: "approve" });
 				},
 			},
 			candidates: [
-				{ model: "anthropic/claude-fable-5-empty-block", mode: "cross-model" },
-				{ model: "anthropic/claude-opus-5-fallback", mode: "same-model" },
+				{ model: "anthropic/claude-fable-5", mode: "cross-model" },
+				{ model: "anthropic/claude-opus-5", mode: "same-model" },
 			],
 			harnessName: "mcp",
 			onAttemptFailure: (_candidate, error) => failures.push(error),
 		});
-		assert.deepEqual(attempted, ["anthropic/claude-fable-5-empty-block", "anthropic/claude-opus-5-fallback"]);
+		assert.deepEqual(attempted, ["anthropic/claude-fable-5", "anthropic/claude-opus-5"]);
 		assert.deepEqual(failures, ["blocking reviewer output had no audit findings"]);
 		assert.equal(result.verdict, "approve");
 		assert.equal((await readdir(join(root, ".audit"))).filter((name) => name.includes(".review.")).length, 1);
@@ -322,17 +322,17 @@ test("a review without an explicit verdict falls back without recording an artif
 			reviewer: {
 				review: async (request) => {
 					attempted.push(request.model);
-					return request.model === "anthropic/claude-fable-5-invalid" ? "Looks fine to me.\n" : buildReviewOutputFixture({ verdict: "approve" });
+					return request.model === "anthropic/claude-fable-5" ? "Looks fine to me.\n" : buildReviewOutputFixture({ verdict: "approve" });
 				},
 			},
 			candidates: [
-				{ model: "anthropic/claude-fable-5-invalid", mode: "cross-model" },
-				{ model: "anthropic/claude-opus-5-fallback", mode: "same-model" },
+				{ model: "anthropic/claude-fable-5", mode: "cross-model" },
+				{ model: "anthropic/claude-opus-5", mode: "same-model" },
 			],
 			harnessName: "mcp",
 		});
-		assert.deepEqual(attempted, ["anthropic/claude-fable-5-invalid", "anthropic/claude-opus-5-fallback"]);
-		assert.equal(result.model, "anthropic/claude-opus-5-fallback");
+		assert.deepEqual(attempted, ["anthropic/claude-fable-5", "anthropic/claude-opus-5"]);
+		assert.equal(result.model, "anthropic/claude-opus-5");
 		assert.equal(result.verdict, "approve");
 		const artifacts = (await readdir(join(root, ".audit"))).filter((name) => name.includes(".review."));
 		assert.equal(artifacts.length, 1, "only the completed fallback writes an artifact");
@@ -349,7 +349,7 @@ test("a review without the mandatory design-friction evaluation falls back witho
 		const result = await runIndependentReview({
 			workflow,
 			reviewer: {
-				review: async (request) => request.model === "anthropic/claude-fable-5-missing-section"
+				review: async (request) => request.model === "anthropic/claude-fable-5"
 					? `No flags\n${verdictPrefix} approve\n`
 					: buildReviewOutputFixture({
 						sections: { designFriction: "A shared review-result schema would simplify adapter fixtures." },
@@ -357,14 +357,14 @@ test("a review without the mandatory design-friction evaluation falls back witho
 					}),
 			},
 			candidates: [
-				{ model: "anthropic/claude-fable-5-missing-section", mode: "cross-model" },
-				{ model: "anthropic/claude-opus-5-fallback", mode: "same-model" },
+				{ model: "anthropic/claude-fable-5", mode: "cross-model" },
+				{ model: "anthropic/claude-opus-5", mode: "same-model" },
 			],
 			harnessName: "mcp",
 			onAttemptFailure: (_candidate, error) => failures.push(error),
 		});
 		assert.deepEqual(failures, ["reviewer output had no valid design-friction evaluation"]);
-		assert.equal(result.model, "anthropic/claude-opus-5-fallback");
+		assert.equal(result.model, "anthropic/claude-opus-5");
 		assert.match(result.designFriction, /shared review-result schema/);
 		assert.equal((await readdir(join(root, ".audit"))).filter((name) => name.includes(".review.")).length, 1);
 	} finally {
@@ -381,7 +381,7 @@ test("a pinned review with an invalid verdict fails directly and records nothing
 				runIndependentReview({
 					workflow,
 					reviewer: reviewerReturning(`${verdictPrefix} approve with caveats\n`),
-					candidates: [{ model: "openai/gpt-5.6-sol-pinned", mode: "cross-provider" }],
+					candidates: [{ model: "openai/gpt-5.6-sol", mode: "cross-provider" }],
 					harnessName: "cli",
 				}),
 			/no valid terminal verdict/,

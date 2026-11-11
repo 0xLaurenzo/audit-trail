@@ -23,7 +23,7 @@ import {
 	assertAllowedReviewModel,
 	buildReviewerCandidates,
 	noAllowedReviewModelsError,
-	sameReviewProvider,
+	reviewModeFor,
 	type ReviewCandidate,
 } from "../core/reviewer-candidates.ts";
 
@@ -61,8 +61,7 @@ export function selectOpencodeReviewerCandidates(
 			const slash = requested.indexOf("/");
 			model = { provider: requested.slice(0, slash), id: requested.slice(slash + 1) };
 		}
-		const mode: ReviewMode =
-			!sameReviewProvider(model.provider, working.provider) ? "cross-provider" : model.id !== working.id ? "cross-model" : "same-model";
+		const mode = reviewModeFor(model, working);
 		return [{ model: `${model.provider}/${model.id}`, mode }];
 	}
 	const candidates = buildReviewerCandidates(available, working);

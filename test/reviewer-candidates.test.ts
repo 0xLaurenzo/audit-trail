@@ -35,6 +35,8 @@ test("the allowlist admits deliberate variants and provider aliases, not lookali
 		"openai/gpt-6-astra",
 		"openai-codex/gpt-6-astra-fast",
 		"openai/gpt-5.6-sol",
+		"anthropic/claude-fable-5-2",
+		"anthropic/claude-opus-5-20260801",
 	]) {
 		assert.equal(isAllowedReviewModel(model), true, model);
 	}
@@ -44,12 +46,30 @@ test("the allowlist admits deliberate variants and provider aliases, not lookali
 		"acme/claude-fable-5",
 		"openai/gpt-5.4",
 		"zai/gpt-6-astra",
+		"openai/gpt-6-astra-mini",
+		"openai/gpt-6-astra-nano",
+		"anthropic/claude-opus-5-haiku",
+		"openai/gpt-6-astra-",
 	]) {
 		assert.equal(isAllowedReviewModel(model), false, model);
 	}
 	assert.throws(
 		() => assertAllowedReviewModel("openai/gpt-5.4"),
 		new RegExp(`Unsupported review model.*${REVIEW_MODEL_ALLOWLIST_TEXT.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`),
+	);
+});
+
+test("serving variants of the working model are same-model, after cross-model", () => {
+	assert.deepEqual(
+		buildReviewerCandidates([
+			{ provider: "openai", id: "gpt-6-astra-fast" },
+			{ provider: "openai", id: "gpt-5.6-sol" },
+		], { provider: "openai-codex", id: "gpt-6-astra" }),
+		[
+			{ model: "openai/gpt-5.6-sol", mode: "cross-model" },
+			{ model: "openai/gpt-6-astra-fast", mode: "same-model" },
+			{ model: "openai-codex/gpt-6-astra", mode: "same-model" },
+		],
 	);
 });
 

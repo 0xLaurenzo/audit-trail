@@ -196,7 +196,12 @@ test("Claude reviewer selection is fixed to allowed Anthropic models", () => {
 		{ model: "anthropic/claude-fable-5-fast", mode: "cross-model" },
 	]);
 	assert.throws(() => selectClaudeReviewCandidates("anthropic/claude-opus-4-8", "claude-opus-5"), /Unsupported review model/);
-	assert.throws(() => selectClaudeReviewCandidates("openai/gpt-6-astra", "claude-opus-5"), /Anthropic/);
+	assert.throws(() => selectClaudeReviewCandidates("openai/gpt-6-astra", "claude-opus-5"), /only anthropic/);
+	// Serving variants of the working model must not be claimed as cross-model.
+	for (const working of ["claude-opus-5-20260801", "claude-opus-5[1m]", "anthropic/claude-opus-5-fast"]) {
+		assert.equal(selectClaudeReviewCandidates(undefined, working)[1].mode, "same-model", working);
+	}
+	assert.equal(selectClaudeReviewCandidates("claude-opus-5-5", "claude-opus-5")[0].mode, "cross-model", "a point release is a different model");
 });
 
 test("claude reviewer validates provenance and runs headless read-only", async () => {

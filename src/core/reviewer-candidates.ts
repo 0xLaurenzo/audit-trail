@@ -11,7 +11,12 @@ export const REVIEW_MODEL_ALLOWLIST = [
 
 export const REVIEW_MODEL_ALLOWLIST_TEXT = REVIEW_MODEL_ALLOWLIST.map(({ family }) => family).join(", ");
 
-/** Exact family or a deliberate hyphen-suffixed variant from an approved provider. */
+// Point release (`-2`), then serving variants: `-fast` or a dated snapshot (`-20260801`).
+const ALLOWED_VARIANT = /^(?:-\d{1,2})?(?:-fast|-\d{8})*$/;
+// Serving decorations that do not change which model answers; `[1m]` is a context-window tag.
+const SERVING_VARIANT = /(?:-fast|-\d{8}|\[[^\]]*\])+$/;
+
+/** Exact family or one of the deliberate variants above, from an approved provider. */
 export function reviewModelRank(reference: string): number | undefined {
 	const slash = reference.indexOf("/");
 	if (slash <= 0) return undefined;
@@ -19,7 +24,7 @@ export function reviewModelRank(reference: string): number | undefined {
 	const model = reference.slice(slash + 1).toLowerCase();
 	const rank = REVIEW_MODEL_ALLOWLIST.findIndex(
 		(entry) => entry.providers.some((allowed) => allowed === provider)
-			&& (model === entry.model || model.startsWith(`${entry.model}-`)),
+			&& model.startsWith(entry.model) && ALLOWED_VARIANT.test(model.slice(entry.model.length)),
 	);
 	return rank === -1 ? undefined : rank;
 }
@@ -32,6 +37,23 @@ export function isAllowedReviewModel(reference: string): boolean {
 export function sameReviewProvider(left: string, right: string): boolean {
 	const normalize = (provider: string) => provider.toLowerCase().replace(/^openai-codex$/, "openai");
 	return normalize(left) === normalize(right);
+}
+
+/**
+ * Truthful relation of a reviewer to the working model. Serving variants of
+ * one model (`-fast`, dated snapshots) are the same model, never cross-model.
+ */
+export function reviewModeFor(reviewer: ReviewModel, working: ReviewModel): ReviewMode {
+	if (!sameReviewProvider(reviewer.provider, working.provider)) return "cross-provider";
+	const identity = (id: string) => id.toLowerCase().replace(SERVING_VARIANT, "");
+	return identity(reviewer.id) === identity(working.id) ? "same-model" : "cross-model";
+}
+
+/** Allowlisted model IDs a provider-bound runtime may run, in preference order. */
+export function providerReviewModels(provider: string): string[] {
+	return REVIEW_MODEL_ALLOWLIST
+		.filter((entry) => entry.providers.some((allowed) => allowed === provider))
+		.map(({ model }) => model);
 }
 
 export function assertAllowedReviewModel(reference: string): void {
@@ -51,10 +73,32 @@ export interface ReviewCandidate {
 }
 
 /**
+ * Candidates for a runtime bound to one provider and without a catalog: a
+ * pinned request, or that provider's allowlist order. `working` is the
+ * hook-captured model ID, with or without a provider prefix.
+ */
+export function providerBoundReviewCandidates(provider: string, requested: unknown, working: string): ReviewCandidate[] {
+	const id = (reference: string) => reference.slice(reference.indexOf("/") + 1);
+	const candidate = (model: string): ReviewCandidate => ({
+		model: `${provider}/${model}`,
+		mode: reviewModeFor({ provider, id: model }, { provider, id: id(working) }),
+	});
+	const requestedText = typeof requested === "string" ? requested.trim() : "";
+	if (!requestedText) return providerReviewModels(provider).map(candidate);
+	const reference = requestedText.includes("/") ? requestedText : `${provider}/${requestedText}`;
+	assertAllowedReviewModel(reference);
+	if (!sameReviewProvider(reference.slice(0, reference.indexOf("/")), provider)) {
+		throw new Error(`This harness runs only ${provider} review models, not ${reference}`);
+	}
+	return [candidate(id(reference))];
+}
+
+/**
  * Build the deterministic, deduplicated reviewer candidate order for
  * automatic selection: allowed cross-provider models first, then allowed
- * same-provider/different-model candidates, then the working model only when
- * it is allowed. Within each tier the canonical allowlist defines preference.
+ * same-provider/different-model candidates, then same-model candidates,
+ * ending with the working model only when it is allowed. Within each tier
+ * the canonical allowlist defines preference.
  */
 export function buildReviewerCandidates(available: ReviewModel[], working: ReviewModel): ReviewCandidate[] {
 	const reference = (model: ReviewModel) => `${model.provider}/${model.id}`;
@@ -72,13 +116,8 @@ export function buildReviewerCandidates(available: ReviewModel[], working: Revie
 		seen.add(key);
 		candidates.push({ model: key, mode });
 	};
-	for (const model of ordered(supported.filter((model) => !sameReviewProvider(model.provider, working.provider)))) {
-		push(model, "cross-provider");
-	}
-	for (const model of ordered(
-		supported.filter((model) => sameReviewProvider(model.provider, working.provider) && model.id !== working.id),
-	)) {
-		push(model, "cross-model");
+	for (const mode of ["cross-provider", "cross-model", "same-model"] as const) {
+		for (const model of ordered(supported.filter((model) => reviewModeFor(model, working) === mode))) push(model, mode);
 	}
 	if (isAllowedReviewModel(reference(working))) push(working, "same-model");
 	return candidates;

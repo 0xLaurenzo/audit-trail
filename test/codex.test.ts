@@ -329,7 +329,10 @@ test("Codex reviewer selection and subprocess enforce truthful isolated executio
 		{ model: "openai/gpt-6-astra", mode: "cross-model" },
 	]);
 	assert.throws(() => selectCodexReviewCandidates("openai/gpt-5.4", "gpt-5.6-sol"), /Unsupported review model/);
-	assert.throws(() => selectCodexReviewCandidates("anthropic/claude-fable-5", "gpt-5.6-sol"), /OpenAI/);
+	assert.throws(() => selectCodexReviewCandidates("anthropic/claude-fable-5", "gpt-5.6-sol"), /only openai/);
+	assert.deepEqual(selectCodexReviewCandidates("openai-codex/gpt-6-astra", "openai-codex/gpt-6-astra-fast"), [
+		{ model: "openai/gpt-6-astra", mode: "same-model" },
+	]);
 	assert.throws(() => selectCodexReviewCandidates(undefined, undefined), /SessionStart/);
 
 	const calls: string[][] = [];
