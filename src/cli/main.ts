@@ -26,6 +26,7 @@ import { handleClaudeHook } from "../adapters/claude-hook.ts";
 import { createClaudeSubprocessReviewer, selectClaudeReviewCandidates } from "../adapters/claude-reviewer.ts";
 import { readClaudeSessionState } from "../adapters/claude-session.ts";
 import { handleCodexHook } from "../adapters/codex-hook.ts";
+import { removeCodexSessionState } from "../adapters/codex-session.ts";
 import { createCodexMcpHandler } from "../adapters/codex-mcp.ts";
 import { createPiSubprocessReviewer } from "../adapters/pi-reviewer.ts";
 import { McpAuditServer, serveStdio, type McpServerOptions } from "../mcp/server.ts";
@@ -53,6 +54,7 @@ Commands:
                      (--harness claude|codex uses that harness's hook state)
   claude-hook        Handle a Claude Code hook payload on stdin (plugin use)
   codex-hook         Handle a Codex hook payload on stdin (plugin use)
+  codex-forget <thread-id>  Remove only this worktree/thread SessionStart record
   install <target>   Configure a harness: pi | claude | codex | opencode | all
   help               Show this help
 
@@ -299,7 +301,7 @@ async function commandMcp(
 	const { values } = parseArgs({ args, options: { harness: { type: "string" } }, strict: true });
 	const harness = values.harness ?? "mcp";
 	if (harness === "codex") {
-		const server = createCodexMcpHandler(workflow.root, processRunner, cliSession().id);
+		const server = createCodexMcpHandler(workflow.root, processRunner);
 		io.err("audit-trail MCP server on stdio (harness: codex; worktree routed per call)");
 		await serveStdio(server);
 		return 0;
@@ -490,6 +492,11 @@ export async function runCli(
 		const root = await resolveWorktreeRoot(runner, directory);
 		const workflow = new AuditWorkflow(root, runner);
 		switch (command) {
+			case "codex-forget":
+				if (args.length !== 1 || !args[0]) throw new Error("codex-forget requires one exact thread ID");
+				await removeCodexSessionState(root, args[0]);
+				io.out("No SessionStart record remains for this worktree/thread pair.");
+				return 0;
 			case "start":
 			case "resume":
 			case "reopen":

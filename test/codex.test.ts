@@ -1,18 +1,18 @@
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
-import { cp, lstat, mkdir, mkdtemp, readFile, readlink, rm, symlink, writeFile } from "node:fs/promises";
+import { cp, lstat, mkdir, mkdtemp, readFile, readlink, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 import test from "node:test";
 import { handleCodexHook } from "../src/adapters/codex-hook.ts";
-import { codexMcpOptions, createCodexMcpHandler } from "../src/adapters/codex-mcp.ts";
+import { createCodexMcpHandler } from "../src/adapters/codex-mcp.ts";
 import { createCodexSubprocessReviewer, selectCodexReviewCandidates } from "../src/adapters/codex-reviewer.ts";
-import { codexSessionStatePath, findCodexSessionState, readCodexSessionState } from "../src/adapters/codex-session.ts";
+import { codexSessionStatePath, findCodexSessionState } from "../src/adapters/codex-session.ts";
 import type { CommandRunner, ExecResult } from "../src/core/ports.ts";
 import { AuditWorkflow } from "../src/core/workflow.ts";
 import { codexInstaller } from "../src/install/installers.ts";
-import { McpAuditServer, type McpRequestHandler } from "../src/mcp/server.ts";
+import { type McpRequestHandler } from "../src/mcp/server.ts";
 import { buildReviewOutputFixture } from "./helpers/review-output.ts";
 
 const execFileAsync = promisify(execFile);
@@ -115,12 +115,12 @@ test("Codex SessionStart records metadata and injects active-audit guidance", as
 		const idle = await handleCodexHook(JSON.stringify(payload), () => noGit, env);
 		assert.equal(idle.exitCode, 0);
 		assert.equal(idle.output, undefined);
-		const recorded = await readCodexSessionState(root, env);
+		const recorded = await findCodexSessionState(payload.session_id, env);
 		assert.equal(recorded?.sessionId, "codex-session-1");
 		assert.equal(recorded?.model, "gpt-6.2-sol");
 		assert.equal(recorded?.transcriptPath, "/tmp/codex-transcript.jsonl");
-		assert.equal(codexSessionStatePath(root, env).startsWith(stateHome), true);
-		assert.equal((await findCodexSessionState("codex-session-1", env))?.worktree, root);
+		assert.equal(codexSessionStatePath(root, payload.session_id, env).startsWith(stateHome), true);
+		assert.equal((await findCodexSessionState("codex-session-1", env))?.worktree, await realpath(root));
 		assert.equal(await findCodexSessionState("missing", env), undefined);
 
 		await new AuditWorkflow(root, noGit).start("codex-hook", { harness: "pi", id: "earlier" });
@@ -188,6 +188,7 @@ test("Codex MCP resumes another harness audit, attributes rows, and derives trut
 	const calls: string[][] = [];
 	const codexRunner: CommandRunner = {
 		exec: async (command, args): Promise<ExecResult> => {
+			if (command !== "codex") return noGit.exec(command, args);
 			calls.push([command, ...args]);
 			if (args[0] === "--version") return { code: 0, stdout: "codex-cli 0.133.0", stderr: "" };
 			const outputPath = args[args.indexOf("--output-last-message") + 1];
@@ -210,13 +211,10 @@ test("Codex MCP resumes another harness audit, attributes rows, and derives trut
 			() => noGit,
 			env,
 		);
-		const server = new McpAuditServer({
-			workflow,
-			runner: noGit,
-			...codexMcpOptions(root, codexRunner, "fallback", env),
-		});
-		assert.match(await server.call("audit_resume", { task: "shared" }), /Resumed/);
-		await server.call("audit_decision", {
+		const server = createCodexMcpHandler(root, () => codexRunner, env);
+		const call = (name: string, args: object) => callCodexTool(server, "codex-session-9", name, args);
+		assert.match(await call("audit_resume", { task: "shared" }), /Resumed/);
+		await call("audit_decision", {
 			phase: "codex",
 			origin: "implementation discovery",
 			decision: "Codex joined the shared audit",
@@ -227,7 +225,7 @@ test("Codex MCP resumes another harness audit, attributes rows, and derives trut
 		});
 		const row = (await workflow.rows((await workflow.active())!))[0];
 		assert.equal(row.session, "codex/codex-session-9");
-		await server.call("audit_review", { model: "gpt-6.2-astra" });
+		await call("audit_review", { model: "gpt-6.2-astra" });
 		const checkpoint = (await workflow.active())?.review;
 		assert.equal(checkpoint?.model, "openai/gpt-6.2-astra");
 		assert.equal(checkpoint?.mode, "cross-model");
@@ -279,7 +277,7 @@ test("Codex MCP routes concurrent thread calls to hook-recorded worktrees", asyn
 				env,
 			);
 		}
-		const handler = createCodexMcpHandler(launchRoot, () => runner, "fallback", env);
+		const handler = createCodexMcpHandler(launchRoot, () => runner, env);
 		assert.match(await callCodexTool(handler, "thread-a", "audit_start", { task: "worktree-a" }), /Started/);
 		assert.match(await callCodexTool(handler, "thread-b", "audit_start", { task: "worktree-b" }), /Started/);
 		await callCodexTool(handler, "thread-a", "audit_decision", {
@@ -318,6 +316,55 @@ test("Codex MCP routes concurrent thread calls to hook-recorded worktrees", asyn
 		await rm(rootB, { recursive: true, force: true });
 		await rm(stateHome, { recursive: true, force: true });
 	}
+});
+
+test("a side thread preserves the main thread's routing and attribution; cleanup is pair-scoped", async (t) => {
+	const dir = await realpath(await mkdtemp(join(tmpdir(), "audit-side-thread-")));
+	t.after(() => rm(dir, { recursive: true, force: true }));
+	const root = join(dir, "worktree");
+	const other = join(dir, "other");
+	await mkdir(root);
+	await mkdir(other);
+	const env = { XDG_STATE_HOME: dir };
+	const server = createCodexMcpHandler(other, () => noGit, env);
+	const start = async (session_id: string, cwd = root) => assert.equal((await handleCodexHook(
+		JSON.stringify({ session_id, cwd, hook_event_name: "SessionStart" }), () => noGit, env,
+	)).exitCode, 0);
+	const status = (id: string) => callCodexTool(server, id, "audit_status", {});
+	const append = (id: string) => callCodexTool(server, id, "audit_decision", {
+		phase: "routing", origin: "user requirement", decision: "Keep exact identity", why: "Shared worktree",
+		confidence: "high", evidence: "regression", result: "verified",
+	});
+	const forget = (cwd: string, id: string) => execFileAsync(join(import.meta.dirname, "../bin/audit-trail"),
+		["-C", cwd, "codex-forget", id], { env: { ...process.env, ...env } });
+	await start("main");
+	await callCodexTool(server, "main", "audit_start", { task: "shared" });
+	await append("main");
+	await start("side");
+	assert.match(await status("main"), /shared: 1 row/);
+	await append("side");
+	await append("main");
+	const workflow = new AuditWorkflow(root, noGit);
+	assert.deepEqual((await workflow.rows((await workflow.active())!)).map(row => row.session),
+		["codex/main", "codex/side", "codex/main"]);
+
+	await start("main", other);
+	await assert.rejects(status("main"), /ambiguous/);
+	const bad = codexSessionStatePath(other, "main", env);
+	await writeFile(bad, "{");
+	await assert.rejects(status("main"), /ambiguous/);
+	await rm(other, { recursive: true });
+	await forget(other, "main");
+	assert.match(await status("main"), /shared: 3 rows/);
+	const side = codexSessionStatePath(root, "side", env);
+	const record = JSON.parse(await readFile(side, "utf8"));
+	for (const corrupt of ["{", JSON.stringify({ ...record, sessionId: "main" }), JSON.stringify({ ...record, worktree: other })]) {
+		await writeFile(side, corrupt);
+		await assert.rejects(status("side"), /invalid/);
+	}
+	await forget(root, "side");
+	await assert.rejects(status("side"), /not found/);
+	assert.match(await status("main"), /shared: 3 rows/);
 });
 
 test("Codex reviewer selection and subprocess enforce truthful isolated execution", async () => {
