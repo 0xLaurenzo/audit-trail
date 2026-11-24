@@ -114,6 +114,14 @@ audit-trail close
 
 CLI rows are attributed as `cli/<user>@<host>` in the TSV `session` cell. `audit-trail review` runs an allowlisted reviewer through a no-session `pi` subprocess against the TSV, Git diff, and repository (no transcript); unsupported model arguments fail before execution. Use `-C <dir>` to operate on another worktree.
 
+### When the Pi reviewer cannot authenticate
+
+Run `pi --list-models` as the same user, in the review worktree, with the same `PATH`, `HOME`, `PI_CODING_AGENT_DIR`, and provider environment as the process launching review. Pick a listed **and** Audit Trail allowlisted model. Listing a model does not prove the account can invoke it.
+
+The reviewer starts a fresh Pi process. It inherits the launcher's environment but not a parent Pi session's runtime API-key override, in-memory provider registration, or authenticated connection. Pi looks in its agent directory (`PI_CODING_AGENT_DIR`, default `~/.pi/agent`) for saved credentials in `auth.json` and custom model/provider configuration in `models.json`. Use `/login` in Pi with that directory, or configure the provider's supported environment variable (for example `OPENAI_API_KEY` or `ANTHROPIC_API_KEY`) in the launcher. Stored credentials can take precedence over environment keys; a rejected request can also mean the account lacks access to that model. Restart a long-running launcher after changing its environment. Do not paste credential values or auth files into diagnostics.
+
+Generic MCP `audit_review` launches the same no-session, read-only-tool Pi reviewer from the **server's** environment. MCP is not the caller's authenticated model transport; configuring only the client session does not configure the server's child.
+
 ## MCP server
 
 `audit-trail mcp` serves the same eight operations as deterministic MCP tools over stdio — `audit_start`, `audit_resume`, `audit_reopen`, `audit_decision`, `audit_status`, `audit_review`, `audit_publish`, `audit_close` — for harnesses that integrate via MCP rather than a native extension. Rows are attributed as `mcp/<user>@<host>`. Example client registration:

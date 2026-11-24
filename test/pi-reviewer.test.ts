@@ -43,11 +43,11 @@ test("Pi reviewer fails fast when the runtime is unavailable", async () => {
 		() =>
 			createPiSubprocessReviewer(runner).review({
 				prompt: "review",
-				model: "provider/model",
+				model: "openai/gpt-6.2-astra",
 				mode: "cross-provider",
 				workingDirectory: "/repo",
 			}),
-		/pi CLI is required.*spawn pi ENOENT/,
+		/pi CLI is required.*unavailable/,
 	);
 	assert.deepEqual(calls, [["--version"]], "no review subprocess after failed preflight");
 });
@@ -70,7 +70,7 @@ test("Pi reviewer preflights, invokes read-only no-session mode, and returns fin
 	};
 	const output = await createPiSubprocessReviewer(runner).review({
 		prompt: "review instructions",
-		model: "provider/model",
+		model: "openai/gpt-6.2-astra",
 		mode: "cross-provider",
 		workingDirectory: "/repo",
 	});
@@ -78,7 +78,7 @@ test("Pi reviewer preflights, invokes read-only no-session mode, and returns fin
 	assert.equal(calls.length, 2);
 	assert.ok(calls[1].includes("--no-session"));
 	assert.ok(calls[1].includes("read,grep,find,ls"));
-	assert.ok(calls[1].includes("provider/model"));
+	assert.ok(calls[1].includes("openai/gpt-6.2-astra"));
 });
 
 test("Pi JSON parser surfaces a final assistant error and ignores diagnostics", () => {

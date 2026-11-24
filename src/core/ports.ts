@@ -60,5 +60,7 @@ export interface ReviewerRequest {
  * src/adapters/pi-reviewer.ts is the subprocess fallback.
  */
 export interface ReviewerPort {
+	/** Static recovery instructions keyed by sanitized failure category, never subprocess output. */
+	failureHints?: Readonly<Partial<Record<string, string>>>;
 	review(request: ReviewerRequest): Promise<string>;
 }
