@@ -163,14 +163,14 @@ export type DriverFactory = (root: string) => Promise<HarnessDriver>;
 
 const failGit: ExecResult = { code: 1, stdout: "", stderr: "git unavailable" };
 
-export const DEFAULT_WORKING_MODEL: ReviewModel = { provider: "anthropic", id: "claude-opus-5" };
+export const DEFAULT_WORKING_MODEL: ReviewModel = { provider: "anthropic", id: "claude-opus-5-5" };
 export const DEFAULT_CATALOG: ReviewModel[] = [
 	DEFAULT_WORKING_MODEL,
 	{ provider: "anthropic", id: "claude-opus-4-8" },
 	{ provider: "anthropic", id: "claude-fable-5" },
 	{ provider: "openai", id: "gpt-5.4" },
-	{ provider: "openai", id: "gpt-5.6-sol" },
-	{ provider: "openai-codex", id: "gpt-6-astra" },
+	{ provider: "openai", id: "gpt-6.2-sol" },
+	{ provider: "openai-codex", id: "gpt-6.2-astra" },
 ];
 
 function behaviorText(behavior: Exclude<ReviewerBehavior, "fail">): string {
@@ -257,8 +257,8 @@ export const createPiDriver: DriverFactory = async (root) => {
 
 	return {
 		harness: "pi",
-		explicitReviewModel: "openai/gpt-5.6-sol",
-		automaticReviewModels: ["openai-codex/gpt-6-astra", "openai/gpt-5.6-sol", "anthropic/claude-fable-5", "anthropic/claude-opus-5"],
+		explicitReviewModel: "openai/gpt-6.2-sol",
+		automaticReviewModels: ["openai-codex/gpt-6.2-astra", "openai/gpt-6.2-sol", "anthropic/claude-fable-5", "anthropic/claude-opus-5-5"],
 		reviewerScript,
 		github,
 		async start(task) {
@@ -360,8 +360,8 @@ export const createOpencodeDriver: DriverFactory = async (root) => {
 
 	const driver: HarnessDriver = {
 		harness: "opencode",
-		explicitReviewModel: "openai/gpt-5.6-sol",
-		automaticReviewModels: ["openai-codex/gpt-6-astra", "openai/gpt-5.6-sol", "anthropic/claude-fable-5", "anthropic/claude-opus-5"],
+		explicitReviewModel: "openai/gpt-6.2-sol",
+		automaticReviewModels: ["openai-codex/gpt-6.2-astra", "openai/gpt-6.2-sol", "anthropic/claude-fable-5", "anthropic/claude-opus-5-5"],
 		reviewerScript,
 		github,
 		async start(task) {
@@ -433,12 +433,12 @@ export const createClaudeDriver: DriverFactory = async (root) => {
 		workflow,
 		runner: gitRunner,
 		reviewer: createClaudeSubprocessReviewer(claudeRunner),
-		reviewCandidates: async (args) => selectClaudeReviewCandidates(args.model, "claude-opus-5"),
+		reviewCandidates: async (args) => selectClaudeReviewCandidates(args.model, "claude-opus-5-5"),
 		session: { harness: "claude", id: "claude-contract-session" },
 	});
 	// Record hook session state so guidance/guard run against a live session.
 	await handleClaudeHook(
-		JSON.stringify({ hook_event_name: "SessionStart", session_id: "claude-contract-session", model: "claude-opus-5", cwd: root }),
+		JSON.stringify({ hook_event_name: "SessionStart", session_id: "claude-contract-session", model: "claude-opus-5-5", cwd: root }),
 		() => gitRunner,
 		env,
 	);
@@ -454,7 +454,7 @@ export const createClaudeDriver: DriverFactory = async (root) => {
 	return {
 		harness: "claude",
 		explicitReviewModel: "anthropic/claude-fable-5",
-		automaticReviewModels: ["anthropic/claude-fable-5", "anthropic/claude-opus-5"],
+		automaticReviewModels: ["anthropic/claude-fable-5-2", "anthropic/claude-opus-5-5", "anthropic/claude-fable-5-1", "anthropic/claude-fable-5"],
 		reviewerScript,
 		github,
 		async start(task) {
@@ -478,7 +478,7 @@ export const createClaudeDriver: DriverFactory = async (root) => {
 		abandon: (task, reason) => outcome(() => server.call("audit_abandon", { task, reason })),
 		close: () => outcome(() => server.call("audit_close", {})),
 		async guidance() {
-			const result = await hook({ hook_event_name: "SessionStart", session_id: "claude-contract-session", model: "claude-opus-5", cwd: root });
+			const result = await hook({ hook_event_name: "SessionStart", session_id: "claude-contract-session", model: "claude-opus-5-5", cwd: root });
 			if (!result.output) return undefined;
 			return JSON.parse(result.output).hookSpecificOutput?.additionalContext as string | undefined;
 		},
@@ -550,7 +550,7 @@ export const createCodexDriver: DriverFactory = async (root) => {
 	await hook({
 		hook_event_name: "SessionStart",
 		session_id: "codex-contract-session",
-		model: "gpt-5.6-sol",
+		model: "gpt-6.2-sol",
 		cwd: root,
 	});
 	const outcome = async (operation: () => Promise<string>): Promise<OperationOutcome> => {
@@ -563,8 +563,8 @@ export const createCodexDriver: DriverFactory = async (root) => {
 
 	return {
 		harness: "codex",
-		explicitReviewModel: "openai/gpt-5.6-sol",
-		automaticReviewModels: ["openai/gpt-6-astra", "openai/gpt-5.6-sol"],
+		explicitReviewModel: "openai/gpt-6.2-sol",
+		automaticReviewModels: ["openai/gpt-6.2-astra", "openai/gpt-6.2-sol", "openai/gpt-6.1-astra", "openai/gpt-6.1-sol", "openai/gpt-6-astra", "openai/gpt-6-sol"],
 		reviewerScript,
 		github,
 		async start(task) {
@@ -590,7 +590,7 @@ export const createCodexDriver: DriverFactory = async (root) => {
 			const result = await hook({
 				hook_event_name: "SessionStart",
 				session_id: "codex-contract-session",
-				model: "gpt-5.6-sol",
+				model: "gpt-6.2-sol",
 				cwd: root,
 			});
 			if (!result.output) return undefined;

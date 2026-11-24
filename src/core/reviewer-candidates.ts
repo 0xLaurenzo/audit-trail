@@ -3,18 +3,23 @@ import type { ReviewMode } from "./types.ts";
 
 /** Maintainer-owned review policy, in preference order. */
 export const REVIEW_MODEL_ALLOWLIST = [
+	{ family: "anthropic/claude-fable-5-2", providers: ["anthropic"], model: "claude-fable-5-2" },
+	{ family: "anthropic/claude-opus-5-5", providers: ["anthropic"], model: "claude-opus-5-5" },
+	{ family: "anthropic/claude-fable-5-1", providers: ["anthropic"], model: "claude-fable-5-1" },
 	{ family: "anthropic/claude-fable-5", providers: ["anthropic"], model: "claude-fable-5" },
-	{ family: "anthropic/claude-opus-5", providers: ["anthropic"], model: "claude-opus-5" },
+	{ family: "openai/gpt-6.2-astra", providers: ["openai", "openai-codex"], model: "gpt-6.2-astra" },
+	{ family: "openai/gpt-6.2-sol", providers: ["openai", "openai-codex"], model: "gpt-6.2-sol" },
+	{ family: "openai/gpt-6.1-astra", providers: ["openai", "openai-codex"], model: "gpt-6.1-astra" },
+	{ family: "openai/gpt-6.1-sol", providers: ["openai", "openai-codex"], model: "gpt-6.1-sol" },
 	{ family: "openai/gpt-6-astra", providers: ["openai", "openai-codex"], model: "gpt-6-astra" },
-	{ family: "openai/gpt-5.6-sol", providers: ["openai", "openai-codex"], model: "gpt-5.6-sol" },
+	{ family: "openai/gpt-6-sol", providers: ["openai", "openai-codex"], model: "gpt-6-sol" },
 ] as const;
 
 export const REVIEW_MODEL_ALLOWLIST_TEXT = REVIEW_MODEL_ALLOWLIST.map(({ family }) => family).join(", ");
 
-// One grammar for admission and identity: <family>[-N][-fast][-YYYYMMDD], each at most once, in this order.
-// `-N` is a point release (a distinct model); the rest is serving decoration of the same model.
+// Only serving decorations are variants; numeric releases require an explicit allowlist entry.
 const SERVING_VARIANT = "(?:-fast)?(?:-\\d{8})?";
-const ALLOWED_VARIANT = new RegExp(`^(?:-\\d{1,2})?${SERVING_VARIANT}$`);
+const ALLOWED_VARIANT = new RegExp(`^${SERVING_VARIANT}$`);
 // Working-model IDs may also carry Claude Code's `[1m]` context-window tag.
 const SERVING_SUFFIX = new RegExp(`${SERVING_VARIANT}(?:\\[1m\\])?$`);
 

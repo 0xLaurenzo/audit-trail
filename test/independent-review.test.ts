@@ -90,7 +90,7 @@ test("a supplied transcript is snapshotted into .audit before the reviewer runs"
 		await runIndependentReview({
 			workflow,
 			reviewer,
-			candidates: [{ model: "openai/gpt-5.6-sol", mode: "cross-provider" }],
+			candidates: [{ model: "openai/gpt-6.2-sol", mode: "cross-provider" }],
 			harnessName: "codex",
 			transcriptPath: live,
 		});
@@ -124,7 +124,7 @@ test("an unreadable transcript falls back to transcript-less review", async () =
 		const result = await runIndependentReview({
 			workflow,
 			reviewer,
-			candidates: [{ model: "openai/gpt-5.6-sol", mode: "cross-provider" }],
+			candidates: [{ model: "openai/gpt-6.2-sol", mode: "cross-provider" }],
 			harnessName: "codex",
 			transcriptPath: join(root, "missing.jsonl"),
 		});
@@ -231,12 +231,12 @@ test("an approving review records the verdict and unblocks close", async () => {
 				},
 				verdict: "approve",
 			})),
-			candidates: [{ model: "openai/gpt-5.6-sol", mode: "cross-model" }],
+			candidates: [{ model: "openai/gpt-6.2-sol", mode: "cross-model" }],
 			harnessName: "cli",
 		});
 		assert.equal(result.verdict, "approve");
 		assert.equal(result.rowCount, 1);
-		assert.equal(result.model, "openai/gpt-5.6-sol");
+		assert.equal(result.model, "openai/gpt-6.2-sol");
 		assert.equal(result.mode, "cross-model");
 		assert.match(result.designFriction, /adapter fixtures duplicate the output contract/);
 		const artifact = await readFile(result.reviewPath, "utf8");
@@ -260,7 +260,7 @@ test("a blocking review keeps close gated and is visible in status", async () =>
 		const result = await runIndependentReview({
 			workflow,
 			reviewer: reviewerReturning(report),
-			candidates: [{ model: "openai/gpt-5.6-sol", mode: "cross-model" }],
+			candidates: [{ model: "openai/gpt-6.2-sol", mode: "cross-model" }],
 			harnessName: "cli",
 		});
 		assert.equal(result.verdict, "block");
@@ -298,12 +298,12 @@ test("an empty blocking report is invalid and falls back without recording the e
 			},
 			candidates: [
 				{ model: "anthropic/claude-fable-5", mode: "cross-model" },
-				{ model: "anthropic/claude-opus-5", mode: "same-model" },
+				{ model: "anthropic/claude-opus-5-5", mode: "same-model" },
 			],
 			harnessName: "mcp",
 			onAttemptFailure: (_candidate, error) => failures.push(error),
 		});
-		assert.deepEqual(attempted, ["anthropic/claude-fable-5", "anthropic/claude-opus-5"]);
+		assert.deepEqual(attempted, ["anthropic/claude-fable-5", "anthropic/claude-opus-5-5"]);
 		assert.deepEqual(failures, ["blocking reviewer output had no audit findings"]);
 		assert.equal(result.verdict, "approve");
 		assert.equal((await readdir(join(root, ".audit"))).filter((name) => name.includes(".review.")).length, 1);
@@ -327,12 +327,12 @@ test("a review without an explicit verdict falls back without recording an artif
 			},
 			candidates: [
 				{ model: "anthropic/claude-fable-5", mode: "cross-model" },
-				{ model: "anthropic/claude-opus-5", mode: "same-model" },
+				{ model: "anthropic/claude-opus-5-5", mode: "same-model" },
 			],
 			harnessName: "mcp",
 		});
-		assert.deepEqual(attempted, ["anthropic/claude-fable-5", "anthropic/claude-opus-5"]);
-		assert.equal(result.model, "anthropic/claude-opus-5");
+		assert.deepEqual(attempted, ["anthropic/claude-fable-5", "anthropic/claude-opus-5-5"]);
+		assert.equal(result.model, "anthropic/claude-opus-5-5");
 		assert.equal(result.verdict, "approve");
 		const artifacts = (await readdir(join(root, ".audit"))).filter((name) => name.includes(".review."));
 		assert.equal(artifacts.length, 1, "only the completed fallback writes an artifact");
@@ -358,13 +358,13 @@ test("a review without the mandatory design-friction evaluation falls back witho
 			},
 			candidates: [
 				{ model: "anthropic/claude-fable-5", mode: "cross-model" },
-				{ model: "anthropic/claude-opus-5", mode: "same-model" },
+				{ model: "anthropic/claude-opus-5-5", mode: "same-model" },
 			],
 			harnessName: "mcp",
 			onAttemptFailure: (_candidate, error) => failures.push(error),
 		});
 		assert.deepEqual(failures, ["reviewer output had no valid design-friction evaluation"]);
-		assert.equal(result.model, "anthropic/claude-opus-5");
+		assert.equal(result.model, "anthropic/claude-opus-5-5");
 		assert.match(result.designFriction, /shared review-result schema/);
 		assert.equal((await readdir(join(root, ".audit"))).filter((name) => name.includes(".review.")).length, 1);
 	} finally {
@@ -381,7 +381,7 @@ test("a pinned review with an invalid verdict fails directly and records nothing
 				runIndependentReview({
 					workflow,
 					reviewer: reviewerReturning(`${verdictPrefix} approve with caveats\n`),
-					candidates: [{ model: "openai/gpt-5.6-sol", mode: "cross-provider" }],
+					candidates: [{ model: "openai/gpt-6.2-sol", mode: "cross-provider" }],
 					harnessName: "cli",
 				}),
 			/no valid terminal verdict/,
@@ -420,7 +420,7 @@ test("a legacy verdict-less snapshot fails closed and requires re-review", async
 				path: ".audit/legacy.review.md",
 				sha256,
 				mode: "cross-model",
-				model: "openai/gpt-5.6-sol",
+				model: "openai/gpt-6.2-sol",
 				at: new Date().toISOString(),
 				// Deliberately no verdict: pre-verdict snapshot.
 			},
@@ -447,7 +447,7 @@ test("a failing reviewer runtime records no checkpoint", async () => {
 				runIndependentReview({
 					workflow,
 					reviewer,
-					candidates: [{ model: "openai/gpt-5.6-sol", mode: "cross-model" }],
+					candidates: [{ model: "openai/gpt-6.2-sol", mode: "cross-model" }],
 					harnessName: "cli",
 				}),
 			/reviewer runtime is unavailable/,
@@ -467,7 +467,7 @@ test("a failed candidate falls back to the next one, which records truthful mode
 		const reviewer: ReviewerPort = {
 			review: async (request) => {
 				attempted.push(request.model);
-				if (request.model === "openai/gpt-5.6-sol") throw new Error("usage limit reached");
+				if (request.model === "openai/gpt-6.2-sol") throw new Error("usage limit reached");
 				return buildReviewOutputFixture({ verdict: "approve" });
 			},
 		};
@@ -476,14 +476,14 @@ test("a failed candidate falls back to the next one, which records truthful mode
 			workflow,
 			reviewer,
 			candidates: [
-				{ model: "openai/gpt-5.6-sol", mode: "cross-provider" },
+				{ model: "openai/gpt-6.2-sol", mode: "cross-provider" },
 				{ model: "anthropic/claude-fable-5", mode: "cross-model" },
 			],
 			harnessName: "cli",
 			onAttemptFailure: (candidate, error) => failures.push(`${candidate.model}: ${error}`),
 		});
-		assert.deepEqual(attempted, ["openai/gpt-5.6-sol", "anthropic/claude-fable-5"]);
-		assert.deepEqual(failures, ["openai/gpt-5.6-sol: reviewer usage or quota limit reached"]);
+		assert.deepEqual(attempted, ["openai/gpt-6.2-sol", "anthropic/claude-fable-5"]);
+		assert.deepEqual(failures, ["openai/gpt-6.2-sol: reviewer usage or quota limit reached"]);
 		assert.equal(result.model, "anthropic/claude-fable-5");
 		assert.equal(result.mode, "cross-model");
 		const artifact = await readFile(result.reviewPath, "utf8");
@@ -515,14 +515,14 @@ test("a blocking verdict is terminal and never triggers fallback", async () => {
 			workflow,
 			reviewer,
 			candidates: [
-				{ model: "openai/gpt-5.6-sol", mode: "cross-provider" },
+				{ model: "openai/gpt-6.2-sol", mode: "cross-provider" },
 				{ model: "anthropic/claude-fable-5", mode: "cross-model" },
 			],
 			harnessName: "cli",
 		});
-		assert.deepEqual(attempted, ["openai/gpt-5.6-sol"], "a completed blocking review must not retry");
+		assert.deepEqual(attempted, ["openai/gpt-6.2-sol"], "a completed blocking review must not retry");
 		assert.equal(result.verdict, "block");
-		assert.equal(result.model, "openai/gpt-5.6-sol");
+		assert.equal(result.model, "openai/gpt-6.2-sol");
 	} finally {
 		await rm(root, { recursive: true, force: true });
 	}
@@ -534,7 +534,7 @@ test("when every candidate fails, the error names each attempt and nothing is wr
 		const workflow = await startedWorkflow(root);
 		const reviewer: ReviewerPort = {
 			review: async (request) => {
-				throw new Error(request.model === "openai/gpt-5.6-sol" ? "usage limit reached" : "rate limited");
+				throw new Error(request.model === "openai/gpt-6.2-sol" ? "usage limit reached" : "rate limited");
 			},
 		};
 		await assert.rejects(
@@ -543,17 +543,17 @@ test("when every candidate fails, the error names each attempt and nothing is wr
 					workflow,
 					reviewer,
 					candidates: [
-						{ model: "openai/gpt-5.6-sol", mode: "cross-provider" },
+						{ model: "openai/gpt-6.2-sol", mode: "cross-provider" },
 						{ model: "anthropic/claude-fable-5", mode: "cross-model" },
-						{ model: "anthropic/claude-opus-5", mode: "same-model" },
+						{ model: "anthropic/claude-opus-5-5", mode: "same-model" },
 					],
 					harnessName: "cli",
 				}),
 			(error: Error) => {
 				assert.match(error.message, /All reviewer candidates failed/);
-				assert.match(error.message, /openai\/gpt-5\.6-sol \(cross-provider\): reviewer usage or quota limit reached/);
+				assert.match(error.message, /openai\/gpt-6\.2-sol \(cross-provider\): reviewer usage or quota limit reached/);
 				assert.match(error.message, /anthropic\/claude-fable-5 \(cross-model\): reviewer was rate limited/);
-				assert.match(error.message, /anthropic\/claude-opus-5 \(same-model\): reviewer was rate limited/);
+				assert.match(error.message, /anthropic\/claude-opus-5-5 \(same-model\): reviewer was rate limited/);
 				return true;
 			},
 		);
@@ -586,7 +586,7 @@ test("the checkpoint hash reflects the bytes the successful attempt saw, not the
 			workflow,
 			reviewer,
 			candidates: [
-				{ model: "openai/gpt-5.6-sol", mode: "cross-provider" },
+				{ model: "openai/gpt-6.2-sol", mode: "cross-provider" },
 				{ model: "anthropic/claude-fable-5", mode: "cross-model" },
 			],
 			harnessName: "cli",

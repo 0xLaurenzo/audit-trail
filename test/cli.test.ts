@@ -84,7 +84,7 @@ test("cli requires explicit reopen after close", async () => {
 			review: async () => buildReviewOutputFixture({ sections: { auditFindings: "No flags." }, verdict: "approve" }),
 		};
 		assert.equal(
-			await runCli(["-C", root, "review", "openai/gpt-5.6-sol", "--mode", "cross-model"], capture(), {
+			await runCli(["-C", root, "review", "openai/gpt-6.2-sol", "--mode", "cross-model"], capture(), {
 				createReviewer: () => reviewer,
 			}),
 			0,
@@ -124,10 +124,10 @@ test("cli rejects invalid input with clear errors", async () => {
 		assert.equal(await runCli(["-C", root, "review", "not-a-model"], io), 1);
 		assert.match(io.stderr.join("\n"), /Usage: audit-trail review/);
 
-		assert.equal(await runCli(["-C", root, "review", "openai/gpt-6-astra"], io), 1);
+		assert.equal(await runCli(["-C", root, "review", "openai/gpt-6.2-astra"], io), 1);
 		assert.match(io.stderr.join("\n"), /Specify --mode/);
 
-		assert.equal(await runCli(["-C", root, "review", "openai/gpt-6-astra", "--mode", "sideways"], io), 1);
+		assert.equal(await runCli(["-C", root, "review", "openai/gpt-6.2-astra", "--mode", "sideways"], io), 1);
 		assert.match(io.stderr.join("\n"), /Invalid mode: sideways/);
 
 		let unsupportedReviewerCalls = 0;
@@ -198,7 +198,7 @@ test("CLI review records a blocking verdict and exits 1", async () => {
 		};
 		const io = capture();
 		assert.equal(
-			await runCli(["-C", root, "review", "openai/gpt-5.6-sol", "--mode", "cross-model"], io, {
+			await runCli(["-C", root, "review", "openai/gpt-6.2-sol", "--mode", "cross-model"], io, {
 				createReviewer: () => reviewer,
 			}),
 			1,
@@ -240,7 +240,7 @@ test("CLI publish rejects a current blocking review before invoking GitHub", asy
 		await workflow.recordReview({
 			path: join(root, ".audit", "task.review.md"),
 			mode: "cross-model",
-			model: "openai/gpt-5.6-sol",
+			model: "openai/gpt-6.2-sol",
 			expectedSha256: sha256Hex(await readFile(state.logPath, "utf8")),
 			verdict: "block",
 		});
