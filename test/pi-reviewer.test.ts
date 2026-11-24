@@ -8,21 +8,21 @@ test("Pi candidate selection requires working metadata and enforces the allowlis
 	const available = [
 		{ provider: "anthropic", id: "claude-opus-4-8" },
 		{ provider: "openai", id: "gpt-5.4" },
-		{ provider: "openai", id: "gpt-5.6-sol" },
-		{ provider: "openai-codex", id: "gpt-6-astra" },
+		{ provider: "openai", id: "gpt-6.2-sol" },
+		{ provider: "openai-codex", id: "gpt-6.2-astra" },
 	];
 	assert.throws(
-		() => selectPiReviewerCandidates(available, undefined, "openai/gpt-5.6-sol"),
+		() => selectPiReviewerCandidates(available, undefined, "openai/gpt-6.2-sol"),
 		/Working model metadata is unavailable/,
 	);
 	assert.deepEqual(
-		selectPiReviewerCandidates(available, available[0], "openai/gpt-5.6-sol"),
-		[{ model: "openai/gpt-5.6-sol", mode: "cross-provider" }],
+		selectPiReviewerCandidates(available, available[0], "openai/gpt-6.2-sol"),
+		[{ model: "openai/gpt-6.2-sol", mode: "cross-provider" }],
 		"explicit selection remains pinned to exactly one candidate",
 	);
 	assert.deepEqual(selectPiReviewerCandidates(available, available[0]), [
-		{ model: "openai-codex/gpt-6-astra", mode: "cross-provider" },
-		{ model: "openai/gpt-5.6-sol", mode: "cross-provider" },
+		{ model: "openai-codex/gpt-6.2-astra", mode: "cross-provider" },
+		{ model: "openai/gpt-6.2-sol", mode: "cross-provider" },
 	]);
 	assert.throws(() => selectPiReviewerCandidates(available, available[0], "openai/gpt-5.4"), /Unsupported review model/);
 	assert.throws(

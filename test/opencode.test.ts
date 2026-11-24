@@ -17,8 +17,8 @@ const stubClient = {
 		providers: async () => ({
 			data: {
 				providers: [
-					{ id: "anthropic", models: { "claude-opus-4-8": {}, "claude-opus-5": {}, "claude-fable-5": {} } },
-					{ id: "openai", models: { "gpt-5.6-sol": {} } },
+					{ id: "anthropic", models: { "claude-opus-4-8": {}, "claude-opus-5-5": {}, "claude-fable-5": {} } },
+					{ id: "openai", models: { "gpt-6.2-sol": {} } },
 				],
 			},
 		}),
@@ -129,32 +129,32 @@ test("unreadable active state fails closed for .audit writes", async () => {
 });
 
 test("reviewer candidates filter the catalog and preserve truthful tiers", () => {
-	const working: ReviewModelRef = { provider: "anthropic", id: "claude-opus-5" };
+	const working: ReviewModelRef = { provider: "anthropic", id: "claude-opus-5-5" };
 	const catalog: ReviewModelRef[] = [
 		working,
 		{ provider: "anthropic", id: "claude-opus-4-8" },
 		{ provider: "anthropic", id: "claude-fable-5" },
 		{ provider: "openai", id: "gpt-5.4" },
-		{ provider: "openai", id: "gpt-5.6-sol" },
-		{ provider: "openai-codex", id: "gpt-6-astra" },
+		{ provider: "openai", id: "gpt-6.2-sol" },
+		{ provider: "openai-codex", id: "gpt-6.2-astra" },
 		{ provider: "zai", id: "glm-5" },
 	];
 
 	assert.deepEqual(selectOpencodeReviewerCandidates(catalog, working), [
-		{ model: "openai-codex/gpt-6-astra", mode: "cross-provider" },
-		{ model: "openai/gpt-5.6-sol", mode: "cross-provider" },
+		{ model: "openai-codex/gpt-6.2-astra", mode: "cross-provider" },
+		{ model: "openai/gpt-6.2-sol", mode: "cross-provider" },
 		{ model: "anthropic/claude-fable-5", mode: "cross-model" },
-		{ model: "anthropic/claude-opus-5", mode: "same-model" },
+		{ model: "anthropic/claude-opus-5-5", mode: "same-model" },
 	]);
 	assert.deepEqual(
 		selectOpencodeReviewerCandidates(catalog.filter((model) => model.provider === "anthropic"), working),
 		[
 			{ model: "anthropic/claude-fable-5", mode: "cross-model" },
-			{ model: "anthropic/claude-opus-5", mode: "same-model" },
+			{ model: "anthropic/claude-opus-5-5", mode: "same-model" },
 		],
 	);
 	assert.deepEqual(selectOpencodeReviewerCandidates([], working), [
-		{ model: "anthropic/claude-opus-5", mode: "same-model" },
+		{ model: "anthropic/claude-opus-5-5", mode: "same-model" },
 	]);
 	assert.throws(
 		() => selectOpencodeReviewerCandidates([], { provider: "anthropic", id: "claude-opus-4-8" }),
@@ -163,13 +163,13 @@ test("reviewer candidates filter the catalog and preserve truthful tiers", () =>
 	assert.throws(() => selectOpencodeReviewerCandidates([], undefined), /Working model metadata is unavailable/);
 	assert.throws(() => selectOpencodeReviewerCandidates(catalog, undefined), /Working model metadata is unavailable/);
 
-	assert.deepEqual(selectOpencodeReviewerCandidates(catalog, working, "openai/gpt-5.6-sol"), [
-		{ model: "openai/gpt-5.6-sol", mode: "cross-provider" },
+	assert.deepEqual(selectOpencodeReviewerCandidates(catalog, working, "openai/gpt-6.2-sol"), [
+		{ model: "openai/gpt-6.2-sol", mode: "cross-provider" },
 	]);
 	assert.throws(() => selectOpencodeReviewerCandidates(catalog, working, "openai/gpt-5.4"), /Unsupported review model/);
-	assert.throws(() => selectOpencodeReviewerCandidates(catalog, working, "openai/gpt-6-astra"), /unavailable/);
-	assert.deepEqual(selectOpencodeReviewerCandidates([], working, "openai-codex/gpt-6-astra"), [
-		{ model: "openai-codex/gpt-6-astra", mode: "cross-provider" },
+	assert.throws(() => selectOpencodeReviewerCandidates(catalog, working, "openai/gpt-6.2-astra"), /unavailable/);
+	assert.deepEqual(selectOpencodeReviewerCandidates([], working, "openai-codex/gpt-6.2-astra"), [
+		{ model: "openai-codex/gpt-6.2-astra", mode: "cross-provider" },
 	]);
 	assert.throws(() => selectOpencodeReviewerCandidates(catalog, working, "not-a-model"), /provider\/model/);
 });
@@ -178,14 +178,14 @@ test("model listing tolerates SDK data envelopes and bare payloads", async () =>
 	const wrapped = await listOpencodeModels(stubClient);
 	assert.deepEqual(wrapped, [
 		{ provider: "anthropic", id: "claude-opus-4-8" },
-		{ provider: "anthropic", id: "claude-opus-5" },
+		{ provider: "anthropic", id: "claude-opus-5-5" },
 		{ provider: "anthropic", id: "claude-fable-5" },
-		{ provider: "openai", id: "gpt-5.6-sol" },
+		{ provider: "openai", id: "gpt-6.2-sol" },
 	]);
 	const bare = await listOpencodeModels({
-		config: { providers: async () => ({ providers: [{ id: "openai", models: { "gpt-5.6-sol": {} } }] }) },
+		config: { providers: async () => ({ providers: [{ id: "openai", models: { "gpt-6.2-sol": {} } }] }) },
 	});
-	assert.deepEqual(bare, [{ provider: "openai", id: "gpt-5.6-sol" }]);
+	assert.deepEqual(bare, [{ provider: "openai", id: "gpt-6.2-sol" }]);
 	const broken = await listOpencodeModels({ config: { providers: async () => "nonsense" } });
 	assert.deepEqual(broken, []);
 });
@@ -206,8 +206,8 @@ test("opencode installer writes shim and commands idempotently without touching 
 			assert.match(command, /audit-trail-managed:v1/, `${name} has an ownership marker`);
 			assert.match(command, new RegExp(`${name.replace("-", "_")} tool`), `${name} instructs its tool`);
 			if (name === "audit-review") {
-				assert.ok(command.indexOf("anthropic/claude-fable-5") < command.indexOf("anthropic/claude-opus-5"));
-				assert.match(command, /openai\/gpt-6-astra.*openai\/gpt-5\.6-sol/);
+				assert.ok(command.indexOf("anthropic/claude-fable-5") < command.indexOf("anthropic/claude-opus-5-5"));
+				assert.match(command, /openai\/gpt-6.2-astra.*openai\/gpt-6\.2-sol/);
 			}
 		}
 

@@ -149,7 +149,7 @@ The plugin provides:
 - **Guidance injection**: the `SessionStart` hook adds the active-audit instructions as additional context whenever the worktree has an active audit.
 - **A write guard**: a `PreToolUse` hook denies `Write`/`Edit` of the TSV, provenance, `active.json`, and closed lifecycle markers (including when no audit is active), failing closed over `.audit/` when audit state is unreadable.
 
-`audit_review` runs the reviewer through non-interactive `claude -p` with a read-only tool allowlist, `--strict-mcp-config` (the reviewer cannot reach this or any MCP server), and no session persistence. Omitting `model` tries the fixed Anthropic allowlist in order: `claude-fable-5`, then `claude-opus-5`; an explicit model must belong to one of those families. The server compares each candidate with the hook-captured working model and records `cross-model` or `same-model` truthfully—an older working model is never a fallback. The session transcript is included when readable; otherwise review falls back to the TSV, Git diff, and repository.
+`audit_review` runs the reviewer through non-interactive `claude -p` with a read-only tool allowlist, `--strict-mcp-config` (the reviewer cannot reach this or any MCP server), and no session persistence. Omitting `model` tries the fixed Anthropic allowlist in order: `claude-fable-5-2`, `claude-opus-5-5`, `claude-fable-5-1`, then `claude-fable-5`; an explicit model must be one of those IDs or its `-fast`/dated serving variants. The server compares each candidate with the hook-captured working model and records `cross-model` or `same-model` truthfully—an older working model is never a fallback. The session transcript is included when readable; otherwise review falls back to the TSV, Git diff, and repository.
 
 Trust implications: enabling the plugin means Claude Code runs the plugin's hook commands at session start and before `Write`/`Edit` calls, and starts the bundled MCP server, all with your user privileges from the linked package. MCP tool calls remain subject to Claude Code's per-server permission approval (pre-authorize `mcp__plugin_audit-trail_audit-trail` in allowed tools for headless use).
 
@@ -169,7 +169,7 @@ The plugin provides the shared `audit_start`, `audit_resume`, `audit_reopen`, `a
 
 A `PreToolUse` hook protects extension-managed audit files, including closed lifecycle markers when no audit is active, from direct `apply_patch`/`Edit`/`Write` changes and fails closed over `.audit/` when state is unreadable. This is a guardrail for direct edit tools, not a shell sandbox. Plugin hooks and the local MCP server run with your user privileges, so inspect the linked package and approve MCP tools according to your Codex policy.
 
-`audit_review` runs an isolated child through `codex exec --ignore-user-config --ephemeral --sandbox read-only`. Omitting `model` tries the fixed OpenAI allowlist in order: `gpt-6-astra`, then `gpt-5.6-sol`; an explicit model must belong to one of those families and remains pinned if it fails. The hook-captured working model is used only to derive truthful `cross-model` or `same-model` metadata—an older working model is never a fallback. Codex does not claim cross-provider review or catalog discovery. If `SessionStart` did not capture a model, review fails clearly rather than guessing provenance.
+`audit_review` runs an isolated child through `codex exec --ignore-user-config --ephemeral --sandbox read-only`. Omitting `model` tries the fixed OpenAI allowlist in order: `gpt-6.2-astra`, `gpt-6.2-sol`, `gpt-6.1-astra`, `gpt-6.1-sol`, `gpt-6-astra`, then `gpt-6-sol`; an explicit model must be one of those IDs or its `-fast`/dated serving variants and remains pinned if it fails. The hook-captured working model is used only to derive truthful `cross-model` or `same-model` metadata—an older working model is never a fallback. Codex does not claim cross-provider review or catalog discovery. If `SessionStart` did not capture a model, review fails clearly rather than guessing provenance.
 
 ## OpenCode
 
@@ -228,12 +228,18 @@ Add `.audit/` to `.gitignore` or `.git/info/exclude` if trails should remain loc
 
 The harness-neutral core owns this ordered review-model allowlist:
 
-1. `anthropic/claude-fable-5`
-2. `anthropic/claude-opus-5`
-3. `openai/gpt-6-astra`
-4. `openai/gpt-5.6-sol`
+1. `anthropic/claude-fable-5-2`
+2. `anthropic/claude-opus-5-5`
+3. `anthropic/claude-fable-5-1`
+4. `anthropic/claude-fable-5`
+5. `openai/gpt-6.2-astra`
+6. `openai/gpt-6.2-sol`
+7. `openai/gpt-6.1-astra`
+8. `openai/gpt-6.1-sol`
+9. `openai/gpt-6-astra`
+10. `openai/gpt-6-sol`
 
-The OpenAI runtime alias `openai-codex` is also accepted. Exact families and one deliberate variant grammar are allowed, `<family>[-N][-fast][-YYYYMMDD]` with each part at most once and in that order: a point release (`claude-fable-5-2`), `-fast`, and a dated snapshot (`-20260801`). Any other suffix (`-mini`, `-nano`, …), other providers, lookalikes, and older models are rejected before evidence snapshots or reviewer execution. Catalog-driven selection first filters to this list, then preserves truthful independence tiers (`cross-provider`, `cross-model`, `same-model`) and uses list order within each tier. `-fast` and dated snapshots of the working model count as `same-model`, never `cross-model`. The working model is a fallback only when allowlisted. Provider-bound Claude and Codex runtimes automatically try only their allowed families. If no allowed model is available, review fails closed without an artifact or checkpoint.
+The OpenAI runtime alias `openai-codex` is also accepted. Only these explicit IDs and serving variants are allowed, `<id>[-fast][-YYYYMMDD]` with each part at most once and in that order. Numeric releases require their own allowlist entry; GPT-5.6 Sol, base Opus 5, and unlisted revisions are rejected. Any other suffix (`-mini`, `-nano`, …), other providers, lookalikes, and older models are rejected before evidence snapshots or reviewer execution. Catalog-driven selection first filters to this list, then preserves truthful independence tiers (`cross-provider`, `cross-model`, `same-model`) and uses list order within each tier. `-fast` and dated snapshots of the working model count as `same-model`, never `cross-model`. The working model is a fallback only when allowlisted. Provider-bound Claude and Codex runtimes automatically try only their allowed families. If no allowed model is available, review fails closed without an artifact or checkpoint.
 
 You can pin an allowed model explicitly:
 

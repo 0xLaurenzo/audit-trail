@@ -73,8 +73,8 @@ test("mcp server initializes, lists tools, and drives the audit workflow", async
 		);
 		assert.equal(tools.find((tool: any) => tool.name === "audit_publish").inputSchema.properties.commentSetId.type, "string");
 		const reviewModelDescription = tools.find((tool: any) => tool.name === "audit_review").inputSchema.properties.model.description;
-		assert.ok(reviewModelDescription.indexOf("anthropic/claude-fable-5") < reviewModelDescription.indexOf("anthropic/claude-opus-5"));
-		assert.match(reviewModelDescription, /openai\/gpt-6-astra.*openai\/gpt-5\.6-sol/);
+		assert.ok(reviewModelDescription.indexOf("anthropic/claude-fable-5") < reviewModelDescription.indexOf("anthropic/claude-opus-5-5"));
+		assert.match(reviewModelDescription, /openai\/gpt-6.2-astra.*openai\/gpt-6\.2-sol/);
 
 		const started = resultOf(
 			await server.handle(request(3, "tools/call", { name: "audit_start", arguments: { task: "MCP Task" } })),
@@ -182,7 +182,7 @@ test("MCP publish rejects a blocking review before invoking GitHub", async () =>
 			phase: "mcp", origin: "implementation discovery", decision: "decision", why: "because",
 			confidence: "high", evidence: "test", result: "verified",
 		});
-		const review = await server.call("audit_review", { model: "openai/gpt-5.6-sol", mode: "cross-model" });
+		const review = await server.call("audit_review", { model: "openai/gpt-6.2-sol", mode: "cross-model" });
 		assert.match(review, /Review blocked the audit/);
 		assert.match(review, /Reviewer findings:\nFinding\./);
 		assert.match(review, /\.review\..*\.md/);
@@ -259,7 +259,7 @@ test("mcp server reports tool errors in-band and protocol errors as JSON-RPC err
 
 		const modelessReview = resultOf(
 			await server.handle(
-				request(7, "tools/call", { name: "audit_review", arguments: { model: "openai/gpt-6-astra" } }),
+				request(7, "tools/call", { name: "audit_review", arguments: { model: "openai/gpt-6.2-astra" } }),
 			),
 		);
 		assert.equal(modelessReview.isError, true);

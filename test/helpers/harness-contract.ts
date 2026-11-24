@@ -188,9 +188,11 @@ export function registerHarnessConformance({ harness, capabilities, createDriver
 	contract("rejects a non-allowlisted explicit reviewer before execution", async (driver, root) => {
 		await driver.start(TASK);
 		await driver.decide();
-		const outcome = await driver.review("openai/gpt-5.4");
-		assert.equal(outcome.completed, false);
-		assert.match(outcome.message, /Unsupported review model.*Allowed review model families/i);
+		for (const model of ["openai/gpt-5.4", "openai/gpt-5.6-sol", "anthropic/claude-opus-5", "anthropic/claude-fable-5-3", "openai/gpt-6.3-astra"]) {
+			const outcome = await driver.review(model);
+			assert.equal(outcome.completed, false, model);
+			assert.match(outcome.message, /Unsupported review model.*Allowed review model families/i);
+		}
 		assert.deepEqual(driver.attemptedModels(), [], "unsupported models never reach the reviewer runtime");
 		assert.deepEqual(await reviewArtifacts(root), []);
 		assert.equal(await checkpoint(root), undefined);
@@ -365,10 +367,10 @@ export function registerModelDiscoveryConformance({ harness, capabilities, creat
 	// DEFAULT_CATALOG also contains old/unlisted models, which must never enter
 	// this deterministic allowed-only order.
 	const [firstCross, secondCross, firstCrossModel, sameModel] = [
-		"openai-codex/gpt-6-astra",
-		"openai/gpt-5.6-sol",
+		"openai-codex/gpt-6.2-astra",
+		"openai/gpt-6.2-sol",
 		"anthropic/claude-fable-5",
-		"anthropic/claude-opus-5",
+		"anthropic/claude-opus-5-5",
 	];
 
 	contract("retries within the cross-provider tier", async (driver, root) => {
