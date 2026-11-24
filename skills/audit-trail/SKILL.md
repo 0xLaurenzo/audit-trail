@@ -5,7 +5,9 @@ description: Run append-only decision audits for implementation work. Use when s
 
 # Audit Trail
 
-Use the audit-trail MCP tools for all audit operations. Never create, edit, or repair files under `.audit/` directly.
+Use Codex MCP for the whole audit when the implementation worktree matches the SessionStart worktree. From the implementation directory, run `git rev-parse --show-toplevel`; pass that absolute root as `expectedWorktree` to `audit_status` and every mutation. Check the reported repository, branch, and worktree before starting or resuming. The argument asserts intent; it never retargets MCP. If Git cannot confirm the recorded checkout, MCP refuses access. If another linked worktree is intentional or MCP is unavailable, use `audit-trail -C <target> status` and then `audit-trail -C <target>` for **every** operation, including decisions. Do not mix interfaces. If repository instructions conflict, report the conflict and stop rather than silently switching audits.
+
+CLI fallback reviews use Pi, not `codex exec`. Choose an allowed provider/model authenticated in Pi (Codex OAuth uses `openai-codex/<model>`) and pass a truthful `--mode`. CLI rows have CLI identity; the Codex session transcript is not attached. Never create, edit, or repair files under `.audit/` directly.
 
 ## Workflow
 

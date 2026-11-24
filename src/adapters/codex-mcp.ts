@@ -19,7 +19,7 @@ const CODEX_REVIEW_MODELS = providerReviewModels("openai").join(", ");
 
 type CodexMcpOptions = Pick<
 	McpServerOptions,
-	"session" | "reviewer" | "reviewTranscriptPath" | "reviewCandidates" | "reviewTool"
+	"requireExpectedWorktree" | "session" | "reviewer" | "reviewTranscriptPath" | "reviewCandidates" | "reviewTool"
 >;
 
 function optionsForState(
@@ -28,6 +28,7 @@ function optionsForState(
 	fallbackSessionId: string,
 ): CodexMcpOptions {
 	return {
+		requireExpectedWorktree: true,
 		session: async () => {
 			const state = await stateSource();
 			return { harness: "codex", id: state?.sessionId ?? fallbackSessionId };

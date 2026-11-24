@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 import test from "node:test";
+import { processRunner } from "../src/cli/main.ts";
 import { handleCodexHook } from "../src/adapters/codex-hook.ts";
 import { codexMcpOptions, createCodexMcpHandler } from "../src/adapters/codex-mcp.ts";
 import { createCodexSubprocessReviewer, selectCodexReviewCandidates } from "../src/adapters/codex-reviewer.ts";
@@ -210,13 +211,15 @@ test("Codex MCP resumes another harness audit, attributes rows, and derives trut
 			() => noGit,
 			env,
 		);
+		await execFileAsync("git", ["init", root]);
 		const server = new McpAuditServer({
 			workflow,
-			runner: noGit,
+			runner: processRunner(root),
 			...codexMcpOptions(root, codexRunner, "fallback", env),
 		});
-		assert.match(await server.call("audit_resume", { task: "shared" }), /Resumed/);
+		assert.match(await server.call("audit_resume", { task: "shared", expectedWorktree: root }), /Resumed/);
 		await server.call("audit_decision", {
+			expectedWorktree: root,
 			phase: "codex",
 			origin: "implementation discovery",
 			decision: "Codex joined the shared audit",
@@ -227,7 +230,7 @@ test("Codex MCP resumes another harness audit, attributes rows, and derives trut
 		});
 		const row = (await workflow.rows((await workflow.active())!))[0];
 		assert.equal(row.session, "codex/codex-session-9");
-		await server.call("audit_review", { model: "gpt-6.2-astra" });
+		await server.call("audit_review", { model: "gpt-6.2-astra", expectedWorktree: root });
 		const checkpoint = (await workflow.active())?.review;
 		assert.equal(checkpoint?.model, "openai/gpt-6.2-astra");
 		assert.equal(checkpoint?.mode, "cross-model");
@@ -245,8 +248,8 @@ test("Codex MCP resumes another harness audit, attributes rows, and derives trut
 
 		const listed: any = await server.handle({ jsonrpc: "2.0", id: 1, method: "tools/list" });
 		const schema = listed.result.tools.find((tool: any) => tool.name === "audit_review").inputSchema;
-		assert.equal(schema.required, undefined);
-		assert.deepEqual(Object.keys(schema.properties), ["model"]);
+		assert.deepEqual(schema.required, ["expectedWorktree"]);
+		assert.deepEqual(Object.keys(schema.properties), ["model", "expectedWorktree"]);
 		assert.match(schema.properties.model.description, /gpt-6.2-astra.*gpt-6\.2-sol/);
 	} finally {
 		await rm(root, { recursive: true, force: true });
@@ -279,10 +282,15 @@ test("Codex MCP routes concurrent thread calls to hook-recorded worktrees", asyn
 				env,
 			);
 		}
-		const handler = createCodexMcpHandler(launchRoot, () => runner, "fallback", env);
-		assert.match(await callCodexTool(handler, "thread-a", "audit_start", { task: "worktree-a" }), /Started/);
-		assert.match(await callCodexTool(handler, "thread-b", "audit_start", { task: "worktree-b" }), /Started/);
+		const handler = createCodexMcpHandler(launchRoot, cwd => ({
+			exec: (command, args) => command === "git" && args[1] === "--show-toplevel"
+				? Promise.resolve({ code: 0, stdout: cwd, stderr: "" })
+				: runner.exec(command, args),
+		}), "fallback", env);
+		assert.match(await callCodexTool(handler, "thread-a", "audit_start", { task: "worktree-a", expectedWorktree: rootA }), /Started/);
+		assert.match(await callCodexTool(handler, "thread-b", "audit_start", { task: "worktree-b", expectedWorktree: rootB }), /Started/);
 		await callCodexTool(handler, "thread-a", "audit_decision", {
+			expectedWorktree: rootA,
 			phase: "routing",
 			origin: "failing test",
 			decision: "Keep worktree A isolated",
@@ -292,7 +300,7 @@ test("Codex MCP routes concurrent thread calls to hook-recorded worktrees", asyn
 			result: "verified",
 		});
 
-		await callCodexTool(handler, "thread-a", "audit_review", {});
+		await callCodexTool(handler, "thread-a", "audit_review", { expectedWorktree: rootA });
 		assert.match(await callCodexTool(handler, "thread-a", "audit_status", {}), /worktree-a: 1 row/);
 		assert.match(await callCodexTool(handler, "thread-b", "audit_status", {}), /worktree-b: 0 rows/);
 		const stateA = await new AuditWorkflow(rootA, noGit).active();
@@ -453,6 +461,7 @@ test("staged Codex plugin launches the installed audit-trail binary without chec
 	const worktree = await mkdtemp(join(tmpdir(), "audit-codex-installed-wt-"));
 	const stateHome = await mkdtemp(join(tmpdir(), "audit-codex-installed-state-"));
 	try {
+		await execFileAsync("git", ["init", worktree]);
 		const checkout = join(import.meta.dirname, "..");
 		for (const path of ["src", "bin", ".codex-plugin", "hooks", "skills"]) {
 			await cp(join(checkout, path), join(packageRoot, path), { recursive: true });
@@ -485,7 +494,7 @@ test("staged Codex plugin launches the installed audit-trail binary without chec
 		});
 		assert.match(
 			await callInstalledMcp(executable, mcpRoot, env, "installed-thread", "audit_start", {
-				task: "installed-codex",
+				task: "installed-codex", expectedWorktree: worktree,
 			}),
 			/Started decision audit/,
 		);

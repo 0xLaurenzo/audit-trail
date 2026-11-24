@@ -62,6 +62,10 @@ Every issue is implemented on its own feature branch. Never implement feature wo
 8. **Create the pull request.** Commit and push the completed feature branch, then open an issue-linked PR that accurately summarizes behavior, limitations, and verification.
 9. **Publish the audit.** Publish the approved canonical audit to the newly created PR. Never publish it to an unrelated or stale PR.
 
+## Codex control plane
+
+Use Codex MCP for the whole audit when the implementation worktree matches the SessionStart worktree. From the implementation directory, run `git rev-parse --show-toplevel`; pass that absolute root as `expectedWorktree` to `audit_status` and every mutation. Check the reported repository, branch, and worktree before starting or resuming. The argument asserts intent; it never retargets MCP. If another linked worktree is intentional or MCP is unavailable, use `audit-trail -C <target> status` and then `audit-trail -C <target>` for **every** operation, including decisions. Do not mix interfaces. If repository instructions conflict, report the conflict and stop rather than silently switching audits.
+
 ## Decision auditing
 
 Record a decision when a reasonable alternative would materially change behavior, architecture, compatibility, schema, security, or a correctness invariant. Also record consequential requirement clarifications, review-driven pivots, and reverts.
