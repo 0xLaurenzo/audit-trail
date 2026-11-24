@@ -25,7 +25,11 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run typecheck
+      # Run the real marketplace tests rather than silently skipping both CLIs.
+      - run: npm install --global @anthropic-ai/claude-code@2.1.331 @openai/codex@0.146.0
+      - run: claude plugin validate .
       - run: npm run check
+      - run: bash test/package-smoke.sh
 
   test-macos:
     name: Type-check and test (macOS)
@@ -48,7 +52,9 @@ jobs:
       - uses: cachix/install-nix-action@v31
       - name: Build package
         id: build
-        run: echo "out=$(nix build .# --no-link --print-out-paths)" >> "$GITHUB_OUTPUT"
+        run: |
+          out=$(nix build .# --no-link --print-out-paths)
+          echo "out=$out" >> "$GITHUB_OUTPUT"
       - name: Verify installed bundle
         env:
           OUT: ${{ steps.build.outputs.out }}
@@ -63,6 +69,9 @@ jobs:
 
           worktree="$(mktemp -d)"
           trap 'rm -rf "$worktree"' EXIT
+          export HOME="$worktree/home"
+          "$OUT/bin/audit-trail" install opencode
+          "$OUT/bin/audit-trail" uninstall opencode
           "$OUT/bin/audit-trail" -C "$worktree" start ci-smoke
           test -f "$worktree/.audit/ci-smoke.tsv"
           "$OUT/bin/audit-trail" -C "$worktree" status | grep -q "ci-smoke"

@@ -1,6 +1,8 @@
+import { isUtf8 } from "node:buffer";
 import { randomUUID } from "node:crypto";
-import { lstat, mkdir, readFile, readlink, rename, rm, symlink, writeFile } from "node:fs/promises";
-import { basename, dirname, join, resolve } from "node:path";
+import { lstat, mkdir, readFile, readlink, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import { fileURLToPath } from "node:url";
 import { createScanner, findNodeAtLocation, parseTree, printParseErrorCode, type Node, type ParseError } from "jsonc-parser";
 import type { CommandRunner } from "../core/ports.ts";
@@ -9,6 +11,8 @@ import { REVIEW_MODEL_ALLOWLIST_TEXT } from "../core/reviewer-candidates.ts";
 export interface InstallContext {
 	/** Home directory whose harness configuration is modified. */
 	home: string;
+	/** CODEX_HOME from the native runner's environment; omitted for its default. */
+	codexHome?: string;
 	/** Root of the installed audit-trail package. */
 	packageRoot: string;
 	/** External command runner; required by installers that invoke a harness CLI. */
@@ -31,7 +35,21 @@ export interface HarnessInstaller {
 	 * not description wording.
 	 */
 	planned?: boolean;
+	prepare(ctx: InstallContext, uninstall: boolean): Promise<() => Promise<InstallResult>>;
 	install(ctx: InstallContext): Promise<InstallResult>;
+}
+
+function installer(spec: Omit<HarnessInstaller, "install">): HarnessInstaller {
+	return { ...spec, async install(ctx) { return (await spec.prepare(ctx, false))(); } };
+}
+
+// Paths are installer constants relative to the selected home, not receipt data.
+async function checkParents(home: string, path: string): Promise<void> {
+	const parent = dirname(path);
+	if (parent === resolve(home)) return;
+	if (parent === dirname(parent)) throw new Error("Installer path outside home directory");
+	await checkParents(home, parent);
+	await assertDirectoryOrMissing(parent, "configuration directory");
 }
 
 export function packageRootFromModule(moduleUrl: string): string {
@@ -62,7 +80,9 @@ async function existingRegularFile(path: string, label: string, manualInstructio
 		if (!stat.isFile()) {
 			throw new Error(`Refusing to modify ${label} because ${path} is not a regular file. ${manualInstruction}`);
 		}
-		return { content: await readFile(path, "utf8"), mode: stat.mode & 0o777 };
+		const bytes = await readFile(path);
+		if (!isUtf8(bytes)) throw new Error(`Refusing to modify non-UTF-8 ${label} at ${path}. ${manualInstruction}`);
+		return { content: bytes.toString("utf8"), mode: stat.mode & 0o777 };
 	} catch (error: any) {
 		if (error?.code === "ENOENT") return undefined;
 		throw error;
@@ -103,7 +123,7 @@ function parsePiInstallRecord(content: string, recordPath: string): PiInstallRec
 		typeof value !== "object" ||
 		(value as any).version !== PI_INSTALL_RECORD_VERSION ||
 		!Array.isArray((value as any).managedEntries) ||
-		(value as any).managedEntries.some((entry: unknown) => typeof entry !== "string" || entry.length === 0) ||
+		(value as any).managedEntries.some((entry: unknown) => typeof entry !== "string" || !isAbsolute(entry) || !entry.endsWith("/src/adapters/pi.ts")) ||
 		new Set((value as any).managedEntries).size !== (value as any).managedEntries.length
 	) {
 		throw new Error(`Refusing to use incompatible Pi installer ownership record ${recordPath}; move or remove it explicitly.`);
@@ -218,16 +238,23 @@ function readExtensions(text: string, settingsPath: string, manualInstruction: s
 }
 
 function removeExtensionAt(text: string, settingsPath: string, manualInstruction: string, index: number): string {
-	const { node, values } = readExtensions(text, settingsPath, manualInstruction);
-	if (!node?.children?.[index]) throw new Error(`Internal Pi installer error: extension index ${index} disappeared`);
+	const { node } = readExtensions(text, settingsPath, manualInstruction);
+	return removeArrayItem(text, node, index);
+}
+
+function removeArrayItem(text: string, node: Node | undefined, index: number): string {
+	if (!node?.children?.[index]) throw new Error(`Array item ${index} disappeared`);
 	const children = node.children;
 	const child = children[index];
 	const edits = [{ offset: child.offset, length: child.length, content: "" }];
-	if (children.length > 1) {
+	if (children.length === 1) {
+		const comma = commaOffset(text, child.offset + child.length, node.offset + node.length - 1);
+		if (comma !== undefined) edits.push({ offset: comma, length: 1, content: "" });
+	} else {
 		const delimiter = index < children.length - 1
 			? commaOffset(text, child.offset + child.length, children[index + 1].offset)
 			: commaOffset(text, children[index - 1].offset + children[index - 1].length, child.offset);
-		if (delimiter === undefined) throw new Error(`Internal Pi installer error: could not locate delimiter for extension index ${index}`);
+		if (delimiter === undefined) throw new Error(`Could not locate delimiter for array index ${index}`);
 		edits.push({ offset: delimiter, length: 1, content: "" });
 	}
 	return applyTextEdits(text, edits);
@@ -276,10 +303,10 @@ function updatePiSettings(
 }
 
 /** Registers the Pi extension entry point in `~/.pi/agent/settings.json`. */
-export const piInstaller: HarnessInstaller = {
+export const piInstaller = installer({
 	harness: "pi",
 	description: "Register the Pi extension in ~/.pi/agent/settings.json",
-	async install(ctx) {
+	async prepare(ctx, uninstall) {
 		const agentDir = join(ctx.home, ".pi", "agent");
 		const settingsPath = join(agentDir, "settings.json");
 		const ownershipDir = join(agentDir, "audit-trail");
@@ -287,6 +314,7 @@ export const piInstaller: HarnessInstaller = {
 		const entry = join(ctx.packageRoot, "src", "adapters", "pi.ts");
 		const manualInstruction = `Add ${JSON.stringify(entry)} to the top-level "extensions" array manually.`;
 
+		await checkParents(ctx.home, settingsPath);
 		// Preflight every path and parse both documents before the first write.
 		const settingsFile = await existingRegularFile(settingsPath, "Pi settings", manualInstruction);
 		await assertDirectoryOrMissing(ownershipDir, "Pi installer ownership directory");
@@ -296,32 +324,48 @@ export const piInstaller: HarnessInstaller = {
 			`Move or remove ${recordPath} explicitly before installing.`,
 		);
 		const previousRecord = recordFile ? parsePiInstallRecord(recordFile.content, recordPath) : undefined;
+		if (uninstall) {
+			let content = settingsFile?.content;
+			if (previousRecord && content !== undefined) {
+				const { values } = readExtensions(content, settingsPath, manualInstruction);
+				for (let i = values.length - 1; i >= 0; i--) {
+					if (previousRecord.managedEntries.includes(values[i])) content = removeExtensionAt(content, settingsPath, manualInstruction, i);
+				}
+			}
+			return async () => {
+				if (content !== undefined && content !== settingsFile?.content) await writeAtomic(settingsPath, content, settingsFile!.mode);
+				if (recordFile) await rm(recordPath);
+				return { harness: "pi", changed: !!recordFile, message: recordFile ? "unregistered" : "not managed" };
+			};
+		}
 		const managedEntries = new Set([...(previousRecord?.managedEntries ?? []), entry]);
 		const settingsUpdate = updatePiSettings(settingsFile?.content, settingsPath, entry, managedEntries);
 		const nextRecord: PiInstallRecord = { version: PI_INSTALL_RECORD_VERSION, managedEntries: [...managedEntries] };
 		const recordContent = `${JSON.stringify(nextRecord, null, 2)}\n`;
 		const recordChanged = recordFile?.content !== recordContent;
 		const settingsChanged = settingsFile?.content !== settingsUpdate.content;
-		if (!recordChanged && !settingsChanged) {
-			return { harness: "pi", changed: false, message: `already registered in ${settingsPath}: ${entry}` };
-		}
+		return async () => {
+			if (!recordChanged && !settingsChanged) {
+				return { harness: "pi", changed: false, message: `already registered in ${settingsPath}: ${entry}` };
+			}
 
-		// Record ownership before settings mutation and retain historical paths.
-		// If the second atomic rename is interrupted, the next install can still
-		// safely reconcile every path involved without guessing ownership.
-		if (recordChanged) await writeAtomic(recordPath, recordContent, recordFile?.mode ?? 0o600);
-		if (settingsChanged) await writeAtomic(settingsPath, settingsUpdate.content, settingsFile?.mode ?? 0o600);
-		return {
-			harness: "pi",
-			changed: true,
-			message: settingsUpdate.replaced.length
-				? `registered ${entry} in ${settingsPath}, replacing recorded ${settingsUpdate.replaced.join(", ")}`
-				: settingsChanged
-					? `registered ${entry} in ${settingsPath}`
-					: `recorded ownership of existing registration in ${settingsPath}: ${entry}`,
+			// Record ownership before settings mutation and retain historical paths.
+			// If the second atomic rename is interrupted, the next install can still
+			// safely reconcile every path involved without guessing ownership.
+			if (recordChanged) await writeAtomic(recordPath, recordContent, recordFile?.mode ?? 0o600);
+			if (settingsChanged) await writeAtomic(settingsPath, settingsUpdate.content, settingsFile?.mode ?? 0o600);
+			return {
+				harness: "pi",
+				changed: true,
+				message: settingsUpdate.replaced.length
+					? `registered ${entry} in ${settingsPath}, replacing recorded ${settingsUpdate.replaced.join(", ")}`
+					: settingsChanged
+						? `registered ${entry} in ${settingsPath}`
+						: `recorded ownership of existing registration in ${settingsPath}: ${entry}`,
+			};
 		};
 	},
-};
+});
 
 const OPENCODE_MANAGED_MARKER = "audit-trail-managed:v1";
 const OPENCODE_COMMAND_MARKER = `<!-- ${OPENCODE_MANAGED_MARKER} -->\n`;
@@ -390,26 +434,27 @@ function opencodePluginShim(packageRoot: string): string {
  * unowned collisions and must never be overwritten.
  */
 function isManagedOpencodeFile(path: string, existing: string, desired: string): boolean {
-	if (existing.includes(OPENCODE_MANAGED_MARKER)) return true;
 	if (path.endsWith("/plugins/audit-trail.ts")) {
-		return existing.startsWith("// Managed by `audit-trail install opencode`;");
+		if (existing.startsWith(`// ${OPENCODE_MANAGED_MARKER}\n`)) return true;
+		const suffix = existing.match(/export \{ AuditTrailPlugin \} from ("[^\n]+");\n$/)?.[1];
+		if (!suffix) return false;
+		try {
+			const entry = JSON.parse(suffix);
+			const shim = opencodePluginShim(resolve(dirname(entry), "../.."));
+			return existing === shim.slice(shim.indexOf("\n") + 1);
+		} catch { return false; }
 	}
-	return existing === desired.replace(OPENCODE_COMMAND_MARKER, "");
+	// Only the description may vary between versions of the generated header.
+	const header = desired.slice(0, desired.indexOf(OPENCODE_COMMAND_MARKER) + OPENCODE_COMMAND_MARKER.length);
+	const normalizeDescription = (text: string) => text.replace(/^(---\ndescription: )[^\n]+\n/, "$1\n");
+	return existing === desired.replace(OPENCODE_COMMAND_MARKER, "") ||
+		normalizeDescription(existing).startsWith(normalizeDescription(header));
 }
 
-/**
- * Installs the OpenCode plugin shim and /audit-* command templates under
- * `~/.config/opencode`. Only files this package owns are written — OpenCode
- * auto-loads everything in `plugins/` and `commands/` — so repeated installs
- * are safe by construction and unrelated user configuration (opencode.json,
- * other plugins/commands) is never touched. Reinstalling regenerates the shim
- * from the current packageRoot, replacing a stale one from a prior install
- * location.
- */
-export const opencodeInstaller: HarnessInstaller = {
+export const opencodeInstaller = installer({
 	harness: "opencode",
 	description: "Install the OpenCode plugin shim and /audit-* commands under ~/.config/opencode",
-	async install(ctx) {
+	async prepare(ctx, uninstall) {
 		const configDir = join(ctx.home, ".config", "opencode");
 		const managed = new Map<string, string>([
 			[join(configDir, "plugins", "audit-trail.ts"), opencodePluginShim(ctx.packageRoot)],
@@ -417,98 +462,25 @@ export const opencodeInstaller: HarnessInstaller = {
 				([name, content]): [string, string] => [join(configDir, "commands", `${name}.md`), content],
 			),
 		]);
-		// Preflight every target before writing any of them: one unowned
-		// collision must not leave a partial installation behind.
-		const pending: [string, string][] = [];
+		const pending: Array<() => Promise<void>> = [];
 		const collisions: string[] = [];
 		for (const [path, content] of managed) {
-			let existing: string | undefined;
-			try {
-				existing = await readFile(path, "utf8");
-			} catch (error: any) {
-				if (error?.code !== "ENOENT") throw error;
-			}
-			if (existing === content) continue;
-			if (existing !== undefined && !isManagedOpencodeFile(path, existing, content)) {
+			await checkParents(ctx.home, path);
+			const file = await existingRegularFile(path, "OpenCode file", "Move the collision explicitly.");
+			if (file && !isManagedOpencodeFile(path, file.content, content)) {
 				collisions.push(path);
 				continue;
 			}
-			pending.push([path, content]);
+			if (uninstall && file) pending.push(() => rm(path));
+			if (!uninstall && file?.content !== content) pending.push(() => writeAtomic(path, content, file?.mode ?? 0o644));
 		}
-		if (collisions.length) {
-			throw new Error(
-				`Refusing to overwrite OpenCode files not managed by audit-trail:\n${collisions.map((path) => `- ${path}`).join("\n")}\nMove or remove the conflicting files, then run the installer again.`,
-			);
-		}
-		for (const [path, content] of pending) {
-			await mkdir(dirname(path), { recursive: true });
-			await writeFile(path, content, "utf8");
-		}
-		if (!pending.length) {
-			return { harness: "opencode", changed: false, message: `already installed under ${configDir}` };
-		}
-		return {
-			harness: "opencode",
-			changed: true,
-			message: `wrote ${pending.length} file${pending.length === 1 ? "" : "s"} under ${configDir} (plugin shim and /audit-* commands)`,
+		if (collisions.length) throw new Error(`Refusing to overwrite OpenCode files not managed by audit-trail: ${collisions.join(", ")}`);
+		return async () => {
+			for (const apply of pending) await apply();
+			return { harness: "opencode", changed: !!pending.length, message: pending.length ? `updated ${pending.length} files under ${configDir}` : uninstall ? "not installed" : "already installed" };
 		};
 	},
-};
-
-/**
- * Symlinks the package into Claude Code's skills directory, where any folder
- * with .claude-plugin/plugin.json loads as a plugin (audit-trail@skills-dir)
- * on the next session — discovered in place, with no marketplace and no
- * Claude-managed registry mutation. One symlink keeps installation idempotent
- * and structurally unable to touch unrelated Claude configuration. Because a
- * symlink cannot prove who created it, every different or non-symlink target is
- * a collision; package-location upgrades require explicit removal of the old
- * link before reinstalling.
- */
-export const claudeInstaller: HarnessInstaller = {
-	harness: "claude",
-	description: "Symlink the plugin into ~/.claude/skills (loads as audit-trail@skills-dir)",
-	async install(ctx) {
-		const manifestPath = join(ctx.packageRoot, ".claude-plugin", "plugin.json");
-		let manifestName: unknown;
-		try {
-			manifestName = JSON.parse(await readFile(manifestPath, "utf8"))?.name;
-		} catch (error: any) {
-			throw new Error(`Package is missing a readable Claude plugin manifest at ${manifestPath}: ${error?.message ?? error}`);
-		}
-		if (manifestName !== "audit-trail") {
-			throw new Error(`Unexpected plugin name in ${manifestPath}: ${String(manifestName)}`);
-		}
-		const linkPath = join(ctx.home, ".claude", "skills", "audit-trail");
-		let existing;
-		try {
-			existing = await lstat(linkPath);
-		} catch (error: any) {
-			if (error?.code !== "ENOENT") throw error;
-		}
-		if (existing) {
-			if (!existing.isSymbolicLink()) {
-				throw new Error(
-					`Refusing to replace ${linkPath}: it is not a symlink managed by audit-trail. Move or remove it, then run the installer again.`,
-				);
-			}
-			const currentTarget = resolve(dirname(linkPath), await readlink(linkPath));
-			if (currentTarget === resolve(ctx.packageRoot)) {
-				return { harness: "claude", changed: false, message: `already linked: ${linkPath} -> ${ctx.packageRoot}` };
-			}
-			throw new Error(
-				`Refusing to replace ${linkPath}: it points at a different target (${currentTarget}), and symlink ownership cannot be proven. Remove it explicitly, then run the installer again.`,
-			);
-		}
-		await mkdir(dirname(linkPath), { recursive: true });
-		await symlink(ctx.packageRoot, linkPath, "dir");
-		return {
-			harness: "claude",
-			changed: true,
-			message: `linked ${linkPath} -> ${ctx.packageRoot}; Claude Code loads it as audit-trail@skills-dir on the next session`,
-		};
-	},
-};
+});
 
 const CODEX_PLUGIN_ENTRY = {
 	name: "audit-trail",
@@ -517,112 +489,124 @@ const CODEX_PLUGIN_ENTRY = {
 	category: "Developer Tools",
 };
 
-/** Install the package as a local Codex plugin through the personal marketplace. */
-export const codexInstaller: HarnessInstaller = {
-	harness: "codex",
-	description: "Install the Codex plugin through the personal local marketplace",
-	async install(ctx) {
-		if (!ctx.runner) throw new Error("Codex installation requires a command runner");
-		const manifestPath = join(ctx.packageRoot, ".codex-plugin", "plugin.json");
-		let manifest: any;
-		try {
-			manifest = JSON.parse(await readFile(manifestPath, "utf8"));
-		} catch (error: any) {
-			throw new Error(`Package is missing a readable Codex plugin manifest at ${manifestPath}: ${error?.message ?? error}`);
-		}
-		if (manifest?.name !== "audit-trail") throw new Error(`Unexpected plugin name in ${manifestPath}: ${String(manifest?.name)}`);
-
-		const probe = await ctx.runner.exec("codex", ["--version"], { timeout: 15_000 });
-		if (probe.code !== 0) throw new Error(`codex CLI is unavailable: ${probe.stderr.trim() || `exit ${probe.code}`}`);
-
-		const linkPath = join(ctx.home, "plugins", "audit-trail");
-		const marketplacePath = join(ctx.home, ".agents", "plugins", "marketplace.json");
-		let linkChanged = false;
-		let existingLink;
-		try {
-			existingLink = await lstat(linkPath);
-		} catch (error: any) {
-			if (error?.code !== "ENOENT") throw error;
-		}
-		if (existingLink) {
-			if (!existingLink.isSymbolicLink()) {
-				throw new Error(`Refusing to replace ${linkPath}: it is not a symlink managed by audit-trail.`);
-			}
-			const target = resolve(dirname(linkPath), await readlink(linkPath));
-			if (target !== resolve(ctx.packageRoot)) {
-				throw new Error(`Refusing to replace ${linkPath}: it points at a different target (${target}).`);
-			}
-		} else {
-			linkChanged = true;
-		}
-
-		let marketplace: any = {
-			name: "personal",
-			interface: { displayName: "Personal" },
-			plugins: [],
-		};
-		let marketplaceExists = false;
-		try {
-			marketplace = JSON.parse(await readFile(marketplacePath, "utf8"));
-			marketplaceExists = true;
-		} catch (error: any) {
-			if (error?.code !== "ENOENT") throw new Error(`Cannot read ${marketplacePath}: ${error?.message ?? error}`);
-		}
-		if (typeof marketplace?.name !== "string" || !marketplace.name || !Array.isArray(marketplace.plugins)) {
-			throw new Error(`Unexpected personal marketplace structure in ${marketplacePath}`);
-		}
-		const existingEntry = marketplace.plugins.find((entry: any) => entry?.name === "audit-trail");
-		if (
-			existingEntry &&
-			(existingEntry?.source?.source !== CODEX_PLUGIN_ENTRY.source.source ||
-				existingEntry?.source?.path !== CODEX_PLUGIN_ENTRY.source.path)
-		) {
-			throw new Error(`Refusing to replace the unrelated audit-trail entry in ${marketplacePath}`);
-		}
-		const marketplaceChanged = !existingEntry || JSON.stringify(existingEntry) !== JSON.stringify(CODEX_PLUGIN_ENTRY);
-		const nextMarketplace = marketplaceChanged
-			? {
-					...marketplace,
-					plugins: [
-						...marketplace.plugins.filter((entry: any) => entry?.name !== "audit-trail"),
-						CODEX_PLUGIN_ENTRY,
-					],
-				}
-			: marketplace;
-
-		// All ownership and structure checks complete before the first write.
-		if (linkChanged) {
-			await mkdir(dirname(linkPath), { recursive: true });
-			await symlink(ctx.packageRoot, linkPath, "dir");
-		}
-		if (marketplaceChanged || !marketplaceExists) {
-			await mkdir(dirname(marketplacePath), { recursive: true });
-			await writeFile(marketplacePath, `${JSON.stringify(nextMarketplace, null, 2)}\n`, "utf8");
-		}
-		const added = await ctx.runner.exec("codex", ["plugin", "add", `audit-trail@${marketplace.name}`], {
-			timeout: 60_000,
-		});
-		if (added.code !== 0) throw new Error(added.stderr.trim() || `codex plugin add exited ${added.code}`);
-		return {
-			harness: "codex",
-			changed: linkChanged || marketplaceChanged,
-			message: `${linkChanged || marketplaceChanged ? "installed" : "already installed"} audit-trail@${marketplace.name}; start a new Codex thread, open /hooks, and trust the plugin hooks`,
-		};
-	},
-};
-
-function plannedInstaller(harness: string, issue: string): HarnessInstaller {
-	return {
-		harness,
-		description: `${harness} support ships in ${issue}`,
-		planned: true,
-		async install() {
-			return { harness, changed: false, message: `${harness} support ships in ${issue}; nothing installed` };
-		},
-	};
+function parseDocument(content: string, path: string): any {
+	try { return JSON.parse(content); }
+	catch { throw new Error(`Invalid JSON in ${path}; resolve the collision manually.`); }
 }
 
-/** Harness registry; later issues replace planned entries with real installers. */
+function rejectDuplicateKeys(node: Node, path: string): void {
+	const children = node.children ?? [];
+	if (node.type === "object" && new Set(children.map(p => p.children![0].value)).size !== children.length) {
+		throw new Error(`Ambiguous duplicate keys in ${path}`);
+	}
+	for (const child of children) rejectDuplicateKeys(child, path);
+}
+
+async function codexProfile(ctx: InstallContext): Promise<string> {
+	const selected = ctx.codexHome || join(ctx.home, ".codex");
+	if (!ctx.codexHome) await assertDirectoryOrMissing(selected, "default Codex profile");
+	let bytes: Buffer;
+	try {
+		bytes = await realpath(selected, { encoding: "buffer" });
+	} catch (error: any) {
+		// Only the implicit default may be created by Codex on first use.
+		if (ctx.codexHome || error.code !== "ENOENT") throw error;
+		bytes = Buffer.concat([await realpath(ctx.home, { encoding: "buffer" }), Buffer.from("/.codex")]);
+	}
+	if (!isUtf8(bytes)) throw new Error("Cannot record a non-UTF-8 Codex profile");
+	const physical = bytes.toString("utf8");
+	await assertDirectoryOrMissing(physical, "resolved Codex profile");
+	return physical;
+}
+
+function pluginInstaller(harness: "claude" | "codex"): HarnessInstaller {
+	return installer({
+		harness,
+		description: `Register the ${harness} plugin`,
+		async prepare(ctx, uninstall) {
+			const codex = harness === "codex";
+			const link = codex ? join(ctx.home, "plugins/audit-trail") : join(ctx.home, ".claude/skills/audit-trail");
+			const receipt = join(ctx.home, ".local/state/audit-trail", `${harness}.json`);
+			await checkParents(ctx.home, link);
+			await checkParents(ctx.home, receipt);
+			if (!uninstall) {
+				const manifest = JSON.parse(await readFile(join(ctx.packageRoot, `.${harness}-plugin/plugin.json`), "utf8"));
+				if (manifest?.name !== "audit-trail") throw new Error(`Unexpected plugin name in ${harness} manifest`);
+			}
+			const file = await existingRegularFile(receipt, "plugin ownership record", "Resolve the collision manually.");
+			const previous = file && parseDocument(file.content, receipt);
+			if (file && (previous?.version !== 1 || typeof previous.target !== "string" || !isAbsolute(previous.target) ||
+				(codex && (typeof previous.market !== "string" || !previous.market)))) throw new Error(`Malformed ownership record: ${receipt}`);
+			if (uninstall && !file) return async () => ({ harness, changed: false, message: "not managed" });
+			const target = resolve(ctx.packageRoot);
+			let current: Buffer | undefined;
+			try {
+				current = await readlink(link, { encoding: "buffer" });
+			} catch (error: any) {
+				if (error.code === "EINVAL") throw new Error(`Refusing to replace ${link}: not a symlink`);
+				if (error.code !== "ENOENT") throw error;
+			}
+			if (current && !current.equals(Buffer.from(previous?.target ?? target))) {
+				throw new Error(`Refusing to replace ${link}: ownership cannot be proven`);
+			}
+			const currentTarget = current?.equals(Buffer.from(target));
+			const marketplacePath = join(ctx.home, ".agents/plugins/marketplace.json");
+			let market: string | undefined;
+			let profile: string | undefined;
+			let updateMarket: (() => Promise<void>) | undefined;
+			if (codex) {
+				profile = await codexProfile(ctx);
+				if (previous && previous.profile !== profile) throw new Error("Codex profile differs from installer receipt; select the original CODEX_HOME.");
+				if (!ctx.runner || (await ctx.runner.exec("codex", ["--version"], { timeout: 15000 })).code !== 0) throw new Error("codex CLI is unavailable");
+				await checkParents(ctx.home, marketplacePath);
+				const existing = await existingRegularFile(marketplacePath, "Codex marketplace", "Resolve the collision manually.");
+				const doc = existing ? parseDocument(existing.content, marketplacePath) : { name: previous?.market ?? "personal", interface: { displayName: "Personal" }, plugins: [] };
+				if (typeof doc?.name !== "string" || !doc.name || !Array.isArray(doc.plugins) || (previous && previous.market !== doc.name)) {
+					throw new Error(`Unexpected personal marketplace structure or identity in ${marketplacePath}`);
+				}
+				const original = existing?.content ?? JSON.stringify(doc, null, 2) + "\n";
+				const root = parseTree(original)!;
+				rejectDuplicateKeys(root, marketplacePath);
+				const plugins = findNodeAtLocation(root, ["plugins"])!;
+				market = doc.name;
+				const matches = doc.plugins.filter((entry: any) => entry?.name === "audit-trail");
+				if (matches.length > 1 || (matches.length && !isDeepStrictEqual(matches[0], CODEX_PLUGIN_ENTRY))) {
+					throw new Error(`Refusing to replace the unrelated audit-trail entry in ${marketplacePath}`);
+				}
+				if (uninstall ? matches.length : !matches.length) {
+					const updated = uninstall
+						? removeArrayItem(original, plugins, doc.plugins.indexOf(matches[0]))
+						: appendContainerValue(original, plugins, JSON.stringify(CODEX_PLUGIN_ENTRY), inferredIndent(original, root));
+					updateMarket = () => writeAtomic(marketplacePath, updated, existing?.mode ?? 0o600);
+				}
+			}
+			const native = async (verb: "add" | "remove") => {
+				const result = await ctx.runner!.exec("codex", ["plugin", verb, `audit-trail@${market}`], { timeout: 60000 });
+				if (result.code !== 0) throw new Error(`codex plugin ${verb} exited ${result.code}`);
+			};
+			return async () => {
+				if (uninstall && codex) await native("remove");
+				if (current && (uninstall || !currentTarget)) await rm(link);
+				if (!uninstall) {
+					if (previous?.target !== target) await writeAtomic(receipt, JSON.stringify({ version: 1, target, market, profile }) + "\n", 0o600);
+					if (!currentTarget) {
+						await mkdir(dirname(link), { recursive: true });
+						await symlink(target, link, "dir");
+					}
+				}
+				await updateMarket?.();
+				if (!uninstall && codex) await native("add");
+				if (uninstall) await rm(receipt);
+				const changed = uninstall || previous?.target !== target || !currentTarget || !!updateMarket;
+				return { harness, changed, message: uninstall ? "unregistered" : codex ? `registered audit-trail@${market}; start a new thread and trust /hooks` : changed ? `linked ${link}` : "already linked" };
+			};
+		},
+	});
+}
+
+export const claudeInstaller = pluginInstaller("claude");
+export const codexInstaller = pluginInstaller("codex");
+
 export const installers: readonly HarnessInstaller[] = [
 	piInstaller,
 	claudeInstaller,
