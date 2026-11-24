@@ -5,7 +5,7 @@ import { publishRawAudit } from "../core/github-publisher.ts";
 import { runIndependentReview } from "../core/independent-review.ts";
 import type { CommandRunner, ReviewerPort, SessionIdentity } from "../core/ports.ts";
 import { formatBlockingReviewMessage } from "../core/review.ts";
-import type { ReviewCandidate } from "../core/reviewer-candidates.ts";
+import { REVIEW_MODEL_ALLOWLIST_TEXT, type ReviewCandidate } from "../core/reviewer-candidates.ts";
 import { formatStatusLines } from "../core/status.ts";
 import { reviewBlocker } from "../core/validation.ts";
 import {
@@ -100,14 +100,13 @@ const TOOLS: ToolDefinition[] = [
 	{
 		name: "audit_review",
 		description:
-			"Run an independent transcript-less review with the given provider/model and record the checkpoint. May take several minutes; this server handles requests sequentially, so other tool calls queue behind it.",
+			`Run an independent transcript-less review with an allowed provider/model and record the checkpoint. Allowed families: ${REVIEW_MODEL_ALLOWLIST_TEXT}. May take several minutes; this server handles requests sequentially, so other tool calls queue behind it.`,
 		inputSchema: {
 			type: "object",
 			properties: {
 				model: {
 					type: "string",
-					description:
-						"Reviewer as provider/model. When Anthropic is cross-provider, prefer anthropic/claude-fable-5, then anthropic/claude-opus-5",
+					description: `Reviewer as provider/model. Allowed families: ${REVIEW_MODEL_ALLOWLIST_TEXT}`,
 				},
 				mode: {
 					type: "string",
@@ -315,7 +314,6 @@ export class McpAuditServer {
 				let candidates: ReviewCandidate[];
 				if (this.reviewCandidates) {
 					candidates = await this.reviewCandidates(args);
-					if (!candidates.length) throw new Error("No reviewer candidates are available.");
 				} else {
 					const model = requireString(args, "model");
 					if (!model.includes("/")) throw new Error("model must be provider/model");

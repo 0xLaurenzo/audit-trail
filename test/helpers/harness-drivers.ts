@@ -11,7 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { handleClaudeHook } from "../../src/adapters/claude-hook.ts";
-import { createClaudeSubprocessReviewer } from "../../src/adapters/claude-reviewer.ts";
+import { createClaudeSubprocessReviewer, selectClaudeReviewCandidates } from "../../src/adapters/claude-reviewer.ts";
 import { handleCodexHook } from "../../src/adapters/codex-hook.ts";
 import { createCodexMcpHandler } from "../../src/adapters/codex-mcp.ts";
 import { AuditTrailPlugin } from "../../src/adapters/opencode.ts";
@@ -134,6 +134,8 @@ export interface HarnessDriver {
 	readonly harness: ShippedHarness;
 	/** Explicit reviewer accepted by this harness's pinned-review path. */
 	readonly explicitReviewModel: string;
+	/** Automatic allowed reviewer order exposed through the real adapter boundary. */
+	readonly automaticReviewModels: string[];
 	/** Mutable script: reviewer behavior per `provider/model`. */
 	readonly reviewerScript: Record<string, ReviewerBehavior>;
 	/** Scripted Git/GitHub externals for publish-path tests. */
@@ -161,13 +163,14 @@ export type DriverFactory = (root: string) => Promise<HarnessDriver>;
 
 const failGit: ExecResult = { code: 1, stdout: "", stderr: "git unavailable" };
 
-export const DEFAULT_WORKING_MODEL: ReviewModel = { provider: "anthropic", id: "claude-opus-4-8" };
+export const DEFAULT_WORKING_MODEL: ReviewModel = { provider: "anthropic", id: "claude-opus-5" };
 export const DEFAULT_CATALOG: ReviewModel[] = [
 	DEFAULT_WORKING_MODEL,
-	{ provider: "anthropic", id: "claude-opus-5" },
+	{ provider: "anthropic", id: "claude-opus-4-8" },
 	{ provider: "anthropic", id: "claude-fable-5" },
-	{ provider: "openai", id: "fable-5" },
+	{ provider: "openai", id: "gpt-5.4" },
 	{ provider: "openai", id: "gpt-5.6-sol" },
+	{ provider: "openai-codex", id: "gpt-6-astra" },
 ];
 
 function behaviorText(behavior: Exclude<ReviewerBehavior, "fail">): string {
@@ -255,6 +258,7 @@ export const createPiDriver: DriverFactory = async (root) => {
 	return {
 		harness: "pi",
 		explicitReviewModel: "openai/gpt-5.6-sol",
+		automaticReviewModels: ["openai-codex/gpt-6-astra", "openai/gpt-5.6-sol", "anthropic/claude-fable-5", "anthropic/claude-opus-5"],
 		reviewerScript,
 		github,
 		async start(task) {
@@ -357,6 +361,7 @@ export const createOpencodeDriver: DriverFactory = async (root) => {
 	const driver: HarnessDriver = {
 		harness: "opencode",
 		explicitReviewModel: "openai/gpt-5.6-sol",
+		automaticReviewModels: ["openai-codex/gpt-6-astra", "openai/gpt-5.6-sol", "anthropic/claude-fable-5", "anthropic/claude-opus-5"],
 		reviewerScript,
 		github,
 		async start(task) {
@@ -428,11 +433,12 @@ export const createClaudeDriver: DriverFactory = async (root) => {
 		workflow,
 		runner: gitRunner,
 		reviewer: createClaudeSubprocessReviewer(claudeRunner),
+		reviewCandidates: async (args) => selectClaudeReviewCandidates(args.model, "claude-opus-5"),
 		session: { harness: "claude", id: "claude-contract-session" },
 	});
 	// Record hook session state so guidance/guard run against a live session.
 	await handleClaudeHook(
-		JSON.stringify({ hook_event_name: "SessionStart", session_id: "claude-contract-session", cwd: root }),
+		JSON.stringify({ hook_event_name: "SessionStart", session_id: "claude-contract-session", model: "claude-opus-5", cwd: root }),
 		() => gitRunner,
 		env,
 	);
@@ -448,6 +454,7 @@ export const createClaudeDriver: DriverFactory = async (root) => {
 	return {
 		harness: "claude",
 		explicitReviewModel: "anthropic/claude-fable-5",
+		automaticReviewModels: ["anthropic/claude-fable-5", "anthropic/claude-opus-5"],
 		reviewerScript,
 		github,
 		async start(task) {
@@ -465,13 +472,13 @@ export const createClaudeDriver: DriverFactory = async (root) => {
 		async status() {
 			return server.call("audit_status", {});
 		},
-		// The claude reviewer runs same-provider models only; mode is explicit.
-		review: (model) => outcome(() => server.call("audit_review", { model: model ?? "", mode: "cross-model" })),
+		// The Claude reviewer is provider-bound; selection derives truthful mode.
+		review: (model) => outcome(() => server.call("audit_review", { model: model ?? "" })),
 		publish: () => outcome(() => server.call("audit_publish", {})),
 		abandon: (task, reason) => outcome(() => server.call("audit_abandon", { task, reason })),
 		close: () => outcome(() => server.call("audit_close", {})),
 		async guidance() {
-			const result = await hook({ hook_event_name: "SessionStart", session_id: "claude-contract-session", cwd: root });
+			const result = await hook({ hook_event_name: "SessionStart", session_id: "claude-contract-session", model: "claude-opus-5", cwd: root });
 			if (!result.output) return undefined;
 			return JSON.parse(result.output).hookSpecificOutput?.additionalContext as string | undefined;
 		},
@@ -557,6 +564,7 @@ export const createCodexDriver: DriverFactory = async (root) => {
 	return {
 		harness: "codex",
 		explicitReviewModel: "openai/gpt-5.6-sol",
+		automaticReviewModels: ["openai/gpt-6-astra", "openai/gpt-5.6-sol"],
 		reviewerScript,
 		github,
 		async start(task) {

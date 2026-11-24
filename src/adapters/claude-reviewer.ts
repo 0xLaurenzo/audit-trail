@@ -1,4 +1,13 @@
 import type { CommandRunner, ReviewerPort, ReviewerRequest } from "../core/ports.ts";
+import { providerBoundReviewCandidates, type ReviewCandidate } from "../core/reviewer-candidates.ts";
+
+/** Fixed Anthropic allowlist with truthful modes derived from hook-captured model metadata. */
+export function selectClaudeReviewCandidates(requested: unknown, working: string | undefined): ReviewCandidate[] {
+	if (!working) {
+		throw new Error("Claude SessionStart did not provide a working model; start a new Claude session before review");
+	}
+	return providerBoundReviewCandidates("anthropic", requested, working);
+}
 
 /**
  * ReviewerPort implementation that runs non-interactive Claude Code. Headless

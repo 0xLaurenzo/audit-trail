@@ -128,58 +128,48 @@ test("unreadable active state fails closed for .audit writes", async () => {
 	}
 });
 
-test("reviewer candidates cover cross-provider, then cross-model, then the working model", () => {
-	const working: ReviewModelRef = { provider: "anthropic", id: "claude-opus-4-8" };
+test("reviewer candidates filter the catalog and preserve truthful tiers", () => {
+	const working: ReviewModelRef = { provider: "anthropic", id: "claude-opus-5" };
 	const catalog: ReviewModelRef[] = [
+		working,
 		{ provider: "anthropic", id: "claude-opus-4-8" },
-		{ provider: "anthropic", id: "claude-opus-5" },
 		{ provider: "anthropic", id: "claude-fable-5" },
+		{ provider: "openai", id: "gpt-5.4" },
 		{ provider: "openai", id: "gpt-5.6-sol" },
+		{ provider: "openai-codex", id: "gpt-6-astra" },
 		{ provider: "zai", id: "glm-5" },
 	];
 
-	// Automatic selection returns the full tier ordering so runtime failures
-	// can fall through every candidate.
 	assert.deepEqual(selectOpencodeReviewerCandidates(catalog, working), [
+		{ model: "openai-codex/gpt-6-astra", mode: "cross-provider" },
 		{ model: "openai/gpt-5.6-sol", mode: "cross-provider" },
-		{ model: "zai/glm-5", mode: "cross-provider" },
 		{ model: "anthropic/claude-fable-5", mode: "cross-model" },
-		{ model: "anthropic/claude-opus-5", mode: "cross-model" },
-		{ model: "anthropic/claude-opus-4-8", mode: "same-model" },
+		{ model: "anthropic/claude-opus-5", mode: "same-model" },
 	]);
-
 	assert.deepEqual(
-		selectOpencodeReviewerCandidates(
-			catalog.filter((model) => model.provider === "anthropic"),
-			working,
-		),
+		selectOpencodeReviewerCandidates(catalog.filter((model) => model.provider === "anthropic"), working),
 		[
 			{ model: "anthropic/claude-fable-5", mode: "cross-model" },
-			{ model: "anthropic/claude-opus-5", mode: "cross-model" },
-			{ model: "anthropic/claude-opus-4-8", mode: "same-model" },
+			{ model: "anthropic/claude-opus-5", mode: "same-model" },
 		],
 	);
-
-	// Empty catalog falls back to the working model itself. Missing working
-	// metadata must fail instead of inventing an independence mode.
 	assert.deepEqual(selectOpencodeReviewerCandidates([], working), [
-		{ model: "anthropic/claude-opus-4-8", mode: "same-model" },
+		{ model: "anthropic/claude-opus-5", mode: "same-model" },
 	]);
+	assert.throws(
+		() => selectOpencodeReviewerCandidates([], { provider: "anthropic", id: "claude-opus-4-8" }),
+		/No allowed review model is available/,
+	);
 	assert.throws(() => selectOpencodeReviewerCandidates([], undefined), /Working model metadata is unavailable/);
 	assert.throws(() => selectOpencodeReviewerCandidates(catalog, undefined), /Working model metadata is unavailable/);
-	assert.throws(
-		() => selectOpencodeReviewerCandidates(catalog, undefined, "openai/gpt-5.6-sol"),
-		/Working model metadata is unavailable/,
-	);
 
-	// Explicit requests stay pinned to a single candidate: honored when known,
-	// rejected when the catalog disagrees, trusted verbatim without a catalog.
 	assert.deepEqual(selectOpencodeReviewerCandidates(catalog, working, "openai/gpt-5.6-sol"), [
 		{ model: "openai/gpt-5.6-sol", mode: "cross-provider" },
 	]);
-	assert.throws(() => selectOpencodeReviewerCandidates(catalog, working, "mistral/large-3"), /unavailable/);
-	assert.deepEqual(selectOpencodeReviewerCandidates([], working, "zai/glm-5"), [
-		{ model: "zai/glm-5", mode: "cross-provider" },
+	assert.throws(() => selectOpencodeReviewerCandidates(catalog, working, "openai/gpt-5.4"), /Unsupported review model/);
+	assert.throws(() => selectOpencodeReviewerCandidates(catalog, working, "openai/gpt-6-astra"), /unavailable/);
+	assert.deepEqual(selectOpencodeReviewerCandidates([], working, "openai-codex/gpt-6-astra"), [
+		{ model: "openai-codex/gpt-6-astra", mode: "cross-provider" },
 	]);
 	assert.throws(() => selectOpencodeReviewerCandidates(catalog, working, "not-a-model"), /provider\/model/);
 });
@@ -217,6 +207,7 @@ test("opencode installer writes shim and commands idempotently without touching 
 			assert.match(command, new RegExp(`${name.replace("-", "_")} tool`), `${name} instructs its tool`);
 			if (name === "audit-review") {
 				assert.ok(command.indexOf("anthropic/claude-fable-5") < command.indexOf("anthropic/claude-opus-5"));
+				assert.match(command, /openai\/gpt-6-astra.*openai\/gpt-5\.6-sol/);
 			}
 		}
 

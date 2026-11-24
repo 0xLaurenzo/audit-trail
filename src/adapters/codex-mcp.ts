@@ -7,12 +7,15 @@ import {
 	type McpRequestHandler,
 	type McpServerOptions,
 } from "../mcp/server.ts";
+import { providerReviewModels } from "../core/reviewer-candidates.ts";
 import { createCodexSubprocessReviewer, selectCodexReviewCandidates } from "./codex-reviewer.ts";
 import {
 	findCodexSessionState,
 	readCodexSessionState,
 	type CodexSessionState,
 } from "./codex-session.ts";
+
+const CODEX_REVIEW_MODELS = providerReviewModels("openai").join(", ");
 
 type CodexMcpOptions = Pick<
 	McpServerOptions,
@@ -46,10 +49,12 @@ function optionsForState(
 		},
 		reviewTool: {
 			description:
-				"Run an independent Codex review. Omit model to use the captured working model; a different OpenAI model is recorded as cross-model.",
+				`Run an independent Codex review. Omit model to try the fixed allowed order (${CODEX_REVIEW_MODELS}); review mode is derived against the captured working model.`,
 			inputSchema: {
 				type: "object",
-				properties: { model: { type: "string", description: "Optional OpenAI reviewer model ID" } },
+				properties: {
+					model: { type: "string", description: `Optional allowed OpenAI reviewer model ID: ${CODEX_REVIEW_MODELS}` },
+				},
 			},
 		},
 	};

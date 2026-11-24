@@ -24,7 +24,7 @@ Use the audit-trail MCP tools for all audit operations. Never create, edit, or r
    - consequential pivots or reverts
 4. Do not log routine commands, commits, branches, formatting, straightforward implementation, or ordinary verification.
 5. Use `audit_status` before review. Resolve open, inconclusive, low-confidence, or unsupported active decisions, superseding earlier rows rather than modifying them.
-6. Call `audit_review`. Omit `model` to use the current Codex working model, or pass a different OpenAI model ID for a cross-model review. Report blocking findings verbatim and address them before reviewing again.
+6. Call `audit_review` without `model` so Audit Trail tries its maintained Codex order (`gpt-6-astra`, then `gpt-5.6-sol`). Only pass `model` to pin one of those allowed families; older models are rejected. Report blocking findings verbatim and address them before reviewing again.
 7. After an approving review of the current bytes, call `audit_publish` while checked out at the exact pull-request head. Pass a PR number or URL only when branch lookup is inappropriate.
 8. Call `audit_close` only after publication and only when it reports no blockers.
 

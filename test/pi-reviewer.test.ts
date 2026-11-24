@@ -4,10 +4,12 @@ import { createPiSubprocessReviewer, extractFinalAssistantOutput } from "../src/
 import { selectPiReviewerCandidates } from "../src/adapters/pi.ts";
 import type { CommandRunner } from "../src/core/ports.ts";
 
-test("Pi candidate selection requires working metadata even for an explicit model", () => {
+test("Pi candidate selection requires working metadata and enforces the allowlist", () => {
 	const available = [
 		{ provider: "anthropic", id: "claude-opus-4-8" },
+		{ provider: "openai", id: "gpt-5.4" },
 		{ provider: "openai", id: "gpt-5.6-sol" },
+		{ provider: "openai-codex", id: "gpt-6-astra" },
 	];
 	assert.throws(
 		() => selectPiReviewerCandidates(available, undefined, "openai/gpt-5.6-sol"),
@@ -17,6 +19,15 @@ test("Pi candidate selection requires working metadata even for an explicit mode
 		selectPiReviewerCandidates(available, available[0], "openai/gpt-5.6-sol"),
 		[{ model: "openai/gpt-5.6-sol", mode: "cross-provider" }],
 		"explicit selection remains pinned to exactly one candidate",
+	);
+	assert.deepEqual(selectPiReviewerCandidates(available, available[0]), [
+		{ model: "openai-codex/gpt-6-astra", mode: "cross-provider" },
+		{ model: "openai/gpt-5.6-sol", mode: "cross-provider" },
+	]);
+	assert.throws(() => selectPiReviewerCandidates(available, available[0], "openai/gpt-5.4"), /Unsupported review model/);
+	assert.throws(
+		() => selectPiReviewerCandidates(available.slice(0, 2), available[0]),
+		/No allowed review model is available/,
 	);
 });
 

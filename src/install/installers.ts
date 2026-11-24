@@ -4,6 +4,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createScanner, findNodeAtLocation, parseTree, printParseErrorCode, type Node, type ParseError } from "jsonc-parser";
 import type { CommandRunner } from "../core/ports.ts";
+import { REVIEW_MODEL_ALLOWLIST_TEXT } from "../core/reviewer-candidates.ts";
 
 export interface InstallContext {
 	/** Home directory whose harness configuration is modified. */
@@ -355,7 +356,7 @@ ${OPENCODE_COMMAND_MARKER}Call the audit_status tool with no arguments and repor
 	"audit-review": `---
 description: Run an independent review of the active decision audit
 ---
-${OPENCODE_COMMAND_MARKER}Call the audit_review tool. If "$ARGUMENTS" is non-empty, pass it as the model argument (provider/model); otherwise omit model so a cross-provider reviewer is selected automatically. When Anthropic is cross-provider, prefer anthropic/claude-fable-5, then anthropic/claude-opus-5. The review may take several minutes. Report the tool output verbatim.
+${OPENCODE_COMMAND_MARKER}Call the audit_review tool without a model so Audit Trail selects automatically from its maintained allowlist (${REVIEW_MODEL_ALLOWLIST_TEXT}). If "$ARGUMENTS" explicitly pins a model, pass it as provider/model; unsupported families are rejected. The review may take several minutes. Report the tool output verbatim.
 `,
 	"audit-abandon": `---
 description: Archive an unpublishable audit as abandoned without closing it as complete
