@@ -157,7 +157,7 @@ const TOOLS: ToolDefinition[] = [
 	},
 	{
 		name: "audit_close",
-		description: "Close the audit; fails while decisions are unresolved or the latest bytes are unreviewed.",
+		description: "Close the audit; fails while decisions are unresolved or the current audit content does not match the last approving review.",
 		inputSchema: { type: "object", properties: {} },
 	},
 ];
