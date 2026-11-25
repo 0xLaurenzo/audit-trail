@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, readlink, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -196,9 +196,21 @@ test("opencode installer removes its retired rollover command but not a user-own
 		await writeFile(retired, "---\ndescription: old\n---\n<!-- audit-trail-managed:v1 -->\nCall the audit_rollover tool.\n", "utf8");
 		assert.equal((await opencodeInstaller.install(ctx)).changed, true);
 		await assert.rejects(() => readFile(retired, "utf8"), /ENOENT/);
-		await writeFile(retired, "---\ndescription: mine\n---\nMy own command.\n", "utf8");
+		await writeFile(retired, "---\ndescription: old\n---\n<!-- audit-trail-managed:v1 -->\nCall the audit_rollover tool.\n", "utf8");
+		await (await opencodeInstaller.prepare(ctx, true))();
+		await assert.rejects(() => readFile(retired, "utf8"), /ENOENT/);
+		await opencodeInstaller.install(ctx);
+		// A user file that merely quotes the marker, and a symlink, are unowned: never removed, never fatal.
+		const mine = "---\ndescription: mine\n---\nMy own command quoting <!-- audit-trail-managed:v1 -->\n";
+		await writeFile(retired, mine, "utf8");
 		assert.equal((await opencodeInstaller.install(ctx)).changed, false);
-		assert.match(await readFile(retired, "utf8"), /My own command/);
+		await (await opencodeInstaller.prepare(ctx, true))();
+		assert.equal(await readFile(retired, "utf8"), mine);
+		await rm(retired);
+		await symlink(join(home, "elsewhere.md"), retired);
+		await opencodeInstaller.install(ctx);
+		await (await opencodeInstaller.prepare(ctx, true))();
+		assert.equal(await readlink(retired), join(home, "elsewhere.md"));
 	} finally {
 		await rm(home, { recursive: true, force: true });
 	}

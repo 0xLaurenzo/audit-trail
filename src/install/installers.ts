@@ -472,8 +472,9 @@ export const opencodeInstaller = installer({
 		// Commands dropped from this version: remove only copies still bearing our ownership marker.
 		for (const name of ["audit-rollover"]) {
 			const path = join(configDir, "commands", `${name}.md`);
-			const file = await existingRegularFile(path, "OpenCode file", "Move the collision explicitly.");
-			if (file?.content.includes(OPENCODE_COMMAND_MARKER)) pending.push(() => rm(path));
+			// The path is no longer needed, so anything unowned (symlink, directory, user file) is left alone.
+			const file = await existingRegularFile(path, "OpenCode file", "").catch(() => undefined);
+			if (file && isManagedOpencodeFile(path, file.content, `---\ndescription: retired\n---\n${OPENCODE_COMMAND_MARKER}`)) pending.push(() => rm(path));
 		}
 		if (collisions.length) throw new Error(`Refusing to overwrite OpenCode files not managed by audit-trail: ${collisions.join(", ")}`);
 		return async () => {
