@@ -426,7 +426,7 @@ export class AuditWorkflow {
 		path: string;
 		mode: ReviewMode;
 		model: string;
-		/** SHA-256 of the exact TSV bytes the reviewer was given. */
+		/** SHA-256 of the decoded TSV content read when the review started. */
 		expectedSha256: string;
 		/** Reviewer's explicit conclusion; only "approve" unblocks publish/close. */
 		verdict: ReviewVerdict;
@@ -435,9 +435,8 @@ export class AuditWorkflow {
 			const file = await this.readActive();
 			if (!file) throw new Error("No audit is active.");
 			const raw = await readFile(this.absolute(file.logPath), "utf8");
-			// Compare-and-swap: the checkpoint may only bless the bytes the
-			// reviewer actually read. A concurrent append while the reviewer was
-			// running must invalidate this review, not be blessed by it.
+			// Compare-and-swap: content that differs from the pre-review hash, such
+			// as a concurrent append, must invalidate this review.
 			if (sha256Hex(raw) !== input.expectedSha256) {
 				throw new Error("The audit gained new decisions while the review was running. Re-run the review.");
 			}

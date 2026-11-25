@@ -474,7 +474,8 @@ export const opencodeInstaller = installer({
 			const path = join(configDir, "commands", `${name}.md`);
 			// The path is no longer needed, so anything unowned (symlink, directory, user file) is left alone.
 			const file = await existingRegularFile(path, "OpenCode file", "").catch(() => undefined);
-			if (file && isManagedOpencodeFile(path, file.content, `---\ndescription: retired\n---\n${OPENCODE_COMMAND_MARKER}`)) pending.push(() => rm(path));
+			const header = file?.content.replace(/^(---\ndescription: )[^\n]+\n/, "$1\n");
+			if (header?.startsWith(`---\ndescription: \n---\n${OPENCODE_COMMAND_MARKER}`)) pending.push(() => rm(path));
 		}
 		if (collisions.length) throw new Error(`Refusing to overwrite OpenCode files not managed by audit-trail: ${collisions.join(", ")}`);
 		return async () => {

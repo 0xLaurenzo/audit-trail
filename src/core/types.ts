@@ -63,7 +63,7 @@ export type ReviewVerdict = (typeof REVIEW_VERDICTS)[number];
 export interface ReviewSnapshot {
 	/** Review artifact path, relative to the worktree root when inside it. */
 	path: string;
-	/** SHA-256 of the exact TSV bytes that were reviewed. */
+	/** SHA-256 of the decoded TSV content the review checkpoint covers. */
 	sha256: string;
 	mode: ReviewMode;
 	model: string;
