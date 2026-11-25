@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { readActiveAudit, writeActiveAudit } from "../src/core/active-state.ts";
+import { createPiSubprocessReviewer } from "../src/adapters/pi-reviewer.ts";
 import { runIndependentReview, summarizeReviewerFailure } from "../src/core/independent-review.ts";
 import type { CommandRunner, ReviewerPort } from "../src/core/ports.ts";
 import { parseReviewOutput, REVIEW_OUTPUT_CONTRACT } from "../src/core/review-output.ts";
@@ -402,6 +403,42 @@ test("review failure summaries classify errors without copying credentials or pr
 	for (const secret of ["sk-secret", "req_private", "acct_private"]) assert.doesNotMatch(summary, new RegExp(secret));
 	assert.equal(summarizeReviewerFailure(new Error("429 request req_private")), "reviewer was rate limited");
 	assert.equal(summarizeReviewerFailure(new Error("unknown detail token=secret")), "reviewer execution failed");
+});
+
+test("Pi child failures give safe recovery instructions without recording a checkpoint", async () => {
+	const root = await mkdtemp(join(tmpdir(), "audit-review-test-"));
+	try {
+		const workflow = await startedWorkflow(root);
+		for (const [diagnostic, expected] of [
+			['Unknown provider "private"', /provider is not configured.*pi --list-models/],
+			['Model "private" not found', /model is unavailable.*pi --list-models/],
+			['No API key found for "private"', /could not resolve credentials.*\/login.*PI_CODING_AGENT_DIR/],
+			['Model "private" not found for provider "private". Using custom model id.\nNo API key found for "private"', /could not resolve credentials.*PI_CODING_AGENT_DIR/],
+			['401 private', /authentication failed.*account and model access/],
+			['403 Forbidden: private', /authentication failed.*account and model access/],
+		] as const) {
+			const reviewer = createPiSubprocessReviewer({ exec: async (_, args) => {
+				if (args[0] === "--version") return { code: 0, stdout: "1.5.2", stderr: "" };
+				if (diagnostic.startsWith("401")) return { code: 1, stderr: diagnostic, stdout: JSON.stringify({
+					type: "message_end", message: { role: "assistant", stopReason: "stop", content: [{ type: "text", text: "unsettled" }] },
+				}) };
+				if (diagnostic.startsWith("403")) return { code: 1, stderr: "private", stdout: JSON.stringify({
+					type: "message_end", message: { role: "assistant", stopReason: "error", errorMessage: diagnostic },
+				}) };
+				return { code: 1, stdout: "", stderr: diagnostic };
+			} });
+			await assert.rejects(runIndependentReview({ workflow, reviewer, harnessName: "cli",
+				candidates: [{ model: "openai/gpt-6.2-astra", mode: "same-model" }],
+			}), (error: Error) => {
+				assert.match(error.message, expected);
+				assert.doesNotMatch(error.message, /private/);
+				return true;
+			});
+		}
+		assert.equal((await workflow.active())?.review, undefined);
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
 });
 
 test("a legacy verdict-less snapshot fails closed and requires re-review", async () => {

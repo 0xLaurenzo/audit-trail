@@ -8,7 +8,7 @@ import type { CommandRunner, ReviewerPort, ReviewerRequest } from "../core/ports
  * This parses Pi's event format and therefore lives with the Pi adapter, not
  * in the harness-neutral core.
  */
-export function extractFinalAssistantOutput(stdout: string): { output: string; error?: string } {
+export function extractFinalAssistantOutput(stdout: string): { output: string; error?: string; incomplete?: boolean } {
 	let output = "";
 	let error: string | undefined;
 	let settled = false;
@@ -50,7 +50,7 @@ export function extractFinalAssistantOutput(stdout: string): { output: string; e
 		}
 	}
 	if (error) return { output: "", error };
-	if (output && !settled) return { output: "", error: "reviewer stream ended before agent_settled" };
+	if (output && !settled) return { output: "", error: "reviewer stream ended before agent_settled", incomplete: true };
 	return { output, error };
 }
 
@@ -61,14 +61,18 @@ export function extractFinalAssistantOutput(stdout: string): { output: string; e
  */
 export function createPiSubprocessReviewer(runner: CommandRunner): ReviewerPort {
 	return {
+		failureHints: {
+			"reviewer could not resolve credentials": "Use /login in Pi with the reviewer's PI_CODING_AGENT_DIR (default ~/.pi/agent), or set the provider's supported credential variable in the launcher environment.",
+			"reviewer authentication failed": "Check the reviewer's Pi login, provider account and model access in the same launcher environment; parent-session authentication is not forwarded.",
+			"reviewer provider is not configured": "Check the provider configuration in the reviewer's Pi agent directory and run pi --list-models from the same environment.",
+			"reviewer model is unavailable": "Run pi --list-models from the same environment and select an Audit Trail allowlisted model available to that provider account.",
+		},
 		async review(request: ReviewerRequest): Promise<string> {
 			// Fail fast before any review work: a missing runtime should surface
 			// immediately, not minutes into a review attempt.
 			const probe = await runner.exec("pi", ["--version"], { timeout: 15_000 });
 			if (probe.code !== 0) {
-				throw new Error(
-					`The pi CLI is required as the reviewer runtime but is unavailable: ${probe.stderr.trim() || `exit ${probe.code}`}`,
-				);
+				throw new Error("The pi CLI is required as the reviewer runtime but is unavailable");
 			}
 			const tempDir = await mkdtemp(join(tmpdir(), "audit-trail-review-"));
 			try {
@@ -91,10 +95,13 @@ export function createPiSubprocessReviewer(runner: CommandRunner): ReviewerPort 
 					],
 					{ timeout: request.timeoutMs ?? 10 * 60 * 1000 },
 				);
+				const { output, error, incomplete } = extractFinalAssistantOutput(invocation.stdout);
 				if (invocation.code !== 0) {
-					throw new Error(invocation.stderr.trim() || `reviewer exited with code ${invocation.code}`);
+					// Pi can warn about an unknown model ID, then continue with that ID.
+					// That warning is not the reason the request eventually failed.
+					const stderr = invocation.stderr.replace(/Model "[^"\n]*" not found for provider "[^"\n]*"\. Using custom model id\./gi, "");
+					throw new Error((!incomplete && error) || stderr.trim() || error || `reviewer exited with code ${invocation.code}`);
 				}
-				const { output, error } = extractFinalAssistantOutput(invocation.stdout);
 				if (error) throw new Error(`reviewer model failed: ${error}`);
 				if (!output) throw new Error("reviewer produced no final assistant output");
 				return output;

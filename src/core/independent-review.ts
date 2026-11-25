@@ -57,6 +57,9 @@ export function summarizeReviewerFailure(error: unknown): string {
 	if (/rate[ -]?limit|too many requests|\b429\b/.test(message)) return "reviewer was rate limited";
 	if (/quota|usage[ -]?limit|credit|billing|insufficient funds/.test(message)) return "reviewer usage or quota limit reached";
 	if (/timed? ?out|timeout|deadline exceeded|\betimedout\b/.test(message)) return "reviewer timed out";
+	if (/unknown provider\b|provider "[^"\n]+" not found/.test(message)) return "reviewer provider is not configured";
+	if (/unknown model\b|model_not_found|model "[^"\n]+" not found|no models available/.test(message)) return "reviewer model is unavailable";
+	if (/no api key (?:found|for)|has no credentials\b/.test(message)) return "reviewer could not resolve credentials";
 	if (/unauthori[sz]ed|forbidden|authentication|api[ _-]?key|credential|\b401\b|\b403\b/.test(message)) {
 		return "reviewer authentication failed";
 	}
@@ -129,7 +132,9 @@ export async function runIndependentReview(input: IndependentReviewInput): Promi
 		try {
 			output = await reviewer.review({ prompt, model, mode, workingDirectory: workflow.root });
 		} catch (error) {
-			const summary = summarizeReviewerFailure(error);
+			const category = summarizeReviewerFailure(error);
+			const hint = reviewer.failureHints?.[category];
+			const summary = hint ? `${category}. ${hint}` : category;
 			failures.push({ candidate, error: summary });
 			input.onAttemptFailure?.(candidate, summary);
 			continue;
