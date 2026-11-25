@@ -200,6 +200,8 @@ These are the lowest CLI versions exercised here for the **listed surface**, not
 | Claude Code | 2.1.331 | Marketplace install and cached plugin launch | Install Claude, start a new session, approve the MCP server and run `/audit-trail:audit-resume smoke` and `/audit-trail:audit-status`. |
 | Codex | 0.146.0 | Native plugin add/remove and cached plugin launch | Install Codex, open a new thread, inspect/trust `/hooks`, invoke `$audit-trail` and ask it to resume and report status for `smoke`. |
 
+Pack from a clean checkout with lifecycle scripts enabled. `npm pack` creates `dist/` exclusively and refuses to reuse any existing path there. If a build is interrupted, inspect and move the leftover directory before retrying. Do not modify build output while packing.
+
 For the handoff, check one `.audit/smoke.tsv`, 13 tab-separated fields per row, original rows unchanged, and session IDs prefixed by the writing harness. CI runs adapter drivers in separate OS processes with scripted host APIs, reviewers and GitHub, without credentials. Contributors: run `npm ci && npm run typecheck && npm run check`, `bash test/package-smoke.sh` (packs and installs the npm tarball, including the compiled CLI for Node's node_modules boundary), and `nix build .# --no-link`. The Git checkout also acts as a marketplace; package-manager installations use the local installers instead.
 
 ## OpenCode
