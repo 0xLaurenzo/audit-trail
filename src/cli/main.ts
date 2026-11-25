@@ -11,7 +11,7 @@ import { displayPath } from "../core/paths.ts";
 import { formatBlockingReviewMessage } from "../core/review.ts";
 import { assertAllowedReviewModel, providerReviewModels } from "../core/reviewer-candidates.ts";
 import type { CommandRunner, ReviewerPort, SessionIdentity } from "../core/ports.ts";
-import { formatStatusLines } from "../core/status.ts";
+import { formatWorktreeTarget, formatStatusLines } from "../core/status.ts";
 import { reviewBlocker } from "../core/validation.ts";
 import {
 	CONFIDENCE_VALUES,
@@ -233,6 +233,7 @@ async function commandDecision(workflow: AuditWorkflow, args: string[], io: CliI
 }
 
 async function commandStatus(workflow: AuditWorkflow, io: CliIo): Promise<number> {
+	io.out(await formatWorktreeTarget(workflow.root, processRunner(workflow.root)));
 	const state = await workflow.active();
 	if (!state) {
 		io.out("No audit is active in this worktree.");

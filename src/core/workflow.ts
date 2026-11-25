@@ -43,14 +43,18 @@ export function qualifiedSession(session: SessionIdentity): string {
  * directory outside a Git repository.
  */
 export async function resolveWorktreeRoot(runner: CommandRunner, fallback: string): Promise<string> {
+	return await findGitWorktreeRoot(runner) ?? fallback;
+}
+
+export async function findGitWorktreeRoot(runner: CommandRunner): Promise<string | undefined> {
 	try {
 		const result = await runner.exec("git", ["rev-parse", "--show-toplevel"], { timeout: 10_000 });
 		const top = result.stdout.trim();
 		if (result.code === 0 && top) return top;
 	} catch {
-		// Git unavailable: treat the fallback directory as the worktree root.
+		// Git unavailable or not a checkout.
 	}
-	return fallback;
+	return undefined;
 }
 
 export interface AuditLifecycleResult {

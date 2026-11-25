@@ -6,7 +6,7 @@ import { runIndependentReview } from "../core/independent-review.ts";
 import type { CommandRunner, ReviewerPort, SessionIdentity } from "../core/ports.ts";
 import { formatBlockingReviewMessage } from "../core/review.ts";
 import { REVIEW_MODEL_ALLOWLIST_TEXT, type ReviewCandidate } from "../core/reviewer-candidates.ts";
-import { formatStatusLines } from "../core/status.ts";
+import { formatWorktreeTarget, formatStatusLines } from "../core/status.ts";
 import { reviewBlocker } from "../core/validation.ts";
 import {
 	CONFIDENCE_VALUES,
@@ -16,8 +16,9 @@ import {
 	type NewAuditRow,
 	type ReviewMode,
 } from "../core/types.ts";
-import { ROLLOVER_RANGE_DIFF_GUIDANCE, type AuditWorkflow } from "../core/workflow.ts";
-import { readFile } from "node:fs/promises";
+import { findGitWorktreeRoot, ROLLOVER_RANGE_DIFF_GUIDANCE, type AuditWorkflow } from "../core/workflow.ts";
+import { isAbsolute } from "node:path";
+import { readFile, realpath } from "node:fs/promises";
 
 /** Newest first; initialize echoes the client's version when supported. */
 const SUPPORTED_PROTOCOL_VERSIONS = ["2025-06-18", "2025-03-26", "2024-11-05"];
@@ -33,15 +34,21 @@ export interface McpRequestHandler {
 	handle(message: JsonRpcMessage): Promise<object | undefined>;
 }
 
+interface InputSchema {
+	type: string;
+	properties: Record<string, unknown>;
+	required?: string[];
+}
+
 interface ToolDefinition {
 	name: string;
 	description: string;
-	inputSchema: object;
+	inputSchema: InputSchema;
 }
 
 export interface ReviewToolDefinition {
 	description: string;
-	inputSchema: object;
+	inputSchema: InputSchema;
 }
 
 const TOOLS: ToolDefinition[] = [
@@ -189,6 +196,7 @@ function oneOf<T extends readonly string[]>(values: T, value: string, label: str
 
 export interface McpServerOptions {
 	workflow: AuditWorkflow;
+	requireExpectedWorktree?: boolean;
 	runner: CommandRunner;
 	/** Reviewer runtime used by audit_review. */
 	reviewer: ReviewerPort;
@@ -217,6 +225,7 @@ export class McpAuditServer {
 	private readonly sessionSource: SessionIdentity | (() => Promise<SessionIdentity>);
 	private readonly reviewTranscriptPath?: () => Promise<string | undefined>;
 	private readonly reviewCandidates?: (args: Record<string, unknown>) => Promise<ReviewCandidate[]>;
+	private readonly requireExpectedWorktree: boolean;
 	private readonly tools: ToolDefinition[];
 	private readonly version: string;
 
@@ -232,6 +241,19 @@ export class McpAuditServer {
 					tool.name === "audit_review" ? { name: tool.name, ...options.reviewTool! } : tool,
 				)
 			: TOOLS;
+		this.requireExpectedWorktree = options.requireExpectedWorktree ?? false;
+		if (this.requireExpectedWorktree) {
+			this.tools = this.tools.map(tool => ({
+				...tool,
+				inputSchema: {
+					...tool.inputSchema,
+					properties: { ...tool.inputSchema.properties, expectedWorktree: {
+						type: "string", description: "Absolute root of the intended implementation worktree (assertion, not a routing target).",
+					} },
+					...(tool.name === "audit_status" ? {} : { required: [...(tool.inputSchema.required ?? []), "expectedWorktree"] }),
+				},
+			}));
+		}
 		this.version = options.version ?? "0.0.0";
 	}
 
@@ -240,6 +262,20 @@ export class McpAuditServer {
 	}
 
 	async call(name: string, args: Record<string, unknown>): Promise<string> {
+		let target = "";
+		if (this.requireExpectedWorktree) {
+			const expected = args.expectedWorktree;
+			const root = await realpath(this.workflow.root);
+			const current = await findGitWorktreeRoot(this.runner);
+			if (!current || await realpath(current) !== root) {
+				throw new Error("Codex SessionStart worktree no longer resolves to its recorded Git root; refusing audit access");
+			}
+			if (name !== "audit_status" || expected !== undefined) {
+				const matches = typeof expected === "string" && isAbsolute(expected) && await realpath(expected).catch(() => undefined) === root;
+				if (!matches) throw new Error(`Expected an absolute expectedWorktree matching the Codex SessionStart worktree: ${root}. MCP cannot retarget; for a different intended worktree use audit-trail -C <target> for the whole workflow.`);
+			}
+			if (name === "audit_status") target = await formatWorktreeTarget(root, this.runner) + "\n";
+		}
 		switch (name) {
 			case "audit_start":
 			case "audit_resume":
@@ -273,7 +309,7 @@ export class McpAuditServer {
 				const state = await this.workflow.active();
 				if (!state) {
 					const abandoned = await this.workflow.abandonedAudits();
-					return [
+					return target + [
 						"No audit is active in this worktree.",
 						...abandoned.map((entry) => `abandoned: ${entry.taskName ?? entry.task}${entry.at ? ` (${entry.at})` : ""}`),
 					].join("\n");
@@ -281,7 +317,7 @@ export class McpAuditServer {
 				const rows = await this.workflow.rows(state);
 				const sha = await this.workflow.currentSha(state);
 				const diverged = await this.workflow.provenanceDiverged(state);
-				return formatStatusLines(state, rows, sha, this.workflow.root, diverged).join("\n");
+				return target + formatStatusLines(state, rows, sha, this.workflow.root, diverged).join("\n");
 			}
 			case "audit_abandon": {
 				const result = await this.workflow.abandon(

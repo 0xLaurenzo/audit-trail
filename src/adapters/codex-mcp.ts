@@ -29,7 +29,7 @@ const reviewTool = {
 
 type CodexMcpOptions = Pick<
 	McpServerOptions,
-	"session" | "reviewer" | "reviewTranscriptPath" | "reviewCandidates" | "reviewTool"
+	"requireExpectedWorktree" | "session" | "reviewer" | "reviewTranscriptPath" | "reviewCandidates" | "reviewTool"
 >;
 
 function optionsForState(
@@ -37,6 +37,7 @@ function optionsForState(
 	reviewerRunner: CommandRunner,
 ): CodexMcpOptions {
 	return {
+		requireExpectedWorktree: true,
 		session: async () => ({ harness: "codex", id: state.sessionId }),
 		reviewer: createCodexSubprocessReviewer(reviewerRunner),
 		reviewTranscriptPath: async () => {
@@ -75,6 +76,7 @@ export function createCodexMcpHandler(
 ): McpRequestHandler {
 	const launchRunner = runnerFor(launchRoot);
 	const schemaServer = new McpAuditServer({
+		requireExpectedWorktree: true,
 		workflow: new AuditWorkflow(launchRoot, launchRunner),
 		runner: launchRunner,
 		reviewer: createCodexSubprocessReviewer(launchRunner),
