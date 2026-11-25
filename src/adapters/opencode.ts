@@ -285,7 +285,7 @@ export const AuditTrailPlugin = async ({ client, directory, runner: runnerOverri
 						.string()
 						.optional()
 						.describe(
-							"PR number or URL; defaults to the current branch. The PR must be in the provenance repository, match exact local HEAD, and descend from the audit start commit.",
+							"PR number or URL; defaults to the current branch. The PR must be in the provenance repository and match exact local HEAD.",
 						),
 					commentSetId: z
 						.string()

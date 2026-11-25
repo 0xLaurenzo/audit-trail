@@ -146,7 +146,7 @@ const TOOLS: ToolDefinition[] = [
 			properties: {
 				selector: {
 					type: "string",
-					description: "PR number or URL; defaults to the current branch. The PR must be in the provenance repository, match exact local HEAD, and descend from the audit start commit.",
+					description: "PR number or URL; defaults to the current branch. The PR must be in the provenance repository and match exact local HEAD.",
 				},
 				commentSetId: {
 					type: "string",
