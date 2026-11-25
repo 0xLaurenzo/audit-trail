@@ -17,7 +17,7 @@ export type ShippedHarness = (typeof SHIPPED_HARNESSES)[number];
 
 export interface HarnessCapabilities {
 	/** Bump when the capability shape changes so declarations stay reviewable. */
-	version: 2;
+	version: 3;
 	/** Select a private task audit by explicit ID independently of the worktree. */
 	taskAuditSelection: boolean;
 	/**
@@ -32,47 +32,41 @@ export interface HarnessCapabilities {
 	transcriptSupport: boolean;
 	/** Active-audit guidance is injected into the agent's system prompt. */
 	systemPromptInjection: boolean;
-	/** Writes to extension-managed audit files are blocked, failing closed. */
-	managedFileGuard: boolean;
 }
 
 export const HARNESS_CAPABILITIES: Record<ShippedHarness, HarnessCapabilities> = {
 	pi: {
-		version: 2,
+		version: 3,
 		taskAuditSelection: true,
 		automaticReviewerSelection: true,
 		modelDiscovery: true,
 		transcriptSupport: true,
 		systemPromptInjection: true,
-		managedFileGuard: true,
 	},
 	opencode: {
-		version: 2,
+		version: 3,
 		taskAuditSelection: false,
 		automaticReviewerSelection: true,
 		modelDiscovery: true,
 		transcriptSupport: true,
 		systemPromptInjection: true,
-		managedFileGuard: true,
 	},
 	claude: {
-		version: 2,
+		version: 3,
 		taskAuditSelection: false,
 		// No catalog discovery; fixed Fable/Opus fallback stays provider-bound.
 		automaticReviewerSelection: true,
 		modelDiscovery: false,
 		transcriptSupport: true,
 		systemPromptInjection: true,
-		managedFileGuard: true,
 	},
 	codex: {
-		version: 2,
+		version: 3,
 		taskAuditSelection: false,
 		// No catalog discovery; fixed Astra/Sol fallback stays provider-bound.
 		automaticReviewerSelection: true,
 		modelDiscovery: false,
 		transcriptSupport: true,
 		systemPromptInjection: true,
-		managedFileGuard: true,
 	},
 };

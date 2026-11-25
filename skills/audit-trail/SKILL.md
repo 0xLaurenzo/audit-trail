@@ -27,7 +27,7 @@ CLI fallback reviews use Pi, not `codex exec`. Choose an allowed provider/model 
 4. Do not log routine commands, commits, branches, formatting, straightforward implementation, or ordinary verification.
 5. Use `audit_status` before review. Resolve open, inconclusive, low-confidence, or unsupported active decisions, superseding earlier rows rather than modifying them.
 6. Call `audit_review` without `model` so Audit Trail tries its maintained Codex order (`gpt-6.2-astra`, `gpt-6.2-sol`, `gpt-6.1-astra`, `gpt-6.1-sol`, `gpt-6-astra`, then `gpt-6-sol`). Only pass `model` to pin one of those allowed IDs or its `-fast`/dated serving variants; older models are rejected. Report blocking findings verbatim and address them before reviewing again.
-7. After an approving review of the current bytes, call `audit_publish` while checked out at the exact pull-request head. Pass a PR number or URL only when branch lookup is inappropriate.
+7. After an approving review whose checkpoint matches the current audit content, call `audit_publish` while checked out at the exact pull-request head. Pass a PR number or URL only when branch lookup is inappropriate.
 8. Call `audit_close` only after publication and only when it reports no blockers.
 
 ## Decision fields

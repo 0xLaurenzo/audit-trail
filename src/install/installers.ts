@@ -407,11 +407,6 @@ description: Archive an unpublishable audit as abandoned without closing it as c
 ---
 ${OPENCODE_COMMAND_MARKER}Call the audit_abandon tool. Parse "$ARGUMENTS" as the exact task name and a required --reason <text>; pass them as task and reason. Report the tool output verbatim.
 `,
-	"audit-rollover": `---
-description: Archive a rebase-diverged audit and start a linked successor
----
-${OPENCODE_COMMAND_MARKER}Call the audit_rollover tool. Parse "$ARGUMENTS" as the exact task name, a required --reason <text>, and an optional --name <successor-task>; pass them as task, reason, and name. Report the tool output verbatim, including the range-diff instruction.
-`,
 	"audit-publish": `---
 description: Publish the audit to the current branch's pull request
 ---
@@ -473,6 +468,14 @@ export const opencodeInstaller = installer({
 			}
 			if (uninstall && file) pending.push(() => rm(path));
 			if (!uninstall && file?.content !== content) pending.push(() => writeAtomic(path, content, file?.mode ?? 0o644));
+		}
+		// Commands dropped from this version: remove only copies still bearing our ownership marker.
+		for (const name of ["audit-rollover"]) {
+			const path = join(configDir, "commands", `${name}.md`);
+			// The path is no longer needed, so anything unowned (symlink, directory, user file) is left alone.
+			const file = await existingRegularFile(path, "OpenCode file", "").catch(() => undefined);
+			const header = file?.content.replace(/^(---\ndescription: )[^\n]+\n/, "$1\n");
+			if (header?.startsWith(`---\ndescription: \n---\n${OPENCODE_COMMAND_MARKER}`)) pending.push(() => rm(path));
 		}
 		if (collisions.length) throw new Error(`Refusing to overwrite OpenCode files not managed by audit-trail: ${collisions.join(", ")}`);
 		return async () => {

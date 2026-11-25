@@ -103,7 +103,6 @@ export function createGitHubStub(root: string): GitHubStub {
 					}),
 				);
 			}
-			if (args.some((arg) => arg.includes("/compare/"))) return ok("ahead");
 			if (args[1] === "user") return ok("reviewer");
 			if (args.some((arg) => arg.includes("comments?per_page=100"))) return ok(JSON.stringify([comments]));
 			const method = args[args.indexOf("--method") + 1];
@@ -151,7 +150,6 @@ export interface HarnessDriver {
 	close(): Promise<OperationOutcome>;
 	/** Active-audit guidance the harness would inject, if any. */
 	guidance(): Promise<string | undefined>;
-	attemptWrite(path: string): Promise<{ blocked: boolean; reason?: string }>;
 	/** Models attempted by the simulated reviewer runtime, in order. */
 	attemptedModels(): string[];
 	setWorkingModel(model: ReviewModel): Promise<void>;
@@ -302,13 +300,6 @@ export const createPiDriver: DriverFactory = async (root) => {
 			}
 			return undefined;
 		},
-		async attemptWrite(path) {
-			for (const handler of eventHandlers.get("tool_call") ?? []) {
-				const result = await handler({ toolName: "write", input: { path } }, ctx);
-				if (result?.block) return { blocked: true, reason: result.reason };
-			}
-			return { blocked: false };
-		},
 		attemptedModels: () => [...attempted],
 		async setWorkingModel(model) {
 			ctx.model = { ...model };
@@ -387,14 +378,6 @@ export const createOpencodeDriver: DriverFactory = async (root) => {
 			const output = { system: [] as string[] };
 			await hooks["experimental.chat.system.transform"]({}, output);
 			return output.system.at(-1);
-		},
-		async attemptWrite(path) {
-			try {
-				await hooks["tool.execute.before"]({ tool: "write", sessionID: context.sessionID }, { args: { filePath: path } });
-				return { blocked: false };
-			} catch (error: any) {
-				return { blocked: true, reason: String(error?.message ?? error) };
-			}
 		},
 		attemptedModels: () => [...attempted],
 		async setWorkingModel(model) {
@@ -481,19 +464,6 @@ export const createClaudeDriver: DriverFactory = async (root) => {
 			const result = await hook({ hook_event_name: "SessionStart", session_id: "claude-contract-session", model: "claude-opus-5-5", cwd: root });
 			if (!result.output) return undefined;
 			return JSON.parse(result.output).hookSpecificOutput?.additionalContext as string | undefined;
-		},
-		async attemptWrite(path) {
-			const result = await hook({
-				hook_event_name: "PreToolUse",
-				tool_name: "Write",
-				tool_input: { file_path: path },
-				cwd: root,
-			});
-			if (!result.output) return { blocked: false };
-			const decision = JSON.parse(result.output).hookSpecificOutput;
-			return decision?.permissionDecision === "deny"
-				? { blocked: true, reason: decision.permissionDecisionReason }
-				: { blocked: false };
 		},
 		attemptedModels: () => [...attempted],
 		async setWorkingModel() {
@@ -596,19 +566,6 @@ export const createCodexDriver: DriverFactory = async (root) => {
 			if (!result.output) return undefined;
 			return JSON.parse(result.output).hookSpecificOutput?.additionalContext as string | undefined;
 		},
-		async attemptWrite(path) {
-			const result = await hook({
-				hook_event_name: "PreToolUse",
-				tool_name: "apply_patch",
-				tool_input: { command: `*** Begin Patch\n*** Update File: ${path}\n*** End Patch` },
-				cwd: root,
-			});
-			if (!result.output) return { blocked: false };
-			const decision = JSON.parse(result.output).hookSpecificOutput;
-			return decision?.permissionDecision === "deny"
-				? { blocked: true, reason: decision.permissionDecisionReason }
-				: { blocked: false };
-		},
 		attemptedModels: () => [...attempted],
 		async setWorkingModel() {
 			throw new Error("codex does not support model discovery");
@@ -634,7 +591,3 @@ export const CONFORMANCE_DRIVERS: Record<ShippedHarness, DriverFactory> = {
 	codex: createCodexDriver,
 };
 
-/** Corrupt the active-audit state to exercise fail-closed guard behavior. */
-export async function corruptActiveState(root: string): Promise<void> {
-	await writeFile(join(root, ".audit", "active.json"), "{corrupt", "utf8");
-}

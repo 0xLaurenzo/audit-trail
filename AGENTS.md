@@ -45,7 +45,7 @@ nix build .# --no-link
 - Preserve truthful reviewer model/provider modes. Never infer or claim unsupported discovery, transcript, or provenance guarantees.
 - Make installers idempotent and collision-safe. Preflight before mutation and preserve unrelated user configuration.
 - Do not expose credentials, provider-sensitive diagnostics, or raw secret-bearing subprocess output.
-- Protect audit-managed files through adapter boundaries rather than editing them directly.
+- Audit Trail checks, it does not enforce: do not add write guards over `.audit/`. Integrity rests on the content-hash review checkpoint; never document it as tamper protection.
 - Backward compatibility is not a project requirement. Prefer the cleanest current design, remove obsolete paths, and avoid compatibility shims unless an issue explicitly requires a migration strategy.
 
 ## Feature workflow

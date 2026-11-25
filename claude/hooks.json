@@ -12,18 +12,6 @@
 					}
 				]
 			}
-		],
-		"PreToolUse": [
-			{
-				"matcher": "Write|Edit",
-				"hooks": [
-					{
-						"type": "command",
-						"command": "\"${CLAUDE_PLUGIN_ROOT}/bin/audit-trail\" claude-hook",
-						"timeout": 15
-					}
-				]
-			}
 		]
 	}
 }

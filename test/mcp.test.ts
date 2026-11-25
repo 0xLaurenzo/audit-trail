@@ -66,12 +66,12 @@ test("mcp server initializes, lists tools, and drives the audit workflow", async
 				"audit_status",
 				"audit_review",
 				"audit_abandon",
-				"audit_rollover",
 				"audit_publish",
 				"audit_close",
 			],
 		);
 		assert.equal(tools.find((tool: any) => tool.name === "audit_publish").inputSchema.properties.commentSetId.type, "string");
+		assert.doesNotMatch(JSON.stringify(tools), /descend|ancestor|rollover/i, "tool metadata must not advertise removed gates");
 		const reviewModelDescription = tools.find((tool: any) => tool.name === "audit_review").inputSchema.properties.model.description;
 		assert.ok(reviewModelDescription.indexOf("anthropic/claude-fable-5") < reviewModelDescription.indexOf("anthropic/claude-opus-5-5"));
 		assert.match(reviewModelDescription, /openai\/gpt-6.2-astra.*openai\/gpt-6\.2-sol/);
@@ -131,21 +131,6 @@ test("generic MCP rejects unsupported review models before execution", async () 
 		);
 		assert.equal(reviewerCalls, 0);
 		assert.equal((await workflow.active())?.review, undefined);
-	} finally {
-		await rm(root, { recursive: true, force: true });
-	}
-});
-
-test("MCP rollover requires provenance and full arguments", async () => {
-	const root = await mkdtemp(join(tmpdir(), "audit-mcp-test-"));
-	try {
-		const server = makeServer(root);
-		await server.call("audit_start", { task: "local task" });
-		await assert.rejects(() => server.call("audit_rollover", { task: "local task" }), /Missing required argument: reason/);
-		await assert.rejects(
-			() => server.call("audit_rollover", { task: "local task", reason: "rebase" }),
-			/no Git provenance/,
-		);
 	} finally {
 		await rm(root, { recursive: true, force: true });
 	}
@@ -232,7 +217,7 @@ test("stdio transport frames responses and tolerates garbage lines", async () =>
 		assert.equal(lines.length, 2, "garbage, blank, and notification lines produce no responses");
 		assert.deepEqual(lines[0], { jsonrpc: "2.0", id: 1, result: {} });
 		assert.equal(lines[1].id, 2);
-		assert.equal(lines[1].result.tools.length, 10);
+		assert.equal(lines[1].result.tools.length, 9);
 	} finally {
 		await rm(root, { recursive: true, force: true });
 	}

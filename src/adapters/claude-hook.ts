@@ -1,9 +1,6 @@
-import { realpath } from "node:fs/promises";
-import { basename, dirname, resolve } from "node:path";
 import {
 	AuditWorkflow,
 	buildActiveAuditGuidance,
-	isAuditManagedPath,
 	resolveWorktreeRoot,
 	type AuditState,
 	type CommandRunner,
@@ -34,22 +31,6 @@ async function lookupActive(runner: CommandRunner, cwd: string): Promise<ActiveL
 	}
 }
 
-async function canonicalPath(path: string): Promise<string> {
-	let current = resolve(path);
-	const missing: string[] = [];
-	for (;;) {
-		try {
-			return resolve(await realpath(current), ...missing.reverse());
-		} catch (error: any) {
-			if (error?.code !== "ENOENT") return resolve(path);
-			const parent = dirname(current);
-			if (parent === current) return resolve(path);
-			missing.push(basename(current));
-			current = parent;
-		}
-	}
-}
-
 function modelId(model: unknown): string | undefined {
 	if (typeof model === "string" && model) return model;
 	if (model && typeof model === "object") {
@@ -60,16 +41,9 @@ function modelId(model: unknown): string | undefined {
 }
 
 /**
- * Single entry point for the plugin's Claude Code hooks, dispatching on
- * hook_event_name from the stdin payload:
- *
- * - SessionStart: record the session handoff state for the MCP server and
- *   inject active-audit guidance via additionalContext.
- * - PreToolUse (Write|Edit): deny edits to extension-managed audit files,
- *   failing closed over .audit/ when active state is unreadable.
- *
- * SessionStart failures never block the session (exit 1 is non-blocking);
- * the guard communicates denial through hookSpecificOutput on exit 0.
+ * Claude Code SessionStart hook: record the session handoff state for the MCP
+ * server and inject active-audit guidance via additionalContext. Failures never
+ * block the session (exit 1 is non-blocking).
  */
 export async function handleClaudeHook(
 	rawInput: string,
@@ -119,27 +93,6 @@ export async function handleClaudeHook(
 			}),
 			exitCode: 0,
 		};
-	}
-
-	if (input?.hook_event_name === "PreToolUse") {
-		if (input.tool_name !== "Write" && input.tool_name !== "Edit") return { exitCode: 0 };
-		const filePath = input.tool_input?.file_path;
-		if (typeof filePath !== "string" || !filePath) return { exitCode: 0 };
-		const target = await canonicalPath(resolve(cwd, filePath));
-		const deny = (reason: string): ClaudeHookResult => ({
-			output: JSON.stringify({
-				hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: reason },
-			}),
-			exitCode: 0,
-		});
-		const lookup = await lookupActive(runner, cwd);
-		const auditRoot = await canonicalPath(resolve(lookup.root, ".audit"));
-		if (!isAuditManagedPath(dirname(auditRoot), target)) return { exitCode: 0 };
-		return deny(
-			lookup.error
-				? `Audit state is unreadable (${lookup.error}); refusing writes under .audit/.`
-				: "Audit artifacts are extension-managed; use audit lifecycle tools instead of editing .audit directly.",
-		);
 	}
 
 	// Unknown events are ignored so hook config changes stay forward-compatible.

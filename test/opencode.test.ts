@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, readlink, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -74,55 +74,6 @@ test("opencode plugin lifecycle: start, decision attribution, status, guidance, 
 		assert.match(output.system[0], /Active decision audit/);
 		assert.match(output.system[0], /audit_decision/);
 
-		// Extension-managed audit files are write-protected; other files are not.
-		await assert.rejects(
-			() =>
-				hooks["tool.execute.before"](
-					{ tool: "write", sessionID: "ses_test1", callID: "call1" },
-					{ args: { filePath: join(root, ".audit", "opencode-adapter.tsv"), content: "tamper" } },
-				),
-			/extension-managed/,
-		);
-		await assert.rejects(
-			() =>
-				hooks["tool.execute.before"](
-					{ tool: "edit", sessionID: "ses_test1", callID: "call2" },
-					{ args: { filePath: join(root, ".audit", "active.json") } },
-				),
-			/extension-managed/,
-		);
-		await hooks["tool.execute.before"](
-			{ tool: "write", sessionID: "ses_test1", callID: "call3" },
-			{ args: { filePath: join(root, "src", "other.ts"), content: "fine" } },
-		);
-		await hooks["tool.execute.before"](
-			{ tool: "read", sessionID: "ses_test1", callID: "call4" },
-			{ args: { filePath: join(root, ".audit", "opencode-adapter.tsv") } },
-		);
-	} finally {
-		await rm(root, { recursive: true, force: true });
-	}
-});
-
-test("unreadable active state fails closed for .audit writes", async () => {
-	const root = await mkdtemp(join(tmpdir(), "audit-opencode-test-"));
-	try {
-		const hooks: any = await AuditTrailPlugin({ client: stubClient, directory: root });
-		await hooks.tool.audit_start.execute({ task: "guarded" }, toolContext);
-		await writeFile(join(root, ".audit", "active.json"), "{corrupt", "utf8");
-		await assert.rejects(
-			() =>
-				hooks["tool.execute.before"](
-					{ tool: "write", sessionID: "s", callID: "c" },
-					{ args: { filePath: join(root, ".audit", "anything.tsv") } },
-				),
-			/unreadable/,
-		);
-		// Non-.audit writes stay allowed even with unreadable state.
-		await hooks["tool.execute.before"](
-			{ tool: "write", sessionID: "s", callID: "c" },
-			{ args: { filePath: join(root, "src", "ok.ts") } },
-		);
 	} finally {
 		await rm(root, { recursive: true, force: true });
 	}
@@ -200,7 +151,7 @@ test("opencode installer writes shim and commands idempotently without touching 
 		const shim = await readFile(join(configDir, "plugins", "audit-trail.ts"), "utf8");
 		assert.match(shim, /audit-trail-managed:v1/);
 		assert.match(shim, /export \{ AuditTrailPlugin \} from "\/opt\/audit-trail\/src\/adapters\/opencode\.ts"/);
-		for (const name of ["audit-start", "audit-resume", "audit-reopen", "audit-status", "audit-review", "audit-abandon", "audit-rollover", "audit-publish", "audit-close"]) {
+		for (const name of ["audit-start", "audit-resume", "audit-reopen", "audit-status", "audit-review", "audit-abandon", "audit-publish", "audit-close"]) {
 			const command = await readFile(join(configDir, "commands", `${name}.md`), "utf8");
 			assert.match(command, /^---\ndescription: /, `${name} has frontmatter`);
 			assert.match(command, /audit-trail-managed:v1/, `${name} has an ownership marker`);
@@ -231,6 +182,37 @@ test("opencode installer writes shim and commands idempotently without touching 
 
 		assert.equal(await readFile(join(configDir, "commands", "my-command.md"), "utf8"), "mine\n");
 		assert.equal(await readFile(join(configDir, "plugins", "other-plugin.ts"), "utf8"), "export {}\n");
+	} finally {
+		await rm(home, { recursive: true, force: true });
+	}
+});
+
+test("opencode installer removes its retired rollover command but not a user-owned one", async () => {
+	const home = await mkdtemp(join(tmpdir(), "audit-opencode-retired-"));
+	const ctx = { home, packageRoot: "/opt/audit-trail" };
+	try {
+		await opencodeInstaller.install(ctx);
+		const retired = join(home, ".config", "opencode", "commands", "audit-rollover.md");
+		await writeFile(retired, "---\ndescription: old\n---\n<!-- audit-trail-managed:v1 -->\nCall the audit_rollover tool.\n", "utf8");
+		assert.equal((await opencodeInstaller.install(ctx)).changed, true);
+		await assert.rejects(() => readFile(retired, "utf8"), /ENOENT/);
+		await writeFile(retired, "---\ndescription: old\n---\n<!-- audit-trail-managed:v1 -->\nCall the audit_rollover tool.\n", "utf8");
+		await (await opencodeInstaller.prepare(ctx, true))();
+		await assert.rejects(() => readFile(retired, "utf8"), /ENOENT/);
+		await opencodeInstaller.install(ctx);
+		// A user file that merely quotes the marker, and a symlink, are unowned: never removed, never fatal.
+		for (const mine of ["---\ndescription: mine\n---\nMy own command quoting <!-- audit-trail-managed:v1 -->\n", "---\ndescription: retired\n---\n"]) {
+			await writeFile(retired, mine, "utf8");
+			assert.equal((await opencodeInstaller.install(ctx)).changed, false);
+			await (await opencodeInstaller.prepare(ctx, true))();
+			assert.equal(await readFile(retired, "utf8"), mine);
+			await opencodeInstaller.install(ctx);
+		}
+		await rm(retired);
+		await symlink(join(home, "elsewhere.md"), retired);
+		await opencodeInstaller.install(ctx);
+		await (await opencodeInstaller.prepare(ctx, true))();
+		assert.equal(await readlink(retired), join(home, "elsewhere.md"));
 	} finally {
 		await rm(home, { recursive: true, force: true });
 	}

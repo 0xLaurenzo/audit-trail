@@ -125,9 +125,10 @@ export async function runIndependentReview(input: IndependentReviewInput): Promi
 	const failures: { candidate: ReviewCandidate; error: string }[] = [];
 	for (const candidate of candidates) {
 		const { model, mode } = candidate;
-		// Snapshot the exact bytes under review before each attempt starts; the
-		// checkpoint is recorded against this hash so decisions appended while
-		// the reviewer runs cannot be blessed by a review that never saw them.
+		// Hash the decoded TSV before each attempt starts; the checkpoint is
+		// recorded against this hash so decisions appended while the reviewer runs
+		// invalidate it. The reviewer reads the live path, so this does not prove
+		// which content it read.
 		const reviewedTsv = await readFile(state.logPath, "utf8");
 		const reviewedSha256 = sha256Hex(reviewedTsv);
 		const rows = parseRows(reviewedTsv, state.logPath);

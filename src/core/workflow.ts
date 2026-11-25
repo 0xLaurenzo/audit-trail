@@ -30,7 +30,6 @@ import type {
 	ReviewMode,
 	ReviewSnapshot,
 	ReviewVerdict,
-	RolloverLink,
 } from "./types.ts";
 import { closeBlockers, summarize } from "./validation.ts";
 
@@ -75,9 +74,6 @@ export interface CloseAuditResult {
 	closed: boolean;
 }
 
-export const ROLLOVER_RANGE_DIFF_GUIDANCE =
-	"Record one decision in the new audit citing valid git range-diff <old-base>..<old-tip> <new-base>..<new-tip> evidence for the rebase.";
-
 export interface AbandonResult {
 	/** The archived audit's state at abandonment. */
 	state: AuditState;
@@ -91,14 +87,6 @@ export interface AbandonedAuditSummary {
 	taskName?: string;
 	/** Timestamp of the most recent abandonment record. */
 	at?: string;
-}
-
-export interface RolloverResult extends AuditLifecycleResult {
-	/** Slug of the archived predecessor audit. */
-	abandonedTask: string;
-	/** Terminal artifact holding the predecessor's abandonment record. */
-	abandonedPath: string;
-	link: RolloverLink;
 }
 
 /**
@@ -161,7 +149,6 @@ export class AuditWorkflow {
 			auditId: file.auditId,
 			logPath: this.absolute(file.logPath),
 			review: file.review,
-			rolloverFrom: file.rolloverFrom,
 		};
 		if (file.provenancePath) {
 			state.provenancePath = this.absolute(file.provenancePath);
@@ -273,12 +260,11 @@ export class AuditWorkflow {
 		}
 	}
 
-	/** Shared creation body for start and rollover; must run under the lock. */
+	/** Must run under the lock. */
 	private async createAudit(
 		task: string,
 		taskName: string,
 		session: SessionIdentity,
-		rolloverFrom?: RolloverLink,
 	): Promise<AuditLifecycleResult> {
 		await this.assertTaskAvailable(task, taskName);
 		const logRel = join(".audit", `${task}.tsv`);
@@ -302,97 +288,9 @@ export class AuditWorkflow {
 			logPath: logRel,
 			provenancePath: hasProvenance ? provenanceRel : undefined,
 			startedAt: this.now().toISOString(),
-			rolloverFrom,
 		};
 		await writeActiveAudit(this.root, file);
 		return { state: await this.stateFrom(file), provenanceError };
-	}
-
-	/**
-	 * True when the audit's immutable start commit is provably no longer an
-	 * ancestor of the worktree HEAD (a rebase rewrote the range). Undefined when
-	 * there is no provenance or Git cannot answer; callers must not treat
-	 * undefined as diverged.
-	 */
-	async provenanceDiverged(state: AuditState): Promise<boolean | undefined> {
-		if (!state.provenance) return undefined;
-		try {
-			const result = await this.runner.exec(
-				"git",
-				["merge-base", "--is-ancestor", state.provenance.startCommit, "HEAD"],
-				{ timeout: 10_000 },
-			);
-			if (result.code === 0) return false;
-			if (result.code === 1) return true;
-			return undefined;
-		} catch {
-			return undefined;
-		}
-	}
-
-	/**
-	 * Explicit rebase rollover: archive the ancestry-diverged active audit as an
-	 * immutable abandoned segment and start a linked successor with fresh
-	 * provenance at the current HEAD. Refuses while the start commit still
-	 * descends into HEAD — a publishable audit must publish and close normally.
-	 * Never rewrites the predecessor's TSV, provenance, or review artifacts.
-	 */
-	async rollover(
-		taskInput: string,
-		session: SessionIdentity,
-		reason: string,
-		successorInput?: string,
-	): Promise<RolloverResult> {
-		if (this.taskAuditId) throw new Error("Task audits survive rebases; continue using the existing audit ID instead of rolling it over.");
-		const { task, taskName } = this.taskIdentity(taskInput);
-		const trimmedReason = reason.trim();
-		if (!trimmedReason) throw new Error("Rollover requires a non-empty reason");
-		const successor = this.taskIdentity(successorInput?.trim() || `${taskName} (rebased)`);
-		if (successor.task === task) {
-			throw new Error(`Successor task ${JSON.stringify(successor.taskName)} maps to the same slug as the audit being rolled over.`);
-		}
-		return this.lock(async () => {
-			const file = await this.readActive();
-			if (!file) throw new Error("No audit is active.");
-			this.assertTaskIdentity(file, task, taskName, "roll over");
-			const state = await this.stateFrom(file);
-			if (!state.provenance) {
-				throw new Error("This audit has no Git provenance; rollover requires a recorded start commit.");
-			}
-			const diverged = await this.provenanceDiverged(state);
-			if (diverged === false) {
-				throw new Error(
-					`Start commit ${state.provenance.startCommit.slice(0, 12)} is still an ancestor of HEAD; publish and close this audit normally instead of rolling over.`,
-				);
-			}
-			if (diverged === undefined) {
-				throw new Error(
-					"Could not verify ancestry against HEAD (Git unavailable or start commit unknown); rollover refuses to archive a possibly publishable audit.",
-				);
-			}
-			const record = await this.buildAbandonmentRecord(file, state, session, trimmedReason);
-			const link: RolloverLink = {
-				auditId: file.auditId,
-				task: file.task,
-				taskName: file.taskName,
-				startCommit: state.provenance.startCommit,
-				head: record.head ?? "unknown",
-				abandonedAt: record.at,
-			};
-			// Verify the successor slug is claimable before archiving the
-			// predecessor, so a name collision cannot strand the worktree between
-			// audits. A later createAudit failure still leaves the predecessor
-			// safely archived and the successor startable manually.
-			await this.assertTaskAvailable(successor.task, successor.taskName);
-			await abandonActiveAudit(this.root, file, record);
-			const result = await this.createAudit(successor.task, successor.taskName, session, link);
-			return {
-				...result,
-				abandonedTask: file.task,
-				abandonedPath: abandonedStatePath(this.root, file.task),
-				link,
-			};
-		});
 	}
 
 	/**
@@ -528,7 +426,7 @@ export class AuditWorkflow {
 		path: string;
 		mode: ReviewMode;
 		model: string;
-		/** SHA-256 of the exact TSV bytes the reviewer was given. */
+		/** SHA-256 of the decoded TSV content read when the review started. */
 		expectedSha256: string;
 		/** Reviewer's explicit conclusion; only "approve" unblocks publish/close. */
 		verdict: ReviewVerdict;
@@ -537,9 +435,8 @@ export class AuditWorkflow {
 			const file = await this.readActive();
 			if (!file) throw new Error("No audit is active.");
 			const raw = await readFile(this.absolute(file.logPath), "utf8");
-			// Compare-and-swap: the checkpoint may only bless the bytes the
-			// reviewer actually read. A concurrent append while the reviewer was
-			// running must invalidate this review, not be blessed by it.
+			// Compare-and-swap: content that differs from the pre-review hash, such
+			// as a concurrent append, must invalidate this review.
 			if (sha256Hex(raw) !== input.expectedSha256) {
 				throw new Error("The audit gained new decisions while the review was running. Re-run the review.");
 			}

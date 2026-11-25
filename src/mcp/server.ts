@@ -16,7 +16,7 @@ import {
 	type NewAuditRow,
 	type ReviewMode,
 } from "../core/types.ts";
-import { findGitWorktreeRoot, ROLLOVER_RANGE_DIFF_GUIDANCE, type AuditWorkflow } from "../core/workflow.ts";
+import { findGitWorktreeRoot, type AuditWorkflow } from "../core/workflow.ts";
 import { isAbsolute } from "node:path";
 import { readFile, realpath } from "node:fs/promises";
 
@@ -139,20 +139,6 @@ const TOOLS: ToolDefinition[] = [
 		},
 	},
 	{
-		name: "audit_rollover",
-		description:
-			"Archive a rebase-diverged audit as an immutable abandoned segment and start a linked successor at the current HEAD. Refuses while the start commit is still an ancestor of HEAD.",
-		inputSchema: {
-			type: "object",
-			properties: {
-				task: { type: "string", description: "Exact task name of the active audit being rolled over" },
-				reason: { type: "string", description: "Why the audit cannot publish from its original start commit" },
-				name: { type: "string", description: "Successor task name; defaults to '<task> (rebased)'" },
-			},
-			required: ["task", "reason"],
-		},
-	},
-	{
 		name: "audit_publish",
 		description: "Create or update this author's aggregate audit comment set on the current branch's pull request.",
 		inputSchema: {
@@ -160,7 +146,7 @@ const TOOLS: ToolDefinition[] = [
 			properties: {
 				selector: {
 					type: "string",
-					description: "PR number or URL; defaults to the current branch. The PR must be in the provenance repository, match exact local HEAD, and descend from the audit start commit.",
+					description: "PR number or URL; defaults to the current branch. The PR must be in the provenance repository and match the current branch name (when named) and exact local HEAD.",
 				},
 				commentSetId: {
 					type: "string",
@@ -171,7 +157,7 @@ const TOOLS: ToolDefinition[] = [
 	},
 	{
 		name: "audit_close",
-		description: "Close the audit; fails while decisions are unresolved or the latest bytes are unreviewed.",
+		description: "Close the audit; fails while decisions are unresolved or the current audit content does not match the last approving review.",
 		inputSchema: { type: "object", properties: {} },
 	},
 ];
@@ -316,8 +302,7 @@ export class McpAuditServer {
 				}
 				const rows = await this.workflow.rows(state);
 				const sha = await this.workflow.currentSha(state);
-				const diverged = await this.workflow.provenanceDiverged(state);
-				return target + formatStatusLines(state, rows, sha, this.workflow.root, diverged).join("\n");
+				return target + formatStatusLines(state, rows, sha, this.workflow.root).join("\n");
 			}
 			case "audit_abandon": {
 				const result = await this.workflow.abandon(
@@ -330,20 +315,6 @@ export class McpAuditServer {
 					`review at abandonment: ${result.record.review}`,
 					...(result.record.unresolvedIds.length ? [`unresolved at abandonment: ${result.record.unresolvedIds.join(", ")}`] : []),
 					"Reopen restores it with the abandonment record retained.",
-				].join("\n");
-			}
-			case "audit_rollover": {
-				const result = await this.workflow.rollover(
-					requireString(args, "task"),
-					await this.session(),
-					requireString(args, "reason"),
-					optionalString(args, "name"),
-				);
-				return [
-					`Archived ${result.abandonedTask} as abandoned (this state does not imply review approval or publication): ${result.abandonedPath}`,
-					`Started linked audit: ${result.state.logPath}`,
-					ROLLOVER_RANGE_DIFF_GUIDANCE,
-					...(result.provenanceError ? [`Provenance unavailable: ${result.provenanceError}`] : []),
 				].join("\n");
 			}
 			case "audit_review": {

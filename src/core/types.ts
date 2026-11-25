@@ -63,7 +63,7 @@ export type ReviewVerdict = (typeof REVIEW_VERDICTS)[number];
 export interface ReviewSnapshot {
 	/** Review artifact path, relative to the worktree root when inside it. */
 	path: string;
-	/** SHA-256 of the exact TSV bytes that were reviewed. */
+	/** SHA-256 of the decoded TSV content the review checkpoint covers. */
 	sha256: string;
 	mode: ReviewMode;
 	model: string;
@@ -104,18 +104,6 @@ export interface AbandonmentRecord {
 	review: "approve" | "block" | "none";
 }
 
-/** Link from a post-rebase successor audit to its archived predecessor. */
-export interface RolloverLink {
-	auditId?: string;
-	task: string;
-	taskName?: string;
-	/** The predecessor's immutable pre-rebase start commit. */
-	startCommit: string;
-	/** Worktree HEAD at rollover time. */
-	head: string;
-	abandonedAt: string;
-}
-
 export interface AuditState {
 	/** Filesystem-safe task slug. */
 	task: string;
@@ -127,8 +115,6 @@ export interface AuditState {
 	provenancePath?: string;
 	provenance?: GitProvenance;
 	review?: ReviewSnapshot;
-	/** Present on a successor audit created by a rebase rollover. */
-	rolloverFrom?: RolloverLink;
 }
 
 export interface AuditStats {

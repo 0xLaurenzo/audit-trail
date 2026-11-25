@@ -7,7 +7,7 @@ It works the same across **Pi**, **Claude Code**, **Codex**, and **OpenCode** (p
 - **Append-only TSV** — the canonical artifact under `.audit/`; every decision records what triggered it, the chosen behavior, rejected alternatives, evidence, and confidence. Corrections supersede; history is never rewritten.
 - **Independent review** — a separate read-only model (cross-provider when possible, truthfully recorded) reviews the log, diff, and repository, must evaluate design friction, and ends with an explicit approve/block verdict.
 - **Gated publication** — approving review required before the audit is published as deterministic, reviewer-friendly PR comments or closed.
-- **Write-protected artifacts** — hooks and guards prevent agents from editing the audit files directly.
+- **Edits invalidate review** — the audit is an unsigned local file; nothing stops direct edits, but publish and close are refused while the content differs from what was last approved.
 
 ## Install
 
@@ -40,7 +40,7 @@ codex plugin marketplace add 0xLaurenzo/audit-trail
 codex plugin add audit-trail@audit-trail
 ```
 
-Codex snapshots the repository marketplace and installs the plugin (the `$audit-trail` skill, hooks, and MCP tools) into its plugin cache. Then start a **new Codex thread** and approve the plugin's `SessionStart` and `PreToolUse` hooks via `/hooks` — installation never grants hook trust automatically. From a checkout or Nix install, `audit-trail install codex` instead links the package through the personal local marketplace.
+Codex snapshots the repository marketplace and installs the plugin (the `$audit-trail` skill, hooks, and MCP tools) into its plugin cache. Then start a **new Codex thread** and approve the plugin's `SessionStart` hook via `/hooks` — installation never grants hook trust automatically. From a checkout or Nix install, `audit-trail install codex` instead links the package through the personal local marketplace.
 
 ### OpenCode
 
@@ -109,13 +109,13 @@ the same OS user. Other harness integrations still use worktree mode; unset
 Cite repositories, exact SHAs and test artifacts in evidence when a task spans
 checkouts. Audit review verifies the decisions against their referenced evidence,
 not an assumed diff of whichever branch is checked out. A rebase does not
-require a new log. To publish, explicitly select a PR and use its exact checkout;
+require a new log or block publication. To publish, explicitly select a PR and use its exact checkout;
 the existing provenance, PR-head, and reviewed-audit checks still apply. Review
 the entire log before sharing it with that PR's audience.
 
 ## Shared worktree state
 
-Without an explicit task audit ID, exactly one audit may be active per Git worktree. The authoritative state lives in `.audit/active.json`, so any session in the same worktree — including concurrent ones — sees and contributes to the same audit; the audit survives session restarts and branch switches. Starting, resuming, and reopening are distinct operations: `start` only creates, `resume` requires the exact original name of the active audit, and `reopen` intentionally restores the exact matching `.audit/<slug>.closed.json` or `.audit/<slug>.abandoned.json` lifecycle. Different original names that normalize to the same slug are rejected. Audits closed before lifecycle versioning recorded original task names (version 1 state) can never be resumed or reopened — their identity cannot be proven — so reusing such a task name requires manually removing its `.audit/<slug>.closed.json` marker outside agent edit tools. Every mutation runs under an atomic cross-process lock at `.audit/.lock`, so concurrent appends cannot lose rows or allocate duplicate decision IDs. Agent write/edit tools cannot mutate anything under `.audit/` directly; only Audit Trail lifecycle surfaces may change active or archived artifacts. Abandoned locks from crashed processes are reclaimed automatically: lock ownership is a random per-acquisition token, and the dead-PID fast path applies only within the recorded PID scope (on Linux, kernel boot ID plus PID namespace). A worktree shared across PID namespaces or hostname-colliding machines relies on age-based expiry (`staleMs`) alone, and a recycled PID can delay — never break — reclamation until that expiry.
+Without an explicit task audit ID, exactly one audit may be active per Git worktree. The authoritative state lives in `.audit/active.json`, so any session in the same worktree — including concurrent ones — sees and contributes to the same audit; the audit survives session restarts and branch switches. Starting, resuming, and reopening are distinct operations: `start` only creates, `resume` requires the exact original name of the active audit, and `reopen` intentionally restores the exact matching `.audit/<slug>.closed.json` or `.audit/<slug>.abandoned.json` lifecycle. Different original names that normalize to the same slug are rejected. Audits closed before lifecycle versioning recorded original task names (version 1 state) can never be resumed or reopened — their identity cannot be proven — so reusing such a task name requires manually removing its `.audit/<slug>.closed.json` marker outside agent edit tools. Every mutation runs under an atomic cross-process lock at `.audit/.lock`, so concurrent appends cannot lose rows or allocate duplicate decision IDs. Audit files are not write-protected: agents are instructed to use the lifecycle surfaces, and the review checkpoint is bound to a hash of the TSV content, so content that differs from the approved content makes the review stale. It records no edit history and does not prove what the reviewer read. This is a checking tool, not tamper protection — the checkpoint itself is unsigned local state. Abandoned locks from crashed processes are reclaimed automatically: lock ownership is a random per-acquisition token, and the dead-PID fast path applies only within the recorded PID scope (on Linux, kernel boot ID plus PID namespace). A worktree shared across PID namespaces or hostname-colliding machines relies on age-based expiry (`staleMs`) alone, and a recycled PID can delay — never break — reclamation until that expiry.
 
 The TSV `session` cell is harness-qualified (for example `pi/<session-id>`), keeping contributions attributable when multiple harnesses share one audit.
 
@@ -131,7 +131,6 @@ audit-trail decision --phase core --origin "implementation discovery" \
   --decision "..." --why "..." --confidence high --evidence "file:1" --result verified
 audit-trail status
 audit-trail review <provider/model> --mode cross-provider|cross-model|same-model
-audit-trail rollover <task> --reason "<text>" [--name <successor-task>]
 audit-trail abandon <task> --reason "<text>"
 audit-trail publish [pr-number-or-url] [--set <comment-set-id>]
 audit-trail close
@@ -180,7 +179,6 @@ The plugin provides:
 - **Tools** via the shared MCP server (`audit-trail mcp --harness claude`), exposed as `mcp__plugin_audit-trail_audit-trail__audit_*`. A `SessionStart` hook records `{session ID, transcript path, model, worktree}` under `$XDG_STATE_HOME/audit-trail/claude/`, and the server re-reads it on every call, so successful startup/resume/clear hooks refresh attribution to `claude/<session-id>`. Concurrent Claude sessions in one worktree share last-writer-wins attribution. Session state has no expiry or cleanup: if a later `SessionStart` hook fails or does not run, the previous session ID may be reused indefinitely until a successful refresh. Only absent or unreadable state falls back to `claude/<user>@<host>`.
 - **Commands** namespaced by the plugin: `/audit-trail:audit-start`, `/audit-trail:audit-resume`, `/audit-trail:audit-reopen`, `/audit-trail:audit-status`, `/audit-trail:audit-review`, `/audit-trail:audit-publish`, `/audit-trail:audit-close`.
 - **Guidance injection**: the `SessionStart` hook adds the active-audit instructions as additional context whenever the worktree has an active audit.
-- **A write guard**: a `PreToolUse` hook denies `Write`/`Edit` of the TSV, provenance, `active.json`, and closed lifecycle markers (including when no audit is active), failing closed over `.audit/` when audit state is unreadable.
 
 `audit_review` runs the reviewer through non-interactive `claude -p` with a read-only tool allowlist, `--strict-mcp-config` (the reviewer cannot reach this or any MCP server), and no session persistence. Omitting `model` tries the fixed Anthropic allowlist in order: `claude-fable-5-2`, `claude-opus-5-5`, `claude-fable-5-1`, then `claude-fable-5`; an explicit model must be one of those IDs or its `-fast`/dated serving variants. The server compares each candidate with the hook-captured working model and records `cross-model` or `same-model` truthfully—an older working model is never a fallback. The session transcript is included when readable; otherwise review falls back to the TSV, Git diff, and repository.
 
@@ -196,15 +194,15 @@ audit-trail install codex
 
 The installer validates the manifest, manages only `~/plugins/audit-trail` and the `audit-trail` entry in `~/.agents/plugins/marketplace.json`, then runs `codex plugin add audit-trail@<marketplace>`. Reinstalling the same package path is idempotent and preserves unrelated marketplace metadata and plugin entries. An unrecorded different target, changed link, non-symlink, or duplicated or modified marketplace entry is rejected rather than replaced.
 
-Start a **new Codex thread** after installation. Open `/hooks`, inspect the plugin source, and trust the `SessionStart` and `PreToolUse` definitions; installing or enabling a plugin never grants hook trust automatically, and changed hook definitions require approval again. Project-local `.codex/` hooks additionally require project trust, although audit-trail's hooks are plugin-bundled. Use `/skills` or `$audit-trail` for explicit skill invocation; Codex can also activate the skill from its description.
+Start a **new Codex thread** after installation. Open `/hooks`, inspect the plugin source, and trust the `SessionStart` definition; installing or enabling a plugin never grants hook trust automatically, and changed hook definitions require approval again. Project-local `.codex/` hooks additionally require project trust, although audit-trail's hooks are plugin-bundled. Use `/skills` or `$audit-trail` for explicit skill invocation; Codex can also activate the skill from its description.
 
 Use Codex MCP for the whole audit when the implementation worktree matches the SessionStart worktree. From the implementation directory, run `git rev-parse --show-toplevel`; pass that absolute root as `expectedWorktree` to `audit_status` and every mutation. Check the reported repository, branch, and worktree before starting or resuming. The argument asserts intent; it never retargets MCP. If Git cannot confirm the recorded checkout, MCP refuses access. If another linked worktree is intentional or MCP is unavailable, use `audit-trail -C <target> status` and then `audit-trail -C <target>` for **every** operation, including decisions. Do not mix interfaces. If repository instructions conflict, report the conflict and stop rather than silently switching audits.
 
-The fallback uses ordinary CLI attribution and Pi review (no Codex transcript). Select an allowed model in Pi’s provider namespace, e.g. `openai-codex/<model>` for Codex OAuth, with an explicit truthful `--mode`. Task identity, append-only rows, exact-byte review, exact-head publication, and close checks are unchanged.
+The fallback uses ordinary CLI attribution and Pi review (no Codex transcript). Select an allowed model in Pi’s provider namespace, e.g. `openai-codex/<model>` for Codex OAuth, with an explicit truthful `--mode`. Task identity, append-only rows, content-hash review, exact-head publication, and close checks are unchanged.
 
 The plugin provides the shared `audit_start`, `audit_resume`, `audit_reopen`, `audit_decision`, `audit_status`, `audit_review`, `audit_publish`, and `audit_close` MCP tools. `SessionStart` records `{session ID, optional transcript path, model, worktree}` under `$XDG_STATE_HOME/audit-trail/codex/`, injects guidance for an active audit, and attributes decisions as `codex/<session-id>`. The MCP manifest's plugin-cache working directory is used only to locate the bundled executable: each tool call's Codex-supplied thread ID selects the matching hook state and routes the workflow to its recorded worktree. Calls without matching trusted `SessionStart` state fail instead of reading or writing audit state in the plugin cache. The transcript path is supplementary only: Codex does not promise a stable transcript format, and missing or unreadable transcripts fall back to TSV, Git diff, and repository evidence. Concurrent threads in the same worktree share the active audit but keep separate attribution. Records do not expire. To forget one thread, run `audit-trail -C <worktree> codex-forget <thread-id>`; sibling records and the audit are untouched. For a removed worktree, pass its original absolute canonical path to `-C`. If the same thread is registered in multiple worktrees, calls fail until the obsolete binding is removed. After upgrading from worktree-only storage, run a new trusted `SessionStart` for each thread; legacy slots are ignored.
 
-A `PreToolUse` hook protects extension-managed audit files, including closed lifecycle markers when no audit is active, from direct `apply_patch`/`Edit`/`Write` changes and fails closed over `.audit/` when state is unreadable. This is a guardrail for direct edit tools, not a shell sandbox. Plugin hooks and the local MCP server run with your user privileges, so inspect the linked package and approve MCP tools according to your Codex policy.
+Plugin hooks and the local MCP server run with your user privileges, so inspect the linked package and approve MCP tools according to your Codex policy.
 
 `audit_review` runs an isolated child through `codex exec --ignore-user-config --ephemeral --sandbox read-only`. Omitting `model` tries the fixed OpenAI allowlist in order: `gpt-6.2-astra`, `gpt-6.2-sol`, `gpt-6.1-astra`, `gpt-6.1-sol`, `gpt-6-astra`, then `gpt-6-sol`; an explicit model must be one of those IDs or its `-fast`/dated serving variants and remains pinned if it fails. The hook-captured working model is used only to derive truthful `cross-model` or `same-model` metadata—an older working model is never a fallback. Codex does not claim cross-provider review or catalog discovery. If `SessionStart` did not capture a model, review fails clearly rather than guessing provenance.
 
@@ -231,7 +229,7 @@ For the handoff, check one `.audit/smoke.tsv`, 13 tab-separated fields per row, 
 
 ## OpenCode
 
-`src/adapters/opencode.ts` is a native OpenCode plugin over the same shared worktree state, so Pi, CLI, MCP, and OpenCode sessions interoperate on one audit: an audit started in Pi can be explicitly resumed from OpenCode and vice versa. It registers all eight operations as plugin tools (`audit_start`, `audit_resume`, `audit_reopen`, `audit_decision`, `audit_status`, `audit_review`, `audit_publish`, `audit_close`), injects the active-audit guidance into the system prompt, and write-protects extension-managed audit files. Rows are attributed as `opencode/<session-id>` with the message ID as the entry.
+`src/adapters/opencode.ts` is a native OpenCode plugin over the same shared worktree state, so Pi, CLI, MCP, and OpenCode sessions interoperate on one audit: an audit started in Pi can be explicitly resumed from OpenCode and vice versa. It registers all eight operations as plugin tools (`audit_start`, `audit_resume`, `audit_reopen`, `audit_decision`, `audit_status`, `audit_review`, `audit_publish`, `audit_close`), and injects the active-audit guidance into the system prompt. Rows are attributed as `opencode/<session-id>` with the message ID as the entry.
 
 Global activation:
 
@@ -258,9 +256,8 @@ export { AuditTrailPlugin } from "/path/to/audit-trail/src/adapters/opencode.ts"
 - `/audit-status` — show unresolved, low-confidence, and unsupported decisions, plus review freshness
 - `/audit-review [provider/model]` — review the log and pi session, preferring a cross-provider model
 - `/audit-abandon <task> --reason <text>` — archive an unpublishable audit as abandoned without implying review approval or publication; reopen restores it
-- `/audit-rollover <task> --reason <text> [--name <successor>]` — archive a rebase-diverged audit as an immutable abandoned segment and start a linked successor at the current HEAD
 - `/audit-publish [number-or-url] [--set set-id]` — add or replace this audit in the authenticated author's aggregate comment set on the current branch's PR
-- `/audit-close` — close only after all active rows are resolved and the latest audit bytes have been reviewed
+- `/audit-close` — close only after all active rows are resolved and the current audit content matches the last approving review
 
 ## Agent tool
 
@@ -315,15 +312,11 @@ The reviewer must finish with `VERDICT: approve` or `VERDICT: block`. The parser
 
 ## Publish to a pull request
 
-The audit captures its original branch and starting commit once and preserves them as immutable provenance. You may create or switch to the feature branch after starting; publication uses the current checked-out branch (or an explicit PR selector) and verifies that a later PR head descends from the pinned start commit.
+The audit captures its original branch and starting commit once and preserves them as immutable provenance. You may create or switch to the feature branch after starting; publication uses the current checked-out branch (or an explicit PR selector). The start commit is informational: after a rebase the published commit range may name a commit that is no longer in the PR history.
 
 ### Abandoning an audit
 
-Some audits become permanently unable to satisfy the review-and-publish path: the work was dropped, the PR merged from rewritten history, or the task is obsolete while its audit still occupies the worktree. `audit-trail abandon <exact-task> --reason "<text>"` archives the active audit as `.audit/<task>.abandoned.json` — an explicit terminal state distinct from close that never implies review approval or publication. The append-only record captures the reason, actor session, branch/HEAD, unresolved decision IDs, and review state at abandonment. TSV, provenance, and review artifacts are preserved unchanged and stay write-protected; the exact task name is required so the wrong worktree audit cannot be abandoned. Afterward `status` reports no active audit and lists abandoned terminal artifacts. `reopen <task>` restores an abandoned audit with every abandonment record retained; re-abandoning appends another record rather than rewriting history. Close gates are unchanged — abandonment is never a shortcut past review.
-
-### Rebase rollover
-
-A rebase rewrites ancestry, so an audit started before the rebase can never publish: its pinned start commit is no longer an ancestor of any PR head. `audit-trail status` detects this early (`provenance diverged: rollover required`) via a local `git merge-base --is-ancestor` check. `audit-trail rollover <task> --reason "<text>"` then archives the active audit as an immutable `.audit/<task>.abandoned.json` segment — recording reason, session, branch/HEAD, unresolved decisions, and review state, and explicitly never implying review approval or publication — and starts a linked successor audit (default name `<task> (rebased)`) with fresh provenance pinned to the post-rebase HEAD. The successor records a `rolloverFrom` link (predecessor audit ID, task, and `startCommit..head` range) shown in status, and publishes normally through the unchanged ancestry guard. Rollover refuses while the start commit still descends into HEAD, when ancestry cannot be verified, and when the successor name collides with existing artifacts — checked before anything is archived. Patch equivalence is deliberately human-verified: record one decision in the successor citing `git range-diff` evidence, where the independent reviewer will see it. The predecessor's TSV, provenance, and review artifacts are never modified; an abandoned slug cannot be restarted.
+Some audits become permanently unable to satisfy the review-and-publish path: the work was dropped, the PR merged from rewritten history, or the task is obsolete while its audit still occupies the worktree. `audit-trail abandon <exact-task> --reason "<text>"` archives the active audit as `.audit/<task>.abandoned.json` — an explicit terminal state distinct from close that never implies review approval or publication. The append-only record captures the reason, actor session, branch/HEAD, unresolved decision IDs, and review state at abandonment. TSV, provenance, and review artifacts are preserved unchanged; the exact task name is required so the wrong worktree audit cannot be abandoned. Afterward `status` reports no active audit and lists abandoned terminal artifacts. `reopen <task>` restores an abandoned audit with every abandonment record retained; re-abandoning appends another record rather than rewriting history. Close gates are unchanged — abandonment is never a shortcut past review.
 
 After reviewing the latest decisions, publish to the pull request associated with the current checked-out branch:
 
@@ -332,7 +325,7 @@ After reviewing the latest decisions, publish to the pull request associated wit
 /audit-publish
 ```
 
-Pass a PR number or URL when automatic branch lookup is not appropriate. Every target must belong to the provenance repository, match both the current branch name (when named) and exact committed local HEAD, and descend from the pinned audit start commit, so check out, commit, and update that PR branch first. Uncommitted working-tree/index changes are not part of PR target identity:
+Pass a PR number or URL when automatic branch lookup is not appropriate. Every target must belong to the provenance repository, and match both the current branch name (when named) and exact committed local HEAD, so check out, commit, and update that PR branch first. Uncommitted working-tree/index changes are not part of PR target identity:
 
 ```text
 /audit-publish 123
@@ -344,7 +337,7 @@ Publication groups successive audits into one logical comment set per repository
 /audit-publish 123 --set 11111111-2222-4333-8444-555555555555
 ```
 
-Publishing requires an approving review checkpoint matching the current audit bytes: after any new decision, run `/audit-review` again, and a `VERDICT: block` review must be resolved and re-reviewed first. The `gh` CLI must be installed and authenticated. Every component records its own linked `startCommit..publishedHead` range, provenance, review result, decision cards, and canonical TSV. GitHub must prove that every selected PR head descends from that audit's pinned start commit. Unrelated or diverged PRs are rejected before comments are read or written. Local branch/HEAD, remote PR head OID, and the selected comment bodies are revalidated immediately before every mutation. GitHub has no atomic conditional comment write, so the remaining sub-request race requires publishing again if detected afterward. Active decisions are expanded; superseded decisions retain their complete body and audit-namespaced history links. Open, inconclusive, low-confidence, and missing-evidence active rows are visibly flagged. No model summarizes or rewrites these fields.
+Publishing requires an approving review checkpoint matching a hash of the current audit content: after any new decision, run `/audit-review` again, and a `VERDICT: block` review must be resolved and re-reviewed first. The `gh` CLI must be installed and authenticated. Every component records its own linked `startCommit..publishedHead` range, provenance, review result, decision cards, and canonical TSV. PRs from another repository or with a different head are rejected before comments are read or written. Local branch/HEAD, remote PR head OID, and the selected comment bodies are revalidated immediately before every mutation. GitHub has no atomic conditional comment write, so the remaining sub-request race requires publishing again if detected afterward. Active decisions are expanded; superseded decisions retain their complete body and audit-namespaced history links. Open, inconclusive, low-confidence, and missing-evidence active rows are visibly flagged. No model summarizes or rewrites these fields.
 
 ```markdown
 ### D0002
