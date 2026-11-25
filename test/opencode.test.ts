@@ -262,6 +262,51 @@ test("opencode installer rejects unowned same-name collisions before writing any
 	}
 });
 
+test("OpenCode ownership headers authorize repair and removal of edited commands and shims", async () => {
+	const home = await mkdtemp(join(tmpdir(), "audit-opencode-marker-"));
+	const ctx = { home, packageRoot: "/opt/audit-trail" };
+	try {
+		await opencodeInstaller.install(ctx);
+		for (const relative of ["commands/audit-status.md", "plugins/audit-trail.ts"]) {
+			const path = join(home, ".config/opencode", relative);
+			const original = await readFile(path, "utf8");
+			const markerEnd = original.indexOf("\n", original.indexOf("audit-trail-managed:v1"));
+			const edited = original.slice(0, markerEnd + 1) + "custom body\n";
+			const collisions = ["user file\n" + edited];
+			if (relative.endsWith(".md")) collisions.push(edited.replace("\n---\n", "\nother: value\n"));
+			for (const collision of collisions) {
+				await writeFile(path, collision);
+				for (const uninstall of [false, true]) await assert.rejects(opencodeInstaller.prepare(ctx, uninstall), /not managed/);
+				assert.equal(await readFile(path, "utf8"), collision);
+			}
+			await writeFile(path, edited);
+			await opencodeInstaller.install(ctx);
+			assert.equal(await readFile(path, "utf8"), original);
+			await writeFile(path, edited);
+			await (await opencodeInstaller.prepare(ctx, true))();
+			await assert.rejects(readFile(path), /ENOENT/);
+			await opencodeInstaller.install(ctx);
+		}
+	} finally { await rm(home, { recursive: true, force: true }); }
+});
+
+test("malformed UTF-8 cannot make a foreign legacy shim look generated", async () => {
+	const home = await mkdtemp(join(tmpdir(), "audit-opencode-bytes-"));
+	const path = join(home, ".config/opencode/plugins/audit-trail.ts");
+	try {
+		await mkdir(join(home, ".config/opencode/plugins"), { recursive: true });
+		const foreign = Buffer.concat([
+			Buffer.from('// Managed by `audit-trail install opencode`; edits are overwritten on reinstall.\nexport { AuditTrailPlugin } from "/old-'),
+			Buffer.from([0xff]), Buffer.from('/src/adapters/opencode.ts";\n'),
+		]);
+		await writeFile(path, foreign);
+		for (const uninstall of [false, true]) {
+			await assert.rejects(opencodeInstaller.prepare({ home, packageRoot: "/new" }, uninstall), /non-UTF-8/);
+			assert.deepEqual(await readFile(path), foreign);
+		}
+	} finally { await rm(home, { recursive: true, force: true }); }
+});
+
 test("opencode installer migrates exact pre-marker files emitted by the initial adapter", async () => {
 	const home = await mkdtemp(join(tmpdir(), "audit-opencode-legacy-"));
 	try {

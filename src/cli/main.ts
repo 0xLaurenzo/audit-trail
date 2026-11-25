@@ -56,7 +56,8 @@ Commands:
   claude-hook        Handle a Claude Code hook payload on stdin (plugin use)
   codex-hook         Handle a Codex hook payload on stdin (plugin use)
   codex-forget <thread-id>  Remove only this worktree/thread SessionStart record
-  install <target>   Configure a harness: pi | claude | codex | opencode | all
+  install <target>   Install, upgrade or repair a harness: pi | claude | codex | opencode | all
+  uninstall <target> Remove installer-managed registrations (same targets as install)
   help               Show this help
 
 Decision options:
@@ -86,14 +87,14 @@ export interface CliDependencies {
 
 const defaultDependencies: CliDependencies = { createReviewer: createPiSubprocessReviewer };
 
-export function processRunner(cwd?: string): CommandRunner {
+export function processRunner(cwd?: string, env?: NodeJS.ProcessEnv): CommandRunner {
 	return {
 		exec(command, args, options) {
 			return new Promise((resolveExec) => {
 				const child = execFile(
 					command,
 					args,
-					{ cwd, timeout: options?.timeout, signal: options?.signal, maxBuffer: 64 * 1024 * 1024 },
+					{ cwd, env, timeout: options?.timeout, signal: options?.signal, maxBuffer: 64 * 1024 * 1024 },
 					(error: any, stdout, stderr) => {
 						const stderrText = String(stderr ?? "");
 						resolveExec({
@@ -410,7 +411,7 @@ async function commandHook(harness: "claude" | "codex", io: CliIo): Promise<numb
 	return result.exitCode;
 }
 
-async function commandInstall(target: string, io: CliIo): Promise<number> {
+async function commandInstall(target: string, io: CliIo, uninstall: boolean): Promise<number> {
 	if (!target) {
 		io.err("Usage: audit-trail install <pi|claude|codex|opencode|all>");
 		return 1;
@@ -430,18 +431,16 @@ async function commandInstall(target: string, io: CliIo): Promise<number> {
 		return 1;
 	}
 	const { packageRootFromModule, selectInstallers } = installerModule;
-	const ctx = { home: homedir(), packageRoot: packageRootFromModule(import.meta.url), runner: processRunner() };
-	let failed = false;
-	for (const installer of selectInstallers(target)) {
-		try {
-			const result = await installer.install(ctx);
-			io.out(`${result.harness}: ${result.message}`);
-		} catch (error: any) {
-			failed = true;
-			io.err(`${installer.harness}: install failed: ${error?.message ?? error}`);
-		}
+	const home = homedir();
+	const env = { ...process.env };
+	const ctx = { home, codexHome: env.CODEX_HOME, packageRoot: packageRootFromModule(import.meta.url), runner: processRunner(process.cwd(), env) };
+	const plans = [];
+	for (const installer of selectInstallers(target)) plans.push(await installer.prepare(ctx, uninstall));
+	for (const apply of plans) {
+		const result = await apply();
+		io.out(`${result.harness}: ${result.message}`);
 	}
-	return failed ? 1 : 0;
+	return 0;
 }
 
 async function commandPublish(workflow: AuditWorkflow, args: string[], io: CliIo): Promise<number> {
@@ -515,8 +514,8 @@ export async function runCli(
 		io.err(`${command} takes no arguments`);
 		return 1;
 	}
-	if (command === "install" && args.length !== 1) {
-		io.err("install requires exactly one target");
+	if ((command === "install" || command === "uninstall") && args.length !== 1) {
+		io.err(`${command} requires exactly one target`);
 		return 1;
 	}
 	if (command === "claude-hook" || command === "codex-hook") {
@@ -559,7 +558,8 @@ export async function runCli(
 			case "mcp":
 				return await commandMcp(workflow, args, io, dependencies);
 			case "install":
-				return await commandInstall((args[0] ?? "").trim(), io);
+			case "uninstall":
+				return await commandInstall((args[0] ?? "").trim(), io, command === "uninstall");
 			default:
 				io.err(`Unknown command: ${command}\n\n${HELP}`);
 				return 1;

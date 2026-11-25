@@ -61,7 +61,7 @@ nix profile install github:0xLaurenzo/audit-trail
 audit-trail install all    # or: pi | claude | codex | opencode
 ```
 
-Puts `audit-trail` on your PATH from an immutable store path and registers harnesses through the collision-safe installer, which preserves unrelated configuration and refuses to touch entries it cannot prove it owns. Upgrade with `nix profile upgrade pi-audit-trail`, then rerun `audit-trail install`.
+Puts `audit-trail` on your PATH from an immutable store path and registers harnesses through the collision-safe installer, which preserves unrelated configuration and refuses to touch entries it cannot prove it owns. Upgrade with `nix profile upgrade pi-audit-trail`, then rerun `audit-trail install <target>`.
 
 ## Use
 
@@ -148,7 +148,7 @@ The package doubles as a Claude Code plugin: `.claude-plugin/plugin.json` at the
 audit-trail install claude
 ```
 
-This links `~/.claude/skills/audit-trail` to the installed package, which Claude Code loads in place as `audit-trail@skills-dir` on the next session — no marketplace, no edits to `settings.json` or Claude-managed plugin state. Reinstalling against the same package path is idempotent. Because a symlink cannot prove who created it, any different target (including a same-name plugin or dangling link) and any real directory fails the install instead of being replaced; remove the old link explicitly before reinstalling after a package-location upgrade. Remove the symlink (or `claude plugin disable audit-trail@skills-dir`) to deactivate.
+This links `~/.claude/skills/audit-trail` to the installed package, which Claude Code loads in place as `audit-trail@skills-dir` on the next session — no marketplace, no edits to `settings.json` or Claude-managed plugin state. Reinstalling against the same package path is idempotent. Upgrades replace only the recorded link target. Remove an unrecorded old link explicitly, or use `audit-trail uninstall claude` for a managed installation.
 
 The plugin provides:
 
@@ -169,7 +169,7 @@ The package is also a Codex plugin: `.codex-plugin/plugin.json` bundles the `$au
 audit-trail install codex
 ```
 
-The installer validates the manifest, manages only `~/plugins/audit-trail` and the `audit-trail` entry in `~/.agents/plugins/marketplace.json`, then runs `codex plugin add audit-trail@<marketplace>`. Reinstalling the same package path is idempotent and preserves unrelated marketplace metadata and plugin entries. A different symlink target, non-symlink path, or same-name marketplace entry with another source is rejected rather than replaced.
+The installer validates the manifest, manages only `~/plugins/audit-trail` and the `audit-trail` entry in `~/.agents/plugins/marketplace.json`, then runs `codex plugin add audit-trail@<marketplace>`. Reinstalling the same package path is idempotent and preserves unrelated marketplace metadata and plugin entries. An unrecorded different target, changed link, non-symlink, or duplicated or modified marketplace entry is rejected rather than replaced.
 
 Start a **new Codex thread** after installation. Open `/hooks`, inspect the plugin source, and trust the `SessionStart` and `PreToolUse` definitions; installing or enabling a plugin never grants hook trust automatically, and changed hook definitions require approval again. Project-local `.codex/` hooks additionally require project trust, although audit-trail's hooks are plugin-bundled. Use `/skills` or `$audit-trail` for explicit skill invocation; Codex can also activate the skill from its description.
 
@@ -183,6 +183,27 @@ A `PreToolUse` hook protects extension-managed audit files, including closed lif
 
 `audit_review` runs an isolated child through `codex exec --ignore-user-config --ephemeral --sandbox read-only`. Omitting `model` tries the fixed OpenAI allowlist in order: `gpt-6.2-astra`, `gpt-6.2-sol`, `gpt-6.1-astra`, `gpt-6.1-sol`, `gpt-6-astra`, then `gpt-6-sol`; an explicit model must be one of those IDs or its `-fast`/dated serving variants and remains pinned if it fails. The hook-captured working model is used only to derive truthful `cross-model` or `same-model` metadata—an older working model is never a fallback. Codex does not claim cross-provider review or catalog discovery. If `SessionStart` did not capture a model, review fails clearly rather than guessing provenance.
 
+## Package lifecycle and compatibility
+
+Use `install <target>` to install, upgrade to the invoking package, or repair missing files. Use `uninstall <target>` to unregister; neither command removes audits or the package itself. Targets: `pi`, `opencode`, `claude`, `codex`, `all`. Remove marketplace installs made through a harness's own plugin manager using that manager instead.
+
+`all` checks every selected target before changing any. Stop other installers/config editors first: this is collision preflight, not a transaction across processes. On an I/O or native Codex failure, correct the error and rerun. The installer refuses symlinked directories along its fixed paths below home, including the implicit `~/.codex` profile. An explicit `CODEX_HOME` selects its resolved native profile. Claude and Codex receipts live in `~/.local/state/audit-trail/{claude,codex}.json`; install adopts exact matching registrations, never infers ownership of a different target from its manifest. Uninstall without a receipt leaves those harnesses alone. Codex binds its receipt to the effective `CODEX_HOME` (default `~/.codex`); use the original profile or uninstall there before switching profiles. Codex unregisters the recorded native plugin before unlinking it; unrelated marketplace entries and metadata remain. Empty directories, shared settings and marketplaces are left in place.
+
+### Minimum tested versions and smoke procedures
+
+These are the lowest CLI versions exercised here for the **listed surface**, not promises about older versions or claims of live model review on each host. Use a disposable home, clean harness configuration and a scratch worktree. Restart the host after installing.
+
+| Harness | Minimum tested CLI | Exercised surface | Manual session smoke |
+|---|---|---|---|
+| Pi | 0.82.1 | Installed extension enumerated by RPC `get_commands` | Install Pi, open `pi`, run `/audit-start smoke` and `/audit-status`. |
+| OpenCode | 1.15.10 | Installed command discovery via `opencode debug config` | Install OpenCode, open the same worktree, run `/audit-resume smoke`; ask it to record a decision, then run `/audit-status`. |
+| Claude Code | 2.1.331 | Marketplace install and cached plugin launch | Install Claude, start a new session, approve the MCP server and run `/audit-trail:audit-resume smoke` and `/audit-trail:audit-status`. |
+| Codex | 0.146.0 | Native plugin add/remove and cached plugin launch | Install Codex, open a new thread, inspect/trust `/hooks`, invoke `$audit-trail` and ask it to resume and report status for `smoke`. |
+
+Pack from a clean checkout with lifecycle scripts enabled. `npm pack` creates `dist/` exclusively and refuses to reuse any existing path there. If a build is interrupted, inspect and move the leftover directory before retrying. Do not modify build output while packing.
+
+For the handoff, check one `.audit/smoke.tsv`, 13 tab-separated fields per row, original rows unchanged, and session IDs prefixed by the writing harness. CI runs adapter drivers in separate OS processes with scripted host APIs, reviewers and GitHub, without credentials. Contributors: run `npm ci && npm run typecheck && npm run check`, `bash test/package-smoke.sh` (packs and installs the npm tarball, including the compiled CLI for Node's node_modules boundary), and `nix build .# --no-link`. The Git checkout also acts as a marketplace; package-manager installations use the local installers instead.
+
 ## OpenCode
 
 `src/adapters/opencode.ts` is a native OpenCode plugin over the same shared worktree state, so Pi, CLI, MCP, and OpenCode sessions interoperate on one audit: an audit started in Pi can be explicitly resumed from OpenCode and vice versa. It registers all eight operations as plugin tools (`audit_start`, `audit_resume`, `audit_reopen`, `audit_decision`, `audit_status`, `audit_review`, `audit_publish`, `audit_close`), injects the active-audit guidance into the system prompt, and write-protects extension-managed audit files. Rows are attributed as `opencode/<session-id>` with the message ID as the entry.
@@ -193,7 +214,7 @@ Global activation:
 audit-trail install opencode
 ```
 
-This writes only files the package owns — a plugin shim at `~/.config/opencode/plugins/audit-trail.ts` re-exporting the adapter from the installed package, and seven prompt-template commands (`/audit-start`, `/audit-resume`, `/audit-reopen`, `/audit-status`, `/audit-review`, `/audit-publish`, `/audit-close`) under `~/.config/opencode/commands/` — and never touches `opencode.json` or other user files. Reinstalling is safe: unchanged files are left alone, managed files carry a stable ownership marker, and a stale shim from a previous install location is regenerated. If a target path already contains an unmarked file, installation fails before writing anything rather than overwriting potentially unrelated configuration.
+This writes only files the package owns — a plugin shim at `~/.config/opencode/plugins/audit-trail.ts` re-exporting the adapter from the installed package, and seven prompt-template commands (`/audit-start`, `/audit-resume`, `/audit-reopen`, `/audit-status`, `/audit-review`, `/audit-publish`, `/audit-close`) under `~/.config/opencode/commands/` — and never touches `opencode.json` or other user files. Reinstalling is safe: unchanged files are left alone, keeping the generated ownership header on a command or shim authorizes replacement and uninstall even if you edit its body, and a stale shim from a previous install location is regenerated. If a target path already contains an unmarked file, installation fails before writing anything rather than overwriting potentially unrelated configuration.
 
 For project-local activation, place the same shim in `.opencode/plugins/` inside the project:
 

@@ -1,15 +1,18 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url));
+// npm omits this source entry; checkouts always run source, even with stale build output.
+const source = join(here, "..", "src", "cli", "bin.ts");
 const result = spawnSync(
 	process.execPath,
 	[
 		"--experimental-strip-types",
 		"--disable-warning=ExperimentalWarning",
-		join(here, "..", "src", "cli", "bin.ts"),
+		existsSync(source) ? source : join(here, "..", "dist", "cli", "bin.js"),
 		...process.argv.slice(2),
 	],
 	{ stdio: "inherit" },

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
-import { lstat, mkdir, mkdtemp, readFile, readlink, rm, symlink, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, readlink, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import test from "node:test";
 import { handleClaudeHook } from "../src/adapters/claude-hook.ts";
 import { createClaudeSubprocessReviewer, selectClaudeReviewCandidates } from "../src/adapters/claude-reviewer.ts";
@@ -261,6 +261,24 @@ test("claude reviewer validates provenance and runs headless read-only", async (
 	);
 });
 
+test("uninstall preserves a foreign link whose lossy UTF-8 decoding matches the receipt", async () => {
+	const home = await mkdtemp(join(tmpdir(), "audit-claude-bytes-"));
+	try {
+		const packageRoot = join(home, "release-\uFFFD");
+		await mkdir(join(packageRoot, ".claude-plugin"), { recursive: true });
+		await writeFile(join(packageRoot, ".claude-plugin/plugin.json"), '{"name":"audit-trail"}');
+		await claudeInstaller.install({ home, packageRoot });
+		const link = join(home, ".claude/skills/audit-trail");
+		await rm(link);
+		const foreign = Buffer.concat([Buffer.from(join(home, "release-")), Buffer.from([0xff])]);
+		await symlink(foreign, link);
+		await assert.rejects(() => claudeInstaller.prepare({ home, packageRoot }, true), /ownership cannot be proven/);
+		assert.deepEqual(await readlink(link, { encoding: "buffer" }), foreign);
+	} finally {
+		await rm(home, { recursive: true, force: true });
+	}
+});
+
 test("claude installer manages one collision-safe skills-dir symlink", async () => {
 	const home = await mkdtemp(join(tmpdir(), "audit-claude-install-"));
 	const packageA = await mkdtemp(join(tmpdir(), "audit-claude-pkg-a-"));
@@ -283,14 +301,28 @@ test("claude installer manages one collision-safe skills-dir symlink", async () 
 		assert.equal(second.changed, false);
 		assert.match(second.message, /already linked/);
 
-		// A different target is never inferred to be installer-owned, even when it
-		// contains the same plugin manifest. Upgrades require explicit removal.
-		await assert.rejects(() => claudeInstaller.install({ home, packageRoot: packageB }), /ownership cannot be proven/);
-		assert.equal(await readlink(linkPath), packageA);
-		await rm(linkPath);
+		// A recorded prior target can be upgraded without guessing ownership.
 		const upgraded = await claudeInstaller.install({ home, packageRoot: packageB });
 		assert.equal(upgraded.changed, true);
 		assert.equal(await readlink(linkPath), packageB);
+
+		// Normalizing this path before comparing would hide actual link drift.
+		const alias = join(dirname(packageB), "alias-" + basename(home));
+		const ambiguous = alias + "/../" + basename(packageB);
+		await mkdir(join(home, "nested"));
+		await mkdir(join(home, basename(packageB)));
+		await symlink(join(home, "nested"), alias);
+		try {
+			await rm(linkPath);
+			await symlink(ambiguous, linkPath);
+			await assert.rejects(() => claudeInstaller.prepare({ home, packageRoot: packageB }, true), /ownership cannot be proven/);
+			await rename(packageB, join(home, "offline"));
+			await assert.rejects(() => claudeInstaller.prepare({ home, packageRoot: packageB }, true), /ownership cannot be proven/);
+			await rename(join(home, "offline"), packageB);
+			assert.equal(await readlink(linkPath), ambiguous);
+		} finally {
+			await rm(alias);
+		}
 
 		// A dangling target is equally unprovable and must be preserved.
 		await rm(linkPath);

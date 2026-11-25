@@ -17,10 +17,24 @@
     "type": "git",
     "url": "git+https://github.com/0xLaurenzo/audit-trail.git"
   },
+  "files": [
+    "bin/",
+    "dist/",
+    "src/",
+    "!src/cli/bin.ts",
+    "claude/",
+    "hooks/",
+    "skills/",
+    ".claude-plugin/plugin.json",
+    ".codex-plugin/plugin.json",
+    ".mcp.json"
+  ],
   "bin": {
     "audit-trail": "bin/audit-trail"
   },
   "scripts": {
+    "prepack": "node --input-type=module -e \"import { mkdirSync } from 'node:fs'; mkdirSync('dist')\" && tsc -p tsconfig.package.json",
+    "postpack": "node --input-type=module -e \"import { rmSync } from 'node:fs'; if (['pack','publish'].includes(process.env.npm_command)) rmSync('dist', {recursive: true})\"",
     "test": "node --experimental-strip-types --test test/*.test.ts",
     "typecheck": "tsc --noEmit",
     "check": "node --experimental-strip-types --check src/adapters/pi.ts && node --experimental-strip-types --check src/adapters/opencode.ts && node --experimental-strip-types --check src/cli/main.ts && npm test"

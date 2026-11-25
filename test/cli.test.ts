@@ -76,6 +76,14 @@ test("cli start, decision, status, and close blockers share worktree state", asy
 	}
 });
 
+test("installer verbs reject extra targets before selecting an installer", async () => {
+	for (const command of ["install", "uninstall"]) {
+		const io = capture();
+		assert.equal(await runCli([command, "not-a-harness", "--", "-C"], io), 1);
+		assert.deepEqual(io.stderr, [`${command} requires exactly one target`]);
+	}
+});
+
 test("cli requires explicit reopen after close", async () => {
 	const root = await mkdtemp(join(tmpdir(), "audit-cli-test-"));
 	try {
