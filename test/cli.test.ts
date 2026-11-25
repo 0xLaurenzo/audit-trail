@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { execFile, execFileSync } from "node:child_process";
+import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -78,7 +79,8 @@ test("cli start, decision, status, and close blockers share worktree state", asy
 test("cli requires explicit reopen after close", async () => {
 	const root = await mkdtemp(join(tmpdir(), "audit-cli-test-"));
 	try {
-		assert.equal(await runCli(["-C", root, "start", "Lifecycle Task"], capture()), 0);
+		assert.equal(await runCli(["-C", root, "start", "--", "Lifecycle Task"], capture()), 0);
+		assert.equal(await runCli(["-C", root, "resume", "Lifecycle Task"], capture()), 0);
 		assert.equal(await runCli(["-C", root, ...decisionArgs], capture()), 0);
 		const reviewer: ReviewerPort = {
 			review: async () => buildReviewOutputFixture({ sections: { auditFindings: "No flags." }, verdict: "approve" }),
@@ -89,7 +91,11 @@ test("cli requires explicit reopen after close", async () => {
 			}),
 			0,
 		);
-		assert.equal(await runCli(["-C", root, "close"], capture()), 0);
+		const closeIo = capture();
+		assert.equal(await runCli(["-C", root, "close", "--", "-C", "not-the-target"], closeIo), 1);
+		assert.match(closeIo.stderr.join("\n"), /close takes no arguments/);
+		assert.ok(await readActiveAudit(root), "an eligible audit was not silently closed");
+		assert.equal(await runCli(["-C", root, "close", "--"], capture()), 0);
 		const startIo = capture();
 		assert.equal(await runCli(["-C", root, "start", "Lifecycle Task"], startIo), 1);
 		assert.match(startIo.stderr.join("\n"), /Use reopen instead of start/);
@@ -257,9 +263,75 @@ test("-C is accepted after the command as well", async () => {
 	const root = await mkdtemp(join(tmpdir(), "audit-cli-test-"));
 	try {
 		const io = capture();
+		assert.equal(await runCli(["start", "wrong-target", "-xC", root], io), 1);
+		assert.match(io.stderr.at(-1)!, /must be a standalone option/);
+		assert.equal(await readActiveAudit(root), undefined);
+		for (const spelling of ["-xC", "--C", "--C=ignored", "-Cattached"]) {
+			assert.equal(await runCli(["start", "wrong-target", spelling, "-C", root], io), 1);
+			assert.match(io.stderr.at(-1)!, /standalone|only once|requires a directory/);
+		}
+		assert.equal(await readActiveAudit(root), undefined);
 		assert.equal(await runCli(["start", "-C", root, "late-flag-task"], io), 0);
 		assert.ok(await readActiveAudit(root), "audit landed in the -C directory");
 		assert.match(io.stdout.join("\n"), /late-flag-task\.tsv/);
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+test("a directory operand can start with a dash", async () => {
+	const root = await mkdtemp(join(tmpdir(), "audit-cli-dash-"));
+	try {
+		const target = join(root, "-work");
+		await mkdir(target);
+		const cli = join(process.cwd(), "bin/audit-trail");
+		execFileSync(cli, ["-C", "-work", "start", "dash"], { cwd: root, stdio: "pipe" });
+		execFileSync(cli, ["resume", "dash", "-C", "-work"], { cwd: root, stdio: "pipe" });
+		assert.ok(await readActiveAudit(target));
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+test("concurrent CLI invocations retain distinct attribution and literal -C values", async () => {
+	const root = await mkdtemp(join(tmpdir(), "audit-cli-test-"));
+	try {
+		assert.equal(await runCli(["start", "literal", "-C", root], capture()), 0);
+		const args = decisionArgs.map((arg) => arg === "Ship the CLI" ? "-C" : arg);
+		const invocations = [["-C", root, ...args], [...args, "-C", root]];
+		assert.deepEqual(await Promise.all(invocations.map((argv) => runCli(argv, capture()))), [0, 0]);
+		const rows = await readRows(join(root, ".audit", "literal.tsv"));
+		assert.deepEqual(rows.map((row) => row.decision), ["'-C", "'-C"]); // Canonical TSV formula escaping.
+		assert.notEqual(rows[0].session, rows[1].session);
+		assert.equal(await runCli(["-C", root, ...args, "-C", root], capture()), 1);
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+test("generic MCP attribution groups one server's calls, not all servers on a host", async () => {
+	const root = await mkdtemp(join(tmpdir(), "audit-mcp-id-"));
+	try {
+		assert.equal(await runCli(["-C", root, "start", "ids"], capture()), 0);
+		const server = (label: string) => new Promise<void>((done, fail) => {
+			const child = execFile(process.execPath, ["--experimental-strip-types", "src/cli/bin.ts", "-C", root, "mcp"],
+				(error, stdout) => {
+					if (error) return fail(error);
+					try {
+						for (const line of stdout.trim().split("\n")) assert.ok(!JSON.parse(line).result.isError, line);
+						done();
+					} catch (err) { fail(err); }
+				});
+			const request = (id: number) => JSON.stringify({ jsonrpc: "2.0", id, method: "tools/call",
+				params: { name: "audit_decision", arguments: { phase: label, origin: "user requirement", decision: label,
+					why: "test", confidence: "high", evidence: "test", result: "verified" } } });
+			child.stdin!.end(request(1) + "\n" + request(2) + "\n");
+		});
+		await Promise.all([server("A"), server("B")]);
+		const rows = await readRows(join(root, ".audit", "ids.tsv"));
+		assert.equal(rows.length, 4);
+		for (const label of ["A", "B"]) assert.equal(new Set(rows.filter(r => r.phase === label).map(r => r.session)).size, 1);
+		assert.equal(new Set(rows.map(r => r.session)).size, 2);
 	} finally {
 		await rm(root, { recursive: true, force: true });
 	}

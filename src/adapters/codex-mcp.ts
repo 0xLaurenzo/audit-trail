@@ -11,11 +11,21 @@ import { providerReviewModels } from "../core/reviewer-candidates.ts";
 import { createCodexSubprocessReviewer, selectCodexReviewCandidates } from "./codex-reviewer.ts";
 import {
 	findCodexSessionState,
-	readCodexSessionState,
 	type CodexSessionState,
 } from "./codex-session.ts";
 
 const CODEX_REVIEW_MODELS = providerReviewModels("openai").join(", ");
+
+const reviewTool = {
+	description:
+		`Run an independent Codex review. Omit model to try the fixed allowed order (${CODEX_REVIEW_MODELS}); review mode is derived against the captured working model.`,
+	inputSchema: {
+		type: "object",
+		properties: {
+			model: { type: "string", description: `Optional allowed OpenAI reviewer model ID: ${CODEX_REVIEW_MODELS}` },
+		},
+	},
+};
 
 type CodexMcpOptions = Pick<
 	McpServerOptions,
@@ -23,19 +33,15 @@ type CodexMcpOptions = Pick<
 >;
 
 function optionsForState(
-	stateSource: () => Promise<CodexSessionState | undefined>,
+	state: CodexSessionState,
 	reviewerRunner: CommandRunner,
-	fallbackSessionId: string,
 ): CodexMcpOptions {
 	return {
 		requireExpectedWorktree: true,
-		session: async () => {
-			const state = await stateSource();
-			return { harness: "codex", id: state?.sessionId ?? fallbackSessionId };
-		},
+		session: async () => ({ harness: "codex", id: state.sessionId }),
 		reviewer: createCodexSubprocessReviewer(reviewerRunner),
 		reviewTranscriptPath: async () => {
-			const transcript = (await stateSource())?.transcriptPath;
+			const transcript = state.transcriptPath;
 			if (!transcript) return undefined;
 			try {
 				await readFile(transcript, "utf8");
@@ -45,30 +51,10 @@ function optionsForState(
 			}
 		},
 		reviewCandidates: async (args) => {
-			const state = await stateSource();
-			return selectCodexReviewCandidates(args.model, state?.model);
+			return selectCodexReviewCandidates(args.model, state.model);
 		},
-		reviewTool: {
-			description:
-				`Run an independent Codex review. Omit model to try the fixed allowed order (${CODEX_REVIEW_MODELS}); review mode is derived against the captured working model.`,
-			inputSchema: {
-				type: "object",
-				properties: {
-					model: { type: "string", description: `Optional allowed OpenAI reviewer model ID: ${CODEX_REVIEW_MODELS}` },
-				},
-			},
-		},
+		reviewTool,
 	};
-}
-
-/** Codex-specific MCP identity, transcript, reviewer, and truthful review schema. */
-export function codexMcpOptions(
-	worktreeRoot: string,
-	reviewerRunner: CommandRunner,
-	fallbackSessionId: string,
-	env: NodeJS.ProcessEnv = process.env,
-): CodexMcpOptions {
-	return optionsForState(() => readCodexSessionState(worktreeRoot, env), reviewerRunner, fallbackSessionId);
 }
 
 function toolError(message: JsonRpcMessage, error: unknown): object {
@@ -86,14 +72,16 @@ function toolError(message: JsonRpcMessage, error: unknown): object {
 export function createCodexMcpHandler(
 	launchRoot: string,
 	runnerFor: (cwd: string) => CommandRunner,
-	fallbackSessionId: string,
 	env: NodeJS.ProcessEnv = process.env,
 ): McpRequestHandler {
 	const launchRunner = runnerFor(launchRoot);
 	const schemaServer = new McpAuditServer({
+		requireExpectedWorktree: true,
 		workflow: new AuditWorkflow(launchRoot, launchRunner),
 		runner: launchRunner,
-		...codexMcpOptions(launchRoot, launchRunner, fallbackSessionId, env),
+		reviewer: createCodexSubprocessReviewer(launchRunner),
+		reviewTool,
+		session: async () => { throw new Error("Codex schema server has no thread"); },
 	});
 	return {
 		async handle(message) {
@@ -113,7 +101,7 @@ export function createCodexMcpHandler(
 				return new McpAuditServer({
 					workflow: new AuditWorkflow(state.worktree, runner),
 					runner,
-					...optionsForState(async () => state, runner, fallbackSessionId),
+					...optionsForState(state, runner),
 				}).handle(message);
 			} catch (error) {
 				return toolError(message, error);

@@ -534,7 +534,7 @@ export const createCodexDriver: DriverFactory = async (root) => {
 		exec: (command, args, options) =>
 			command === "codex" ? codexRunner.exec(command, args, options) : gitRunner.exec(command, args, options),
 	};
-	const server = createCodexMcpHandler(root, () => runner, "codex-contract-fallback", env);
+	const server = createCodexMcpHandler(root, () => runner, env);
 	const call = async (name: string, args: object): Promise<string> => {
 		const response: any = await server.handle({
 			jsonrpc: "2.0",

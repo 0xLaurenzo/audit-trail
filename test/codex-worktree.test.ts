@@ -25,7 +25,7 @@ test("a Codex thread bound to A refuses B; the scoped CLI audits B without touch
 		await exec("git", ["remote", "add", "origin", "https://github.com/example/test.git"], { cwd: a });
 		await exec("git", ["worktree", "add", "-b", "b", b], { cwd: a });
 		await handleCodexHook(JSON.stringify({ hook_event_name: "SessionStart", session_id: "session-a", cwd: a }), processRunner, env);
-		const server = createCodexMcpHandler(a, processRunner, "unused", env);
+		const server = createCodexMcpHandler(a, processRunner, env);
 		const call = async (name: string, args: object) => {
 			const response: any = await server.handle({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name, arguments: args, _meta: { threadId: "session-a" } } });
 			return response.result.content[0].text as string;

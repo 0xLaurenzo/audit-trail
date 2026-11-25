@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { homedir, hostname, userInfo } from "node:os";
@@ -26,6 +27,7 @@ import { handleClaudeHook } from "../adapters/claude-hook.ts";
 import { createClaudeSubprocessReviewer, selectClaudeReviewCandidates } from "../adapters/claude-reviewer.ts";
 import { readClaudeSessionState } from "../adapters/claude-session.ts";
 import { handleCodexHook } from "../adapters/codex-hook.ts";
+import { removeCodexSessionState } from "../adapters/codex-session.ts";
 import { createCodexMcpHandler } from "../adapters/codex-mcp.ts";
 import { createPiSubprocessReviewer } from "../adapters/pi-reviewer.ts";
 import { McpAuditServer, serveStdio, type McpServerOptions } from "../mcp/server.ts";
@@ -53,6 +55,7 @@ Commands:
                      (--harness claude|codex uses that harness's hook state)
   claude-hook        Handle a Claude Code hook payload on stdin (plugin use)
   codex-hook         Handle a Codex hook payload on stdin (plugin use)
+  codex-forget <thread-id>  Remove only this worktree/thread SessionStart record
   install <target>   Configure a harness: pi | claude | codex | opencode | all
   help               Show this help
 
@@ -114,14 +117,59 @@ export function processRunner(cwd?: string): CommandRunner {
 	};
 }
 
-function cliSession(): SessionIdentity {
+function hostIdentity(): string {
 	let user = "unknown";
 	try {
 		user = userInfo().username;
 	} catch {
 		// Fall back to "unknown" on systems without user info.
 	}
-	return { harness: "cli", id: `${user}@${hostname()}` };
+	return `${user}@${hostname()}`;
+}
+
+function cliSession(): SessionIdentity {
+	return { harness: "cli", id: `${hostIdentity()}:${randomUUID()}` };
+}
+
+const stringOption = { type: "string" } as const;
+const commandOptions = {
+	decision: { phase: stringOption, origin: stringOption, decision: stringOption, why: stringOption, alternatives: stringOption, confidence: stringOption, evidence: stringOption, result: stringOption, supersedes: stringOption },
+	abandon: { reason: stringOption },
+	rollover: { reason: stringOption, name: stringOption },
+	review: { mode: stringOption },
+	mcp: { harness: stringOption },
+	publish: { set: stringOption },
+};
+
+// Directory selection must use the same option arities as the command itself.
+function parseInvocation(argv: string[]) {
+	const args = [...argv];
+	let target: string | undefined;
+	if (args[0] === "-C") {
+		args.shift();
+		target = args.shift();
+		if (!target) throw new Error("-C requires a directory");
+	}
+	const command = args.shift() ?? "help";
+	const options = Object.hasOwn(commandOptions, command)
+		? commandOptions[command as keyof typeof commandOptions] : {};
+	const { tokens } = parseArgs({ args, options: { ...options, C: stringOption }, tokens: true, strict: false, allowPositionals: true });
+	for (const token of tokens.reverse()) {
+		// Commands without their own parser receive positional text directly.
+		if (token.kind === "option-terminator" && !Object.hasOwn(commandOptions, command)) args.splice(token.index, 1);
+		if (token.kind !== "option") continue;
+		if (token.name === "C") {
+			if (args[token.index] !== "-C") throw new Error("-C must be a standalone option");
+			if (target !== undefined) throw new Error("Specify -C only once");
+			if (!token.value || token.inlineValue) throw new Error("-C requires a directory");
+			target = token.value;
+			args.splice(token.index, 2);
+		} else if (token.value === "-C" && !token.inlineValue && Object.hasOwn(options, token.name)) {
+			// Strict parseArgs requires the inline form for a dash-prefixed literal.
+			args.splice(token.index, 2, `${token.rawName}=-C`);
+		}
+	}
+	return { command, args, directory: resolve(target ?? process.cwd()) };
 }
 
 function oneOf<T extends readonly string[]>(values: T, value: string, label: string): T[number] {
@@ -162,17 +210,7 @@ async function commandLifecycle(
 async function commandDecision(workflow: AuditWorkflow, args: string[], io: CliIo): Promise<number> {
 	const { values } = parseArgs({
 		args,
-		options: {
-			phase: { type: "string" },
-			origin: { type: "string" },
-			decision: { type: "string" },
-			why: { type: "string" },
-			alternatives: { type: "string" },
-			confidence: { type: "string" },
-			evidence: { type: "string" },
-			result: { type: "string" },
-			supersedes: { type: "string" },
-		},
+		options: commandOptions.decision,
 		strict: true,
 	});
 	for (const required of ["phase", "origin", "decision", "why", "confidence", "evidence", "result"] as const) {
@@ -214,7 +252,7 @@ async function commandStatus(workflow: AuditWorkflow, io: CliIo): Promise<number
 async function commandAbandon(workflow: AuditWorkflow, args: string[], io: CliIo): Promise<number> {
 	const parsed = parseArgs({
 		args,
-		options: { reason: { type: "string" } },
+		options: commandOptions.abandon,
 		allowPositionals: true,
 		strict: true,
 	});
@@ -231,7 +269,7 @@ async function commandAbandon(workflow: AuditWorkflow, args: string[], io: CliIo
 async function commandRollover(workflow: AuditWorkflow, args: string[], io: CliIo): Promise<number> {
 	const parsed = parseArgs({
 		args,
-		options: { reason: { type: "string" }, name: { type: "string" } },
+		options: commandOptions.rollover,
 		allowPositionals: true,
 		strict: true,
 	});
@@ -253,12 +291,12 @@ async function commandReview(
 ): Promise<number> {
 	const { values, positionals } = parseArgs({
 		args,
-		options: { mode: { type: "string" } },
+		options: commandOptions.review,
 		allowPositionals: true,
 		strict: true,
 	});
 	const model = positionals[0];
-	if (!model || !model.includes("/")) {
+	if (positionals.length !== 1 || !model || !model.includes("/")) {
 		io.err("Usage: audit-trail review <provider/model> --mode cross-provider|cross-model|same-model");
 		return 1;
 	}
@@ -297,10 +335,11 @@ async function commandMcp(
 	io: CliIo,
 	dependencies: CliDependencies,
 ): Promise<number> {
-	const { values } = parseArgs({ args, options: { harness: { type: "string" } }, strict: true });
+	const { values } = parseArgs({ args, options: commandOptions.mcp, strict: true });
 	const harness = values.harness ?? "mcp";
+	const fallbackId = hostIdentity();
 	if (harness === "codex") {
-		const server = createCodexMcpHandler(workflow.root, processRunner, cliSession().id);
+		const server = createCodexMcpHandler(workflow.root, processRunner);
 		io.err("audit-trail MCP server on stdio (harness: codex; worktree routed per call)");
 		await serveStdio(server);
 		return 0;
@@ -317,7 +356,7 @@ async function commandMcp(
 		options = {
 			session: async () => {
 				const state = await readClaudeSessionState(workflow.root);
-				return { harness: "claude", id: state?.sessionId ?? cliSession().id };
+				return { harness: "claude", id: state?.sessionId ?? fallbackId };
 			},
 			reviewer: createClaudeSubprocessReviewer(runner),
 			reviewCandidates: async (reviewArgs) => {
@@ -408,7 +447,7 @@ async function commandInstall(target: string, io: CliIo): Promise<number> {
 async function commandPublish(workflow: AuditWorkflow, args: string[], io: CliIo): Promise<number> {
 	const parsed = parseArgs({
 		args,
-		options: { set: { type: "string" } },
+		options: commandOptions.publish,
 		allowPositionals: true,
 		strict: true,
 	});
@@ -460,22 +499,25 @@ export async function runCli(
 	io: CliIo = { out: console.log, err: console.error },
 	dependencies: CliDependencies = defaultDependencies,
 ): Promise<number> {
-	const args = [...argv];
-	let directory = process.cwd();
-	const dirFlag = args.indexOf("-C");
-	if (dirFlag !== -1) {
-		const target = args[dirFlag + 1];
-		if (!target) {
-			io.err("-C requires a directory");
-			return 1;
-		}
-		directory = resolve(target);
-		args.splice(dirFlag, 2);
+	let invocation: ReturnType<typeof parseInvocation>;
+	try {
+		invocation = parseInvocation(argv);
+	} catch (error: any) {
+		io.err(error.message);
+		return 1;
 	}
-	const command = args.shift() ?? "help";
+	const { command, args, directory } = invocation;
 	if (command === "help" || command === "--help" || command === "-h") {
 		io.out(HELP);
 		return 0;
+	}
+	if (["status", "close", "claude-hook", "codex-hook"].includes(command) && args.length) {
+		io.err(`${command} takes no arguments`);
+		return 1;
+	}
+	if (command === "install" && args.length !== 1) {
+		io.err("install requires exactly one target");
+		return 1;
 	}
 	if (command === "claude-hook" || command === "codex-hook") {
 		// Hooks must not require an existing workflow; they run in any repo.
@@ -491,6 +533,11 @@ export async function runCli(
 		const root = await resolveWorktreeRoot(runner, directory);
 		const workflow = new AuditWorkflow(root, runner);
 		switch (command) {
+			case "codex-forget":
+				if (args.length !== 1 || !args[0]) throw new Error("codex-forget requires one exact thread ID");
+				await removeCodexSessionState(root, args[0]);
+				io.out("No SessionStart record remains for this worktree/thread pair.");
+				return 0;
 			case "start":
 			case "resume":
 			case "reopen":
