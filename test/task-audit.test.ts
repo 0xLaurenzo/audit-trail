@@ -62,6 +62,7 @@ for (const harness of SHIPPED_HARNESSES) test(`${harness}: task audits share sta
 	assert.equal((await invoke(first, "start", "Wrong audit")).code, 1);
 	await assert.rejects(openTaskAudit("../outside", noGit), /task audit UUID/);
 	assert.equal((await solo.attemptWrite(state.logPath)).blocked, true);
+	assert.equal((await solo.attemptWrite(join(second, ".audit", "active.json"))).blocked, true, "the checkout's own audit stays guarded");
 
 	// Separate processes must allocate decision IDs under the same storage lock.
 	const [, cliResult] = await Promise.all([

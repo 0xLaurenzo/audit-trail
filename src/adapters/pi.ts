@@ -175,7 +175,11 @@ export default function auditTrailExtension(pi: ExtensionAPI) {
 		const { wf, error } = await activeState(ctx);
 		const input = event.input as { path?: unknown };
 		const inputPath = typeof input.path === "string" ? resolve(ctx.cwd, input.path) : undefined;
-		if (!inputPath || !isAuditManagedPath(wf.root, inputPath)) return;
+		if (!inputPath) return;
+		// A task audit lives outside the checkout, whose own .audit/ must stay guarded too.
+		const managed = isAuditManagedPath(wf.root, inputPath)
+			|| (wf.taskAuditId !== undefined && isAuditManagedPath(await resolveWorktreeRoot(runner, ctx.cwd), inputPath));
+		if (!managed) return;
 		return {
 			block: true,
 			reason: error
