@@ -187,6 +187,23 @@ test("opencode installer writes shim and commands idempotently without touching 
 	}
 });
 
+test("opencode installer removes its retired rollover command but not a user-owned one", async () => {
+	const home = await mkdtemp(join(tmpdir(), "audit-opencode-retired-"));
+	const ctx = { home, packageRoot: "/opt/audit-trail" };
+	try {
+		await opencodeInstaller.install(ctx);
+		const retired = join(home, ".config", "opencode", "commands", "audit-rollover.md");
+		await writeFile(retired, "---\ndescription: old\n---\n<!-- audit-trail-managed:v1 -->\nCall the audit_rollover tool.\n", "utf8");
+		assert.equal((await opencodeInstaller.install(ctx)).changed, true);
+		await assert.rejects(() => readFile(retired, "utf8"), /ENOENT/);
+		await writeFile(retired, "---\ndescription: mine\n---\nMy own command.\n", "utf8");
+		assert.equal((await opencodeInstaller.install(ctx)).changed, false);
+		assert.match(await readFile(retired, "utf8"), /My own command/);
+	} finally {
+		await rm(home, { recursive: true, force: true });
+	}
+});
+
 test("opencode installer rejects unowned same-name collisions before writing anything", async () => {
 	const home = await mkdtemp(join(tmpdir(), "audit-opencode-collision-"));
 	try {

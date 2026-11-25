@@ -103,6 +103,13 @@ test("workflow start/resume/append/review/close over shared worktree state", asy
 			expectedSha256: sha256Hex(await readFile(join(root, ".audit", "portable-state.tsv"), "utf8")),
 			verdict: "approve",
 		});
+		// Nothing blocks a direct edit; the checkpoint must make it visible instead.
+		const logPath = join(root, ".audit", "portable-state.tsv");
+		const reviewed = await readFile(logPath, "utf8");
+		await writeFile(logPath, reviewed.replace("Added after review", "Edited outside the tools"), "utf8");
+		closed = await workflow.close();
+		assert.deepEqual(closed.blockers, ["the audit changed after the last review"]);
+		await writeFile(logPath, reviewed, "utf8");
 		closed = await workflow.close();
 		assert.equal(closed.closed, true);
 		assert.equal(await readActiveAudit(root), undefined);
