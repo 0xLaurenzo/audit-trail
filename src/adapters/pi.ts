@@ -13,6 +13,8 @@ import {
 	buildActiveAuditGuidance,
 	buildReviewerCandidates,
 	resolveWorktreeRoot,
+	openTaskAudit,
+	TASK_AUDIT_ENV,
 	displayPath,
 	formatBlockingReviewMessage,
 	formatStatusLines,
@@ -116,11 +118,15 @@ export default function auditTrailExtension(pi: ExtensionAPI) {
 	const runner: CommandRunner = {
 		exec: (command, args, options) => pi.exec(command, args, options),
 	};
+	// One selection per Pi process, inherited by explicitly joined child sessions.
+	const taskAuditId = process.env[TASK_AUDIT_ENV];
 	const workflows = new Map<string, Promise<AuditWorkflow>>();
 	const workflow = (ctx: ExtensionContext): Promise<AuditWorkflow> => {
 		let instance = workflows.get(ctx.cwd);
 		if (!instance) {
-			instance = resolveWorktreeRoot(runner, ctx.cwd).then((root) => new AuditWorkflow(root, runner));
+			instance = taskAuditId === undefined
+				? resolveWorktreeRoot(runner, ctx.cwd).then((root) => new AuditWorkflow(root, runner))
+				: openTaskAudit(taskAuditId, runner);
 			workflows.set(ctx.cwd, instance);
 		}
 		return instance;
@@ -225,6 +231,7 @@ export default function auditTrailExtension(pi: ExtensionAPI) {
 				}
 				try {
 					const wf = await workflow(ctx);
+					if (operation === "start" && wf.taskAuditId) throw new Error(`Use audit-trail task-start from a shell without ${TASK_AUDIT_ENV} to create a new task audit`);
 					const result = await wf[operation](requested, sessionIdentity(ctx));
 					if (result.provenanceError) {
 						ctx.ui.notify(
@@ -259,7 +266,7 @@ export default function auditTrailExtension(pi: ExtensionAPI) {
 				const abandoned = await wf.abandonedAudits();
 				ctx.ui.notify(
 					[
-						"No decision audit is active in this worktree",
+						wf.taskAuditId ? `Task audit ${wf.taskAuditId} is not active` : "No decision audit is active in this worktree",
 						...abandoned.map((entry) => `abandoned: ${entry.taskName ?? entry.task}${entry.at ? ` (${entry.at})` : ""}`),
 					].join("\n"),
 					"info",
@@ -270,9 +277,11 @@ export default function auditTrailExtension(pi: ExtensionAPI) {
 			const stats = summarize(rows);
 			updateStatus(ctx, state, rows);
 			const currentSha = await wf.currentSha(state);
-			const diverged = await wf.provenanceDiverged(state);
+			const diverged = wf.taskAuditId ? undefined : await wf.provenanceDiverged(state);
+			const lines = formatStatusLines(state, rows, currentSha, wf.taskAuditId ? ctx.cwd : wf.root, diverged);
+			if (wf.taskAuditId) lines.unshift(`Task audit: ${wf.taskAuditId}`);
 			ctx.ui.notify(
-				formatStatusLines(state, rows, currentSha, wf.root, diverged).join("\n"),
+				lines.join("\n"),
 				stats.unresolved.length || stats.lowConfidence.length || stats.missingEvidence.length ? "warning" : "info",
 			);
 		},
@@ -359,6 +368,7 @@ export default function auditTrailExtension(pi: ExtensionAPI) {
 			try {
 				const review = await runIndependentReview({
 					workflow: wf,
+					workingDirectory: wf.taskAuditId ? ctx.cwd : wf.root,
 					reviewer,
 					candidates,
 					harnessName: "pi",
@@ -422,6 +432,11 @@ export default function auditTrailExtension(pi: ExtensionAPI) {
 				ctx.ui.notify(`${blocker}. Run /audit-review before publishing`, "error");
 				return;
 			}
+			const selector = publishArgs.positionals[0]?.trim() || undefined;
+			if (wf.taskAuditId && !selector) {
+				ctx.ui.notify("Publishing a task audit requires an explicit PR number or URL", "error");
+				return;
+			}
 			const provenance = state.provenance;
 			ctx.ui.notify(`Resolving PR for the current branch in ${provenance.repository}...`, "info");
 			try {
@@ -430,7 +445,7 @@ export default function auditTrailExtension(pi: ExtensionAPI) {
 					state: { ...state, auditId: await wf.ensureAuditId() },
 					rows,
 					rawTsv,
-					selector: publishArgs.positionals[0]?.trim() || undefined,
+					selector,
 					commentSetId: typeof publishArgs.values.set === "string" ? publishArgs.values.set.trim() || undefined : undefined,
 				});
 				ctx.ui.notify(
