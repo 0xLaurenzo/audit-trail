@@ -12,6 +12,7 @@ import { formatBlockingReviewMessage } from "../core/review.ts";
 import { assertAllowedReviewModel, providerReviewModels } from "../core/reviewer-candidates.ts";
 import type { CommandRunner, ReviewerPort, SessionIdentity } from "../core/ports.ts";
 import { formatWorktreeTarget, formatStatusLines } from "../core/status.ts";
+import { openTaskAudit, startTaskAudit, TASK_AUDIT_ENV } from "../core/task-audit.ts";
 import { reviewBlocker } from "../core/validation.ts";
 import {
 	CONFIDENCE_VALUES,
@@ -34,11 +35,13 @@ import { McpAuditServer, serveStdio, type McpServerOptions } from "../mcp/server
 
 const CLAUDE_REVIEW_MODELS = providerReviewModels("anthropic").join(", ");
 
-const HELP = `audit-trail — append-only decision auditing for one Git worktree
+const HELP = `audit-trail — append-only decision auditing
 
 Usage: audit-trail [-C <dir>] <command> [options]
+Set ${TASK_AUDIT_ENV}=<id> to select a task audit instead of the current worktree's audit.
 
 Commands:
+  task-start <task>  Create a private task audit and print its ID
   start <task>       Create a new worktree decision audit
   resume <task>      Explicitly join the matching active audit
   reopen <task>      Explicitly restore the matching closed audit
@@ -233,11 +236,11 @@ async function commandDecision(workflow: AuditWorkflow, args: string[], io: CliI
 	return 0;
 }
 
-async function commandStatus(workflow: AuditWorkflow, io: CliIo): Promise<number> {
-	io.out(await formatWorktreeTarget(workflow.root, processRunner(workflow.root)));
+async function commandStatus(workflow: AuditWorkflow, workingDirectory: string, io: CliIo): Promise<number> {
+	io.out(workflow.taskAuditId ? `Task audit: ${workflow.taskAuditId}` : await formatWorktreeTarget(workflow.root, processRunner(workflow.root)));
 	const state = await workflow.active();
 	if (!state) {
-		io.out("No audit is active in this worktree.");
+		io.out(workflow.taskAuditId ? "The selected task audit is not active." : "No audit is active in this worktree.");
 		for (const abandoned of await workflow.abandonedAudits()) {
 			io.out(`abandoned: ${abandoned.taskName ?? abandoned.task}${abandoned.at ? ` (${abandoned.at})` : ""}`);
 		}
@@ -245,8 +248,8 @@ async function commandStatus(workflow: AuditWorkflow, io: CliIo): Promise<number
 	}
 	const rows = await workflow.rows(state);
 	const currentSha = await workflow.currentSha(state);
-	const diverged = await workflow.provenanceDiverged(state);
-	for (const line of formatStatusLines(state, rows, currentSha, workflow.root, diverged)) io.out(line);
+	const diverged = workflow.taskAuditId ? undefined : await workflow.provenanceDiverged(state);
+	for (const line of formatStatusLines(state, rows, currentSha, workingDirectory, diverged)) io.out(line);
 	return 0;
 }
 
@@ -286,6 +289,7 @@ async function commandRollover(workflow: AuditWorkflow, args: string[], io: CliI
 
 async function commandReview(
 	workflow: AuditWorkflow,
+	workingDirectory: string,
 	args: string[],
 	io: CliIo,
 	dependencies: CliDependencies,
@@ -314,7 +318,8 @@ async function commandReview(
 	io.out(`Reviewing with ${model} (${mode})...`);
 	const review = await runIndependentReview({
 		workflow,
-		reviewer: dependencies.createReviewer(processRunner(workflow.root)),
+		workingDirectory,
+		reviewer: dependencies.createReviewer(processRunner(workingDirectory)),
 		// The CLI pins the explicitly requested model: no fallback candidates.
 		candidates: [{ model, mode }],
 		harnessName: "cli",
@@ -443,7 +448,7 @@ async function commandInstall(target: string, io: CliIo, uninstall: boolean): Pr
 	return 0;
 }
 
-async function commandPublish(workflow: AuditWorkflow, args: string[], io: CliIo): Promise<number> {
+async function commandPublish(workflow: AuditWorkflow, workingDirectory: string, args: string[], io: CliIo): Promise<number> {
 	const parsed = parseArgs({
 		args,
 		options: commandOptions.publish,
@@ -465,12 +470,14 @@ async function commandPublish(workflow: AuditWorkflow, args: string[], io: CliIo
 		io.err(`${blocker}. Run audit-trail review before publishing`);
 		return 1;
 	}
+	const selector = parsed.positionals[0]?.trim() || undefined;
+	if (workflow.taskAuditId && !selector) throw new Error("Publishing a task audit requires an explicit PR number or URL");
 	const result = await publishRawAudit({
-		runner: processRunner(workflow.root),
+		runner: processRunner(workingDirectory),
 		state: { ...state, auditId: await workflow.ensureAuditId() },
 		rows,
 		rawTsv,
-		selector: parsed.positionals[0]?.trim() || undefined,
+		selector,
 		commentSetId: parsed.values.set?.trim() || undefined,
 	});
 	io.out(
@@ -529,8 +536,18 @@ export async function runCli(
 	}
 	try {
 		const runner = processRunner(directory);
+		const taskAuditId = process.env[TASK_AUDIT_ENV];
+		if (command === "task-start") {
+			if (taskAuditId !== undefined) throw new Error(`Unset ${TASK_AUDIT_ENV} to create a different task audit`);
+			const result = await startTaskAudit(args.join(" "), runner, cliSession());
+			io.out(result.state.auditId!);
+			return 0;
+		}
 		const root = await resolveWorktreeRoot(runner, directory);
-		const workflow = new AuditWorkflow(root, runner);
+		if (taskAuditId !== undefined && ["start", "mcp", "codex-forget"].includes(command)) {
+			throw new Error(`${command} does not support ${TASK_AUDIT_ENV}; use task-start to create a task audit, or unset the variable to use worktree mode`);
+		}
+		const workflow = taskAuditId === undefined ? new AuditWorkflow(root, runner) : await openTaskAudit(taskAuditId, runner);
 		switch (command) {
 			case "codex-forget":
 				if (args.length !== 1 || !args[0]) throw new Error("codex-forget requires one exact thread ID");
@@ -544,15 +561,15 @@ export async function runCli(
 			case "decision":
 				return await commandDecision(workflow, args, io);
 			case "status":
-				return await commandStatus(workflow, io);
+				return await commandStatus(workflow, root, io);
 			case "review":
-				return await commandReview(workflow, args, io, dependencies);
+				return await commandReview(workflow, root, args, io, dependencies);
 			case "rollover":
 				return await commandRollover(workflow, args, io);
 			case "abandon":
 				return await commandAbandon(workflow, args, io);
 			case "publish":
-				return await commandPublish(workflow, args, io);
+				return await commandPublish(workflow, root, args, io);
 			case "close":
 				return await commandClose(workflow, io);
 			case "mcp":

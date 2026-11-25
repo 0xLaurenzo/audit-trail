@@ -88,9 +88,34 @@ audit-trail publish && audit-trail close
 
 The sections below document the shared state model, each harness integration, the review and publication model, and development.
 
+## Task audits across worktrees (Pi and CLI)
+
+Create the audit once, then explicitly select its ID in each session working on
+the same task:
+
+```sh
+AUDIT_TRAIL_ID="$(audit-trail task-start problem-to-solve)" && export AUDIT_TRAIL_ID
+audit-trail status
+pi
+```
+
+In a separate shell, set `AUDIT_TRAIL_ID` to the **same** ID before launching Pi
+or invoking the CLI. The log and lock live in
+`~/.local/state/audit-trail/tasks/<id>/.audit/`, not a checkout. Unknown IDs fail;
+they never fall back to a worktree audit. This selection works on one machine for
+the same OS user. Other harness integrations still use worktree mode; unset
+`AUDIT_TRAIL_ID` to use that mode. Existing audits are not moved or relabeled.
+
+Cite repositories, exact SHAs and test artifacts in evidence when a task spans
+checkouts. Audit review verifies the decisions against their referenced evidence,
+not an assumed diff of whichever branch is checked out. A rebase does not
+require a new log. To publish, explicitly select a PR and use its exact checkout;
+the existing provenance, PR-head, and reviewed-audit checks still apply. Review
+the entire log before sharing it with that PR's audience.
+
 ## Shared worktree state
 
-Exactly one audit may be active per Git worktree. The authoritative state lives in `.audit/active.json`, so any session in the same worktree — including concurrent ones — sees and contributes to the same audit; the audit survives session restarts and branch switches. Starting, resuming, and reopening are distinct operations: `start` only creates, `resume` requires the exact original name of the active audit, and `reopen` intentionally restores the exact matching `.audit/<slug>.closed.json` or `.audit/<slug>.abandoned.json` lifecycle. Different original names that normalize to the same slug are rejected. Audits closed before lifecycle versioning recorded original task names (version 1 state) can never be resumed or reopened — their identity cannot be proven — so reusing such a task name requires manually removing its `.audit/<slug>.closed.json` marker outside agent edit tools. Every mutation runs under an atomic cross-process lock at `.audit/.lock`, so concurrent appends cannot lose rows or allocate duplicate decision IDs. Agent write/edit tools cannot mutate anything under `.audit/` directly; only Audit Trail lifecycle surfaces may change active or archived artifacts. Abandoned locks from crashed processes are reclaimed automatically: lock ownership is a random per-acquisition token, and the dead-PID fast path applies only within the recorded PID scope (on Linux, kernel boot ID plus PID namespace). A worktree shared across PID namespaces or hostname-colliding machines relies on age-based expiry (`staleMs`) alone, and a recycled PID can delay — never break — reclamation until that expiry.
+Without an explicit task audit ID, exactly one audit may be active per Git worktree. The authoritative state lives in `.audit/active.json`, so any session in the same worktree — including concurrent ones — sees and contributes to the same audit; the audit survives session restarts and branch switches. Starting, resuming, and reopening are distinct operations: `start` only creates, `resume` requires the exact original name of the active audit, and `reopen` intentionally restores the exact matching `.audit/<slug>.closed.json` or `.audit/<slug>.abandoned.json` lifecycle. Different original names that normalize to the same slug are rejected. Audits closed before lifecycle versioning recorded original task names (version 1 state) can never be resumed or reopened — their identity cannot be proven — so reusing such a task name requires manually removing its `.audit/<slug>.closed.json` marker outside agent edit tools. Every mutation runs under an atomic cross-process lock at `.audit/.lock`, so concurrent appends cannot lose rows or allocate duplicate decision IDs. Agent write/edit tools cannot mutate anything under `.audit/` directly; only Audit Trail lifecycle surfaces may change active or archived artifacts. Abandoned locks from crashed processes are reclaimed automatically: lock ownership is a random per-acquisition token, and the dead-PID fast path applies only within the recorded PID scope (on Linux, kernel boot ID plus PID namespace). A worktree shared across PID namespaces or hostname-colliding machines relies on age-based expiry (`staleMs`) alone, and a recycled PID can delay — never break — reclamation until that expiry.
 
 The TSV `session` cell is harness-qualified (for example `pi/<session-id>`), keeping contributions attributable when multiple harnesses share one audit.
 

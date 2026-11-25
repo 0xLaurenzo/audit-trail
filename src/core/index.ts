@@ -11,6 +11,7 @@ export * from "./review-output.ts";
 export * from "./review.ts";
 export * from "./reviewer-candidates.ts";
 export * from "./status.ts";
+export * from "./task-audit.ts";
 export * from "./types.ts";
 export * from "./validation.ts";
 export * from "./workflow.ts";

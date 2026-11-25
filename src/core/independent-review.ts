@@ -15,6 +15,8 @@ import type { AuditWorkflow } from "./workflow.ts";
 
 export interface IndependentReviewInput {
 	workflow: AuditWorkflow;
+	/** Where to inspect referenced evidence when audit storage is outside the checkout. */
+	workingDirectory?: string;
 	/** Reviewer runtime; harness-native or the Pi subprocess fallback. */
 	reviewer: ReviewerPort;
 	/**
@@ -94,6 +96,7 @@ export function summarizeReviewerFailure(error: unknown): string {
  */
 export async function runIndependentReview(input: IndependentReviewInput): Promise<IndependentReviewResult> {
 	const { workflow, reviewer, candidates } = input;
+	const workingDirectory = input.workingDirectory ?? workflow.root;
 	if (!candidates.length) throw noAllowedReviewModelsError();
 	for (const candidate of candidates) assertAllowedReviewModel(candidate.model);
 	const state = await workflow.active();
@@ -115,7 +118,8 @@ export async function runIndependentReview(input: IndependentReviewInput): Promi
 	const prompt = buildReviewPrompt({
 		logPath: state.logPath,
 		transcriptPath,
-		workingDirectory: workflow.root,
+		workingDirectory,
+		taskScoped: Boolean(workflow.taskAuditId),
 		harnessName: input.harnessName,
 	});
 	const failures: { candidate: ReviewCandidate; error: string }[] = [];
@@ -130,7 +134,7 @@ export async function runIndependentReview(input: IndependentReviewInput): Promi
 		input.onAttempt?.(candidate);
 		let output: string;
 		try {
-			output = await reviewer.review({ prompt, model, mode, workingDirectory: workflow.root });
+			output = await reviewer.review({ prompt, model, mode, workingDirectory });
 		} catch (error) {
 			const category = summarizeReviewerFailure(error);
 			const hint = reviewer.failureHints?.[category];
@@ -157,7 +161,7 @@ export async function runIndependentReview(input: IndependentReviewInput): Promi
 			reviewMode: mode,
 			logPath: state.logPath,
 			transcriptPath,
-			workingDirectory: workflow.root,
+			workingDirectory,
 			rowCount: rows.length,
 			output,
 			harnessName: input.harnessName,

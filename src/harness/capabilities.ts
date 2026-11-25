@@ -17,7 +17,9 @@ export type ShippedHarness = (typeof SHIPPED_HARNESSES)[number];
 
 export interface HarnessCapabilities {
 	/** Bump when the capability shape changes so declarations stay reviewable. */
-	version: 1;
+	version: 2;
+	/** Select a private task audit by explicit ID independently of the worktree. */
+	taskAuditSelection: boolean;
 	/**
 	 * Automatic reviewer selection from the maintained allowlist. Harnesses with
 	 * model discovery preserve independence tiers; provider-bound harnesses use
@@ -36,7 +38,8 @@ export interface HarnessCapabilities {
 
 export const HARNESS_CAPABILITIES: Record<ShippedHarness, HarnessCapabilities> = {
 	pi: {
-		version: 1,
+		version: 2,
+		taskAuditSelection: true,
 		automaticReviewerSelection: true,
 		modelDiscovery: true,
 		transcriptSupport: true,
@@ -44,7 +47,8 @@ export const HARNESS_CAPABILITIES: Record<ShippedHarness, HarnessCapabilities> =
 		managedFileGuard: true,
 	},
 	opencode: {
-		version: 1,
+		version: 2,
+		taskAuditSelection: false,
 		automaticReviewerSelection: true,
 		modelDiscovery: true,
 		transcriptSupport: true,
@@ -52,7 +56,8 @@ export const HARNESS_CAPABILITIES: Record<ShippedHarness, HarnessCapabilities> =
 		managedFileGuard: true,
 	},
 	claude: {
-		version: 1,
+		version: 2,
+		taskAuditSelection: false,
 		// No catalog discovery; fixed Fable/Opus fallback stays provider-bound.
 		automaticReviewerSelection: true,
 		modelDiscovery: false,
@@ -61,7 +66,8 @@ export const HARNESS_CAPABILITIES: Record<ShippedHarness, HarnessCapabilities> =
 		managedFileGuard: true,
 	},
 	codex: {
-		version: 1,
+		version: 2,
+		taskAuditSelection: false,
 		// No catalog discovery; fixed Astra/Sol fallback stays provider-bound.
 		automaticReviewerSelection: true,
 		modelDiscovery: false,

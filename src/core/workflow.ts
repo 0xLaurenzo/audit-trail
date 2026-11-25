@@ -6,6 +6,7 @@ import {
 	abandonedStatePath,
 	closeActiveAudit,
 	closedStatePath,
+	isAuditManagedPath,
 	readAbandonedAudit,
 	readActiveAudit,
 	readClosedAudit,
@@ -101,21 +102,23 @@ export interface RolloverResult extends AuditLifecycleResult {
 }
 
 /**
- * Harness-neutral audit workflow over shared worktree state. Every mutation
- * (start/resume/reopen, append, review checkpoint, close) runs under the cross-process
- * worktree lock so concurrent harness sessions cannot lose rows, allocate
+ * Harness-neutral audit workflow. The root owns storage and its cross-process lock;
+ * the runner supplies Git facts about the session's checkout, which can be elsewhere.
+ * Concurrent harness sessions cannot lose rows, allocate
  * duplicate IDs, or race active-state transitions. CLI, MCP, and harness
  * adapters all drive this same class.
  */
 export class AuditWorkflow {
 	readonly root: string;
+	readonly taskAuditId?: string;
 	private readonly runner: CommandRunner;
 	private readonly now: () => Date;
 	private readonly lockOptions?: WorktreeLockOptions;
 	private readonly store: AuditStore;
 
-	constructor(root: string, runner: CommandRunner, now: () => Date = () => new Date(), lockOptions?: WorktreeLockOptions) {
+	constructor(root: string, runner: CommandRunner, now: () => Date = () => new Date(), lockOptions?: WorktreeLockOptions, taskAuditId?: string) {
 		this.root = root;
+		this.taskAuditId = taskAuditId;
 		this.runner = runner;
 		this.now = now;
 		this.lockOptions = lockOptions;
@@ -135,7 +138,23 @@ export class AuditWorkflow {
 		return rel && !rel.startsWith("..") && !isAbsolute(rel) ? rel : path;
 	}
 
+	private async readActive(): Promise<ActiveAuditFile | undefined> {
+		const file = await readActiveAudit(this.root);
+		if (file) this.assertAuditId(file);
+		return file;
+	}
+
+	private assertAuditId(file: ActiveAuditFile): void {
+		if (!this.taskAuditId) return;
+		if (file.auditId !== this.taskAuditId) throw new Error("Stored audit identity does not match the selected task audit ID");
+		if (!isAuditManagedPath(this.root, this.absolute(file.logPath))
+			|| (file.provenancePath && !isAuditManagedPath(this.root, this.absolute(file.provenancePath)))) {
+			throw new Error("Task audit artifacts must stay inside their audit directory");
+		}
+	}
+
 	private async stateFrom(file: ActiveAuditFile): Promise<AuditState> {
+		this.assertAuditId(file);
 		const state: AuditState = {
 			task: file.task,
 			taskName: file.taskName,
@@ -157,7 +176,7 @@ export class AuditWorkflow {
 	}
 
 	async active(): Promise<AuditState | undefined> {
-		const file = await readActiveAudit(this.root);
+		const file = await this.readActive();
 		return file ? this.stateFrom(file) : undefined;
 	}
 
@@ -200,7 +219,7 @@ export class AuditWorkflow {
 		file: ActiveAuditFile,
 		session: SessionIdentity,
 	): Promise<{ file: ActiveAuditFile; provenanceError?: string }> {
-		if (file.provenancePath) return { file };
+		if (file.provenancePath || this.taskAuditId) return { file };
 		const provenanceRel = join(".audit", `${file.task}.provenance.json`);
 		try {
 			await ensureProvenance(this.runner, file.task, qualifiedSession(session), this.absolute(provenanceRel));
@@ -215,7 +234,7 @@ export class AuditWorkflow {
 	async start(taskInput: string, session: SessionIdentity): Promise<AuditLifecycleResult> {
 		const { task, taskName } = this.taskIdentity(taskInput);
 		return this.lock(async () => {
-			const existing = await readActiveAudit(this.root);
+			const existing = await this.readActive();
 			if (existing) {
 				if (existing.task === task && existing.taskName === taskName) {
 					throw new Error(`Audit ${JSON.stringify(taskName)} is already active. Use resume instead of start.`);
@@ -279,7 +298,7 @@ export class AuditWorkflow {
 			version: 2,
 			task,
 			taskName,
-			auditId: randomUUID(),
+			auditId: this.taskAuditId ?? randomUUID(),
 			logPath: logRel,
 			provenancePath: hasProvenance ? provenanceRel : undefined,
 			startedAt: this.now().toISOString(),
@@ -324,6 +343,7 @@ export class AuditWorkflow {
 		reason: string,
 		successorInput?: string,
 	): Promise<RolloverResult> {
+		if (this.taskAuditId) throw new Error("Task audits survive rebases; continue using the existing audit ID instead of rolling it over.");
 		const { task, taskName } = this.taskIdentity(taskInput);
 		const trimmedReason = reason.trim();
 		if (!trimmedReason) throw new Error("Rollover requires a non-empty reason");
@@ -332,7 +352,7 @@ export class AuditWorkflow {
 			throw new Error(`Successor task ${JSON.stringify(successor.taskName)} maps to the same slug as the audit being rolled over.`);
 		}
 		return this.lock(async () => {
-			const file = await readActiveAudit(this.root);
+			const file = await this.readActive();
 			if (!file) throw new Error("No audit is active.");
 			this.assertTaskIdentity(file, task, taskName, "roll over");
 			const state = await this.stateFrom(file);
@@ -382,7 +402,7 @@ export class AuditWorkflow {
 	 */
 	async ensureAuditId(): Promise<string> {
 		return this.lock(async () => {
-			const file = await readActiveAudit(this.root);
+			const file = await this.readActive();
 			if (!file) throw new Error("No audit is active.");
 			if (file.auditId) return file.auditId;
 			const auditId = randomUUID();
@@ -394,7 +414,7 @@ export class AuditWorkflow {
 	async resume(taskInput: string, session: SessionIdentity): Promise<AuditLifecycleResult> {
 		const { task, taskName } = this.taskIdentity(taskInput);
 		return this.lock(async () => {
-			const existing = await readActiveAudit(this.root);
+			const existing = await this.readActive();
 			if (!existing) throw new Error(`No audit is active. Start ${JSON.stringify(taskName)} instead.`);
 			this.assertTaskIdentity(existing, task, taskName, "resume");
 			const result = await this.retryProvenance(existing, session);
@@ -405,7 +425,7 @@ export class AuditWorkflow {
 	async reopen(taskInput: string, session: SessionIdentity): Promise<AuditLifecycleResult> {
 		const { task, taskName } = this.taskIdentity(taskInput);
 		return this.lock(async () => {
-			const active = await readActiveAudit(this.root);
+			const active = await this.readActive();
 			if (active) {
 				throw new Error(`Cannot reopen ${JSON.stringify(taskName)} while ${active.taskName ?? active.task} is active.`);
 			}
@@ -413,6 +433,7 @@ export class AuditWorkflow {
 			const abandoned = closed ? undefined : await readAbandonedAudit(this.root, task);
 			const terminal = closed ?? abandoned;
 			if (!terminal) throw new Error(`No closed or abandoned audit found for ${JSON.stringify(taskName)}.`);
+			this.assertAuditId(terminal);
 			this.assertTaskIdentity(terminal, task, taskName, "reopen");
 			// Reopening from abandoned retains the append-only abandonment records.
 			const reopened = closed
@@ -456,7 +477,7 @@ export class AuditWorkflow {
 		const trimmedReason = reason.trim();
 		if (!trimmedReason) throw new Error("Abandon requires a non-empty reason");
 		return this.lock(async () => {
-			const file = await readActiveAudit(this.root);
+			const file = await this.readActive();
 			if (!file) throw new Error("No audit is active.");
 			this.assertTaskIdentity(file, task, taskName, "abandon");
 			if (await readAbandonedAudit(this.root, file.task)) {
@@ -491,7 +512,7 @@ export class AuditWorkflow {
 
 	async append(session: SessionIdentity, input: Omit<NewAuditRow, "session" | "entry">): Promise<AppendResult> {
 		return this.lock(async () => {
-			const file = await readActiveAudit(this.root);
+			const file = await this.readActive();
 			if (!file) throw new Error("No audit is active. Start one with audit-start <task>.");
 			const state = await this.stateFrom(file);
 			const row = await this.store.appendRow(state.logPath, {
@@ -513,7 +534,7 @@ export class AuditWorkflow {
 		verdict: ReviewVerdict;
 	}): Promise<ReviewSnapshot> {
 		return this.lock(async () => {
-			const file = await readActiveAudit(this.root);
+			const file = await this.readActive();
 			if (!file) throw new Error("No audit is active.");
 			const raw = await readFile(this.absolute(file.logPath), "utf8");
 			// Compare-and-swap: the checkpoint may only bless the bytes the
@@ -537,7 +558,7 @@ export class AuditWorkflow {
 
 	async close(): Promise<CloseAuditResult> {
 		return this.lock(async () => {
-			const file = await readActiveAudit(this.root);
+			const file = await this.readActive();
 			if (!file) throw new Error("No audit is active.");
 			const state = await this.stateFrom(file);
 			const rows = await readRows(state.logPath);
