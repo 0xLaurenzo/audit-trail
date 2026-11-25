@@ -13,19 +13,6 @@
           }
         ]
       }
-    ],
-    "PreToolUse": [
-      {
-        "matcher": "apply_patch|Edit|Write",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "\"${PLUGIN_ROOT}/bin/audit-trail\" codex-hook",
-            "timeout": 15,
-            "statusMessage": "Protecting audit-trail managed files..."
-          }
-        ]
-      }
     ]
   }
 }

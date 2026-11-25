@@ -23,7 +23,7 @@ import {
 	type NewAuditRow,
 	type ReviewMode,
 } from "../core/types.ts";
-import { AuditWorkflow, ROLLOVER_RANGE_DIFF_GUIDANCE, resolveWorktreeRoot } from "../core/workflow.ts";
+import { AuditWorkflow, resolveWorktreeRoot } from "../core/workflow.ts";
 import { handleClaudeHook } from "../adapters/claude-hook.ts";
 import { createClaudeSubprocessReviewer, selectClaudeReviewCandidates } from "../adapters/claude-reviewer.ts";
 import { readClaudeSessionState } from "../adapters/claude-session.ts";
@@ -48,8 +48,6 @@ Commands:
   decision           Append one decision row (see options below)
   status             Show audit status and unresolved decision IDs
   review <model>     Run an independent review with an allowed <provider/model>
-  rollover <task>    Archive a rebase-diverged audit; start a linked successor
-                     (--reason <text> required, --name <successor-task> optional)
   abandon <task>     Archive the audit without marking it reviewed, published, or complete
                      (--reason <text> required; reopen restores it later)
   publish [pr]       Create/update an aggregate audit set (--set <set-id>)
@@ -139,7 +137,6 @@ const stringOption = { type: "string" } as const;
 const commandOptions = {
 	decision: { phase: stringOption, origin: stringOption, decision: stringOption, why: stringOption, alternatives: stringOption, confidence: stringOption, evidence: stringOption, result: stringOption, supersedes: stringOption },
 	abandon: { reason: stringOption },
-	rollover: { reason: stringOption, name: stringOption },
 	review: { mode: stringOption },
 	mcp: { harness: stringOption },
 	publish: { set: stringOption },
@@ -248,8 +245,7 @@ async function commandStatus(workflow: AuditWorkflow, workingDirectory: string, 
 	}
 	const rows = await workflow.rows(state);
 	const currentSha = await workflow.currentSha(state);
-	const diverged = workflow.taskAuditId ? undefined : await workflow.provenanceDiverged(state);
-	for (const line of formatStatusLines(state, rows, currentSha, workingDirectory, diverged)) io.out(line);
+	for (const line of formatStatusLines(state, rows, currentSha, workingDirectory)) io.out(line);
 	return 0;
 }
 
@@ -267,23 +263,6 @@ async function commandAbandon(workflow: AuditWorkflow, args: string[], io: CliIo
 	io.out(`review at abandonment: ${result.record.review}`);
 	if (result.record.unresolvedIds.length) io.out(`unresolved at abandonment: ${result.record.unresolvedIds.join(", ")}`);
 	io.out("Reopen restores it with the abandonment record retained.");
-	return 0;
-}
-
-async function commandRollover(workflow: AuditWorkflow, args: string[], io: CliIo): Promise<number> {
-	const parsed = parseArgs({
-		args,
-		options: commandOptions.rollover,
-		allowPositionals: true,
-		strict: true,
-	});
-	const task = parsed.positionals.join(" ").trim();
-	if (!task) throw new Error("Usage: audit-trail rollover <exact-task> --reason <text> [--name <successor-task>]");
-	const result = await workflow.rollover(task, cliSession(), parsed.values.reason ?? "", parsed.values.name);
-	io.out(`Archived ${result.abandonedTask} as abandoned (this state does not imply review approval or publication): ${displayPath(result.abandonedPath, workflow.root)}`);
-	io.out(`Started linked audit: ${displayPath(result.state.logPath, workflow.root)}`);
-	io.out(ROLLOVER_RANGE_DIFF_GUIDANCE);
-	if (result.provenanceError) io.err(`Provenance unavailable: ${result.provenanceError}`);
 	return 0;
 }
 
@@ -564,8 +543,6 @@ export async function runCli(
 				return await commandStatus(workflow, root, io);
 			case "review":
 				return await commandReview(workflow, root, args, io, dependencies);
-			case "rollover":
-				return await commandRollover(workflow, args, io);
 			case "abandon":
 				return await commandAbandon(workflow, args, io);
 			case "publish":

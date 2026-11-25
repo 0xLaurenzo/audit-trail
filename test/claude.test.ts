@@ -91,53 +91,6 @@ test("SessionStart hook records state and injects guidance only while an audit i
 	}
 });
 
-test("PreToolUse hook denies audit-managed files and fails closed on unreadable state", async () => {
-	const root = await mkdtemp(join(tmpdir(), "audit-claude-guard-"));
-	const stateHome = await mkdtemp(join(tmpdir(), "audit-claude-guard-state-"));
-	const env = { XDG_STATE_HOME: stateHome };
-	const guard = (tool: string, filePath: string) =>
-		handleClaudeHook(
-			JSON.stringify({ hook_event_name: "PreToolUse", tool_name: tool, tool_input: { file_path: filePath }, cwd: root }),
-			() => noGit,
-			env,
-		);
-	try {
-		const { state } = await new AuditWorkflow(root, noGit).start("guarded", { harness: "claude", id: "s" });
-
-		const denied = await guard("Write", state.logPath);
-		assert.equal(denied.exitCode, 0);
-		assert.equal(JSON.parse(denied.output!).hookSpecificOutput.permissionDecision, "deny");
-		const deniedActive = await guard("Edit", join(root, ".audit", "active.json"));
-		assert.equal(JSON.parse(deniedActive.output!).hookSpecificOutput.permissionDecision, "deny");
-		const fileAlias = join(root, "audit-log-alias.tsv");
-		await symlink(state.logPath, fileAlias);
-		const deniedAlias = await guard("Edit", fileAlias);
-		assert.equal(JSON.parse(deniedAlias.output!).hookSpecificOutput.permissionDecision, "deny", "symlink alias denied");
-
-		const allowed = await guard("Write", join(root, "src", "main.ts"));
-		assert.equal(allowed.output, undefined);
-		const read = await handleClaudeHook(
-			JSON.stringify({ hook_event_name: "PreToolUse", tool_name: "Read", tool_input: { file_path: state.logPath }, cwd: root }),
-			() => noGit,
-			env,
-		);
-		assert.equal(read.output, undefined, "non-mutating tools are not guarded");
-
-		const auditDirAlias = join(root, "audit-dir-alias");
-		await symlink(join(root, ".audit"), auditDirAlias);
-		await writeFile(join(root, ".audit", "active.json"), "{corrupt", "utf8");
-		const failClosed = await guard("Write", join(root, ".audit", "anything.tsv"));
-		assert.match(JSON.parse(failClosed.output!).hookSpecificOutput.permissionDecisionReason, /unreadable/);
-		const failClosedAlias = await guard("Write", join(auditDirAlias, "new.tsv"));
-		assert.match(JSON.parse(failClosedAlias.output!).hookSpecificOutput.permissionDecisionReason, /unreadable/);
-		const outsideAudit = await guard("Write", join(root, "src", "ok.ts"));
-		assert.equal(outsideAudit.output, undefined, "unreadable state only locks .audit/");
-	} finally {
-		await rm(root, { recursive: true, force: true });
-		await rm(stateHome, { recursive: true, force: true });
-	}
-});
-
 test("claude-harness MCP attribution resolves the hook state per call with a fallback", async () => {
 	const root = await mkdtemp(join(tmpdir(), "audit-claude-mcp-"));
 	const stateHome = await mkdtemp(join(tmpdir(), "audit-claude-mcp-state-"));
@@ -374,21 +327,18 @@ test("the shipped plugin manifest, hooks, MCP config, and commands are consisten
 	assert.equal(manifest.version, pkg.version, "Claude manifest version must track package.json");
 
 	const hooks = JSON.parse(await readFile(join(packageRoot, manifest.hooks), "utf8"));
-	const hookCommands = [
-		...hooks.hooks.SessionStart.flatMap((group: any) => group.hooks),
-		...hooks.hooks.PreToolUse.flatMap((group: any) => group.hooks),
-	];
-	assert.ok(hookCommands.length >= 2);
+	assert.deepEqual(Object.keys(hooks.hooks), ["SessionStart"]);
+	const hookCommands = hooks.hooks.SessionStart.flatMap((group: any) => group.hooks);
+	assert.ok(hookCommands.length >= 1);
 	for (const hook of hookCommands) {
 		assert.match(hook.command, /\$\{CLAUDE_PLUGIN_ROOT\}\/bin\/audit-trail" claude-hook$/);
 	}
-	assert.match(hooks.hooks.PreToolUse[0].matcher, /Write\|Edit/);
 
 	const mcp = JSON.parse(await readFile(join(packageRoot, manifest.mcpServers), "utf8"));
 	assert.equal(mcp.mcpServers["audit-trail"].command, "${CLAUDE_PLUGIN_ROOT}/bin/audit-trail");
 	assert.deepEqual(mcp.mcpServers["audit-trail"].args, ["mcp", "--harness", "claude"]);
 
-	for (const name of ["audit-start", "audit-resume", "audit-reopen", "audit-status", "audit-review", "audit-abandon", "audit-rollover", "audit-publish", "audit-close"]) {
+	for (const name of ["audit-start", "audit-resume", "audit-reopen", "audit-status", "audit-review", "audit-abandon", "audit-publish", "audit-close"]) {
 		const command = await readFile(join(packageRoot, manifest.commands, `${name}.md`), "utf8");
 		assert.match(command, /^---\ndescription: /, `${name} has frontmatter`);
 		assert.match(command, new RegExp(`${name.replace("-", "_")} tool`), `${name} instructs its tool`);

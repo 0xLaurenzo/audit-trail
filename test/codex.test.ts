@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
-import { cp, lstat, mkdir, mkdtemp, readFile, readlink, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { cp, lstat, mkdir, mkdtemp, readFile, readlink, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { promisify } from "node:util";
@@ -130,51 +130,6 @@ test("Codex SessionStart records metadata and injects active-audit guidance", as
 		assert.match(output.hookSpecificOutput.additionalContext, /Active decision audit/);
 		assert.match(output.hookSpecificOutput.additionalContext, /audit_decision tool/);
 		assert.equal((await handleCodexHook("{bad", () => noGit, env)).exitCode, 1);
-	} finally {
-		await rm(root, { recursive: true, force: true });
-		await rm(stateHome, { recursive: true, force: true });
-	}
-});
-
-test("Codex PreToolUse protects managed files, renames, symlink aliases, and unreadable audit state", async () => {
-	const root = await mkdtemp(join(tmpdir(), "audit-codex-guard-"));
-	const stateHome = await mkdtemp(join(tmpdir(), "audit-codex-guard-state-"));
-	const env = { XDG_STATE_HOME: stateHome };
-	const hookCommand = (command: string) =>
-		handleCodexHook(
-			JSON.stringify({
-				hook_event_name: "PreToolUse",
-				tool_name: "apply_patch",
-				tool_input: { command },
-				cwd: root,
-			}),
-			() => noGit,
-			env,
-		);
-	const hook = (path: string) => hookCommand(`*** Begin Patch\n*** Update File: ${path}\n*** End Patch`);
-	try {
-		const { state } = await new AuditWorkflow(root, noGit).start("guard", { harness: "codex", id: "s" });
-		const denied = JSON.parse((await hook(state.logPath)).output!);
-		assert.equal(denied.hookSpecificOutput.permissionDecision, "deny");
-		const alias = join(root, "audit.tsv");
-		await symlink(state.logPath, alias);
-		assert.equal(JSON.parse((await hook(alias)).output!).hookSpecificOutput.permissionDecision, "deny");
-		assert.equal((await hook(join(root, "src", "ok.ts"))).output, undefined);
-
-		// A rename destination is a write target: moving an innocent file onto
-		// the audit log must be denied, not slip past header parsing.
-		const renamed = JSON.parse(
-			(
-				await hookCommand(
-					`*** Begin Patch\n*** Update File: ${join(root, "src", "ok.ts")}\n*** Move to: ${state.logPath}\n*** End Patch`,
-				)
-			).output!,
-		);
-		assert.equal(renamed.hookSpecificOutput.permissionDecision, "deny");
-
-		await writeFile(join(root, ".audit", "active.json"), "{bad", "utf8");
-		const failClosed = JSON.parse((await hook(join(root, ".audit", "other.tsv"))).output!);
-		assert.match(failClosed.hookSpecificOutput.permissionDecisionReason, /unreadable/);
 	} finally {
 		await rm(root, { recursive: true, force: true });
 		await rm(stateHome, { recursive: true, force: true });
@@ -437,10 +392,8 @@ test("Codex plugin bundle is internally consistent", async () => {
 	assert.doesNotMatch(skill, /gpt-5\.4/);
 	const hooks = JSON.parse(await readFile(join(root, "hooks", "hooks.json"), "utf8"));
 	assert.match(hooks.hooks.SessionStart[0].matcher, /startup.*resume.*clear.*compact/);
-	assert.equal(hooks.hooks.PreToolUse[0].matcher, "apply_patch|Edit|Write");
-	for (const event of ["SessionStart", "PreToolUse"]) {
-		assert.match(hooks.hooks[event][0].hooks[0].command, /\$\{PLUGIN_ROOT\}\/bin\/audit-trail.*codex-hook/);
-	}
+	assert.deepEqual(Object.keys(hooks.hooks), ["SessionStart"]);
+	assert.match(hooks.hooks.SessionStart[0].hooks[0].command, /\$\{PLUGIN_ROOT\}\/bin\/audit-trail.*codex-hook/);
 	const mcp = JSON.parse(await readFile(join(root, ".mcp.json"), "utf8"));
 	// Codex 0.136 needs this cwd to find the executable; MCP calls derive their audit root from thread state.
 	assert.deepEqual(mcp.mcpServers["audit-trail"], {

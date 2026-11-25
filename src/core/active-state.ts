@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import type { AbandonmentRecord, ReviewSnapshot, RolloverLink } from "./types.ts";
+import type { AbandonmentRecord, ReviewSnapshot } from "./types.ts";
 
 /**
  * Authoritative active-audit state for one Git worktree. All harness sessions
@@ -26,8 +26,6 @@ interface AuditFileFields {
 	review?: ReviewSnapshot;
 	/** Append-only terminal records; present once the audit has been abandoned. */
 	abandonments?: AbandonmentRecord[];
-	/** Present on a successor audit created by a rebase rollover. */
-	rolloverFrom?: RolloverLink;
 }
 
 /** Version 2 adds the exact user-facing task name and lifecycle metadata. */
@@ -51,7 +49,7 @@ export function abandonedStatePath(root: string, task: string): string {
 	return join(root, ".audit", `${task}.abandoned.json`);
 }
 
-/** Agent file tools must never mutate audit-owned state or artifacts directly. */
+/** True when the path lies inside the root's .audit directory. */
 export function isAuditManagedPath(root: string, path: string): boolean {
 	const rel = relative(resolve(root, ".audit"), resolve(path));
 	return rel === "" || (!isAbsolute(rel) && rel !== ".." && !rel.startsWith(`..${sep}`));

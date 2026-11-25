@@ -104,18 +104,6 @@ export interface AbandonmentRecord {
 	review: "approve" | "block" | "none";
 }
 
-/** Link from a post-rebase successor audit to its archived predecessor. */
-export interface RolloverLink {
-	auditId?: string;
-	task: string;
-	taskName?: string;
-	/** The predecessor's immutable pre-rebase start commit. */
-	startCommit: string;
-	/** Worktree HEAD at rollover time. */
-	head: string;
-	abandonedAt: string;
-}
-
 export interface AuditState {
 	/** Filesystem-safe task slug. */
 	task: string;
@@ -127,8 +115,6 @@ export interface AuditState {
 	provenancePath?: string;
 	provenance?: GitProvenance;
 	review?: ReviewSnapshot;
-	/** Present on a successor audit created by a rebase rollover. */
-	rolloverFrom?: RolloverLink;
 }
 
 export interface AuditStats {

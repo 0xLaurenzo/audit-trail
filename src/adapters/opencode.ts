@@ -1,5 +1,5 @@
 import { mkdir, writeFile } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import { tool } from "@opencode-ai/plugin";
 import { processRunner } from "../cli/main.ts";
 import {
@@ -9,7 +9,6 @@ import {
 	RESULT_VALUES,
 	buildActiveAuditGuidance,
 	formatBlockingReviewMessage,
-	isAuditManagedPath,
 	resolveWorktreeRoot,
 	runIndependentReview,
 	type AuditState,
@@ -188,20 +187,6 @@ export const AuditTrailPlugin = async ({ client, directory, runner: runnerOverri
 			output.system.push(buildActiveAuditGuidance(state.logPath));
 		},
 
-		"tool.execute.before": async (input: { tool: string }, output: { args: any }) => {
-			if (input.tool !== "write" && input.tool !== "edit") return;
-			const filePath = output?.args?.filePath;
-			if (typeof filePath !== "string" || !filePath) return;
-			const target = resolve(directory, filePath);
-			const { wf, error } = await activeState();
-			if (!isAuditManagedPath(wf.root, target)) return;
-			throw new Error(
-				error
-					? `Audit state is unreadable (${error}); refusing writes under .audit/.`
-					: "Audit artifacts are extension-managed; use audit lifecycle tools instead of editing .audit directly.",
-			);
-		},
-
 		tool: {
 			audit_start: tool({
 				description: "Create a new append-only decision audit; never resumes existing state.",
@@ -291,16 +276,6 @@ export const AuditTrailPlugin = async ({ client, directory, runner: runnerOverri
 					reason: z.string().describe("Why the audit cannot complete review and publication"),
 				},
 				execute: async (args, context) => (await server(context)).call("audit_abandon", args),
-			}),
-			audit_rollover: tool({
-				description:
-					"Archive a rebase-diverged audit as an immutable abandoned segment and start a linked successor at the current HEAD. Refuses while the start commit is still an ancestor of HEAD.",
-				args: {
-					task: z.string().describe("Exact task name of the active audit being rolled over"),
-					reason: z.string().describe("Why the audit cannot publish from its original start commit"),
-					name: z.string().optional().describe("Successor task name; defaults to '<task> (rebased)'"),
-				},
-				execute: async (args, context) => (await server(context)).call("audit_rollover", args),
 			}),
 			audit_publish: tool({
 				description:

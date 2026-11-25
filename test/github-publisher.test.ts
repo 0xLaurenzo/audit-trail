@@ -190,7 +190,6 @@ interface FakeOptions {
 	prHead?: string;
 	prBranch?: string;
 	repository?: string;
-	compare?: string;
 	login?: string;
 	comments?: FakeComment[];
 	onList?: (fake: FakeGitHub, listNumber: number) => void;
@@ -212,7 +211,6 @@ class FakeGitHub implements CommandRunner {
 	prHead: string;
 	prBranch: string;
 	repository: string;
-	compare: string;
 	login: string;
 	comments: FakeComment[];
 	calls: { command: string; args: string[] }[] = [];
@@ -233,7 +231,6 @@ class FakeGitHub implements CommandRunner {
 		this.prHead = options.prHead ?? this.head;
 		this.prBranch = options.prBranch ?? this.branch;
 		this.repository = options.repository ?? "owner/repo";
-		this.compare = options.compare ?? "ahead";
 		this.login = options.login ?? "reviewer";
 		this.comments = options.comments ?? [];
 		this.onList = options.onList;
@@ -274,7 +271,6 @@ class FakeGitHub implements CommandRunner {
 				stderr: "",
 			};
 		}
-		if (args.some((arg) => arg.includes("/compare/"))) return { code: 0, stdout: `${this.compare}\n`, stderr: "" };
 		if (args[1] === "user") return { code: 0, stdout: `${this.login}\n`, stderr: "" };
 		if (args.includes("--paginate")) {
 			this.listNumber += 1;
@@ -567,13 +563,12 @@ test("publisher rejects PR-head and local-checkout changes before comment mutati
 	assert.deepEqual(movingLocal.mutations, []);
 });
 
-test("publisher preserves exact checkout, repository, and ancestry validation", async () => {
+test("publisher preserves exact checkout and repository validation", async () => {
 	const stale = new FakeGitHub({ head: "local-head", prHead: "remote-head" });
 	await assert.rejects(
 		() => publishRawAudit({ runner: stale, state, rows: [], rawTsv: rawFor([]) }),
 		/does not match current checkout/,
 	);
-	assert.equal(stale.calls.some((call) => call.args.some((arg) => arg.includes("/compare/"))), false);
 
 	const fork = new FakeGitHub({ repository: "attacker/repo" });
 	await assert.rejects(
@@ -581,12 +576,6 @@ test("publisher preserves exact checkout, repository, and ancestry validation", 
 		/attacker\/repo.*does not match current checkout owner\/repo/,
 	);
 
-	const diverged = new FakeGitHub({ compare: "diverged" });
-	await assert.rejects(
-		() => publishRawAudit({ runner: diverged, state, rows: [], rawTsv: rawFor([]) }),
-		/does not descend.*diverged/,
-	);
-	assert.deepEqual(diverged.mutations, []);
 });
 
 test("detached and post-start branch publication retain explicit checkout intent checks", async () => {
@@ -610,7 +599,6 @@ test("detached and post-start branch publication retain explicit checkout intent
 		() => publishRawAudit({ runner: sibling, state: startedOnMain, rows: [], rawTsv: rawFor([]), selector: "4" }),
 		/does not match current checkout/,
 	);
-	assert.equal(sibling.calls.some((call) => call.args.some((arg) => arg.includes("/compare/"))), false);
 });
 
 test("publisher requires identity and a valid explicit owned set", async () => {

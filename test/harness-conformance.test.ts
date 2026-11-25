@@ -16,7 +16,7 @@ test("every shipped harness has a capability declaration and a conformance drive
 	assert.deepEqual(Object.keys(HARNESS_CAPABILITIES).sort(), shipped, "capability registry covers shipped harnesses");
 	assert.deepEqual(Object.keys(CONFORMANCE_DRIVERS).sort(), shipped, "conformance drivers cover shipped harnesses");
 	for (const harness of SHIPPED_HARNESSES) {
-		assert.equal(HARNESS_CAPABILITIES[harness].version, 2, `${harness} declares the current capability version`);
+		assert.equal(HARNESS_CAPABILITIES[harness].version, 3, `${harness} declares the current capability version`);
 		assert.equal(typeof CONFORMANCE_DRIVERS[harness], "function", `${harness} supplies a driver factory`);
 	}
 });

@@ -1,9 +1,6 @@
-import { realpath } from "node:fs/promises";
-import { basename, dirname, resolve } from "node:path";
 import {
 	AuditWorkflow,
 	buildActiveAuditGuidance,
-	isAuditManagedPath,
 	resolveWorktreeRoot,
 	type AuditState,
 	type CommandRunner,
@@ -31,53 +28,7 @@ async function lookupActive(runner: CommandRunner, cwd: string): Promise<ActiveL
 	}
 }
 
-async function canonicalPath(path: string): Promise<string> {
-	let current = resolve(path);
-	const missing: string[] = [];
-	for (;;) {
-		try {
-			return resolve(await realpath(current), ...missing.reverse());
-		} catch (error: any) {
-			if (error?.code !== "ENOENT") return resolve(path);
-			const parent = dirname(current);
-			if (parent === current) return resolve(path);
-			missing.push(basename(current));
-			current = parent;
-		}
-	}
-}
-
-function patchTargets(input: any, cwd: string): string[] {
-	const direct = input?.tool_input?.file_path;
-	if (typeof direct === "string" && direct) return [resolve(cwd, direct)];
-	const command = input?.tool_input?.command;
-	if (typeof command !== "string") return [];
-	const targets: string[] = [];
-	for (const line of command.split(/\r?\n/)) {
-		const match = /^(?:\*\*\* (?:Add|Update|Delete) File:|\*\*\* Move to:|\+\+\+|---)\s+(.+)$/.exec(line);
-		if (!match) continue;
-		let path = match[1].trim().replace(/^['"]|['"]$/g, "");
-		if (path === "/dev/null") continue;
-		path = path.replace(/^[ab]\//, "");
-		targets.push(resolve(cwd, path));
-	}
-	return [...new Set(targets)];
-}
-
-function deny(reason: string): CodexHookResult {
-	return {
-		output: JSON.stringify({
-			hookSpecificOutput: {
-				hookEventName: "PreToolUse",
-				permissionDecision: "deny",
-				permissionDecisionReason: reason,
-			},
-		}),
-		exitCode: 0,
-	};
-}
-
-/** Codex plugin hook entry point for session attribution/guidance and direct-edit protection. */
+/** Codex plugin hook entry point for session attribution and guidance. */
 export async function handleCodexHook(
 	rawInput: string,
 	runnerFor: (cwd: string) => CommandRunner,
@@ -122,22 +73,6 @@ export async function handleCodexHook(
 			}),
 			exitCode: 0,
 		};
-	}
-
-	if (input?.hook_event_name === "PreToolUse") {
-		if (!new Set(["apply_patch", "Write", "Edit"]).has(input.tool_name)) return { exitCode: 0 };
-		const lookup = await lookupActive(runner, cwd);
-		const rawCommand = typeof input?.tool_input?.command === "string" ? input.tool_input.command : "";
-		const targets = await Promise.all(patchTargets(input, cwd).map(canonicalPath));
-		const auditRoot = await canonicalPath(resolve(lookup.root, ".audit"));
-		const mentionsAudit = /(?:^|[\\/])\.audit[\\/]/m.test(rawCommand);
-		const targetsAudit = targets.some((target) => isAuditManagedPath(dirname(auditRoot), target));
-		if (!targetsAudit && (targets.length || !mentionsAudit)) return { exitCode: 0 };
-		return deny(
-			lookup.error
-				? `Audit state is unreadable (${lookup.error}); refusing writes under .audit/.`
-				: "Audit artifacts are extension-managed; use audit lifecycle tools instead of editing .audit directly.",
-		);
 	}
 
 	return { exitCode: 0 };

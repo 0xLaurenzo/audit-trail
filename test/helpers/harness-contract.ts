@@ -12,7 +12,7 @@ import test from "node:test";
 import { readActiveAudit } from "../../src/core/active-state.ts";
 import { REVIEW_OUTPUT_CONTRACT } from "../../src/core/review-output.ts";
 import type { HarnessCapabilities, ShippedHarness } from "../../src/harness/capabilities.ts";
-import { SENSITIVE_STDERR, corruptActiveState, type DriverFactory, type HarnessDriver } from "./harness-drivers.ts";
+import { SENSITIVE_STDERR, type DriverFactory, type HarnessDriver } from "./harness-drivers.ts";
 
 const TASK = "contract";
 
@@ -79,7 +79,6 @@ export function registerHarnessConformance({ harness, capabilities, createDriver
 		assert.equal((await driver.close()).completed, true);
 		const closedPath = join(root, ".audit", `${TASK}.closed.json`);
 		assert.ok(await readFile(closedPath, "utf8"));
-		assert.equal((await driver.attemptWrite(closedPath)).blocked, true, "closed lifecycle state remains managed");
 		await assert.rejects(() => driver.start(TASK), /reopen/i);
 		await driver.reopen(TASK);
 		const reopened = await readActiveAudit(root);
@@ -111,12 +110,6 @@ export function registerHarnessConformance({ harness, capabilities, createDriver
 		assert.equal(abandoned.abandonments[0].review, "none");
 		assert.equal(await readActiveAudit(root), undefined, "no audit remains active");
 		assert.match(await driver.status(), /abandoned: contract/i, "status identifies the abandoned terminal artifact");
-		assert.equal((await driver.attemptWrite(abandonedPath)).blocked, true, "abandoned lifecycle state remains managed");
-		assert.equal(
-			(await driver.attemptWrite(join(root, ".audit", `${TASK}.tsv`))).blocked,
-			true,
-			"the abandoned canonical TSV remains managed",
-		);
 
 		await assert.rejects(() => driver.start(TASK), /reopen/i);
 		await driver.reopen(TASK);
@@ -155,34 +148,6 @@ export function registerHarnessConformance({ harness, capabilities, createDriver
 		assert.ok(guidance, "guidance appears once the audit is active");
 		assert.match(guidance, /audit/i);
 		assert.match(guidance, new RegExp(`${TASK}\\.tsv`));
-	});
-
-	gated("managedFileGuard", "blocks writes to managed audit files and allows others", async (driver, root) => {
-		await driver.start(TASK);
-		const managed = await driver.attemptWrite(join(root, ".audit", `${TASK}.tsv`));
-		assert.equal(managed.blocked, true);
-		assert.match(managed.reason ?? "", /extension-managed|audit_decision/);
-		const state = await driver.attemptWrite(join(root, ".audit", "active.json"));
-		assert.equal(state.blocked, true);
-		const unrelated = await driver.attemptWrite(join(root, "src", "ok.ts"));
-		assert.equal(unrelated.blocked, false);
-	});
-
-	gated("managedFileGuard", "blocks direct writes anywhere under .audit even while idle", async (driver, root) => {
-		const managed = await driver.attemptWrite(join(root, ".audit", "archived.tsv"));
-		assert.equal(managed.blocked, true, "terminal and future audit artifacts stay managed without active.json");
-		assert.match(managed.reason ?? "", /extension-managed|lifecycle tools/);
-		assert.equal((await driver.attemptWrite(join(root, "src", "ok.ts"))).blocked, false);
-	});
-
-	gated("managedFileGuard", "fails closed over .audit when active state is unreadable", async (driver, root) => {
-		await driver.start(TASK);
-		await corruptActiveState(root);
-		const guarded = await driver.attemptWrite(join(root, ".audit", "anything.tsv"));
-		assert.equal(guarded.blocked, true);
-		assert.match(guarded.reason ?? "", /unreadable/);
-		const unrelated = await driver.attemptWrite(join(root, "src", "ok.ts"));
-		assert.equal(unrelated.blocked, false, "unrelated writes stay allowed even with unreadable state");
 	});
 
 	contract("rejects a non-allowlisted explicit reviewer before execution", async (driver, root) => {

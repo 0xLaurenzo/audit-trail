@@ -61,8 +61,6 @@ for (const harness of SHIPPED_HARNESSES) test(`${harness}: task audits share sta
 	assert.equal((await readActiveAudit(second))?.taskName, "Unrelated worktree task");
 	assert.equal((await invoke(first, "start", "Wrong audit")).code, 1);
 	await assert.rejects(openTaskAudit("../outside", noGit), /task audit UUID/);
-	assert.equal((await solo.attemptWrite(state.logPath)).blocked, true);
-	assert.equal((await solo.attemptWrite(join(second, ".audit", "active.json"))).blocked, true, "the checkout's own audit stays guarded");
 
 	// Separate processes must allocate decision IDs under the same storage lock.
 	const [, cliResult] = await Promise.all([
@@ -74,7 +72,6 @@ for (const harness of SHIPPED_HARNESSES) test(`${harness}: task audits share sta
 	assert.deepEqual(rows.map(({ id }) => id), ["D0001", "D0002"]);
 	assert.deepEqual(rows.map(({ decision }) => decision).sort(), ["CLI decision", "Pi decision"]);
 	assert.match(await solo.status(), new RegExp(`Task audit: ${id}`));
-	assert.equal((await invoke(second, "rollover", "Shared task", "--reason", "rebase")).code, 1);
 
 	const stdout: string[] = [], stderr: string[] = [];
 	const io = { out: (s: string) => stdout.push(s), err: (s: string) => stderr.push(s) };

@@ -407,11 +407,6 @@ description: Archive an unpublishable audit as abandoned without closing it as c
 ---
 ${OPENCODE_COMMAND_MARKER}Call the audit_abandon tool. Parse "$ARGUMENTS" as the exact task name and a required --reason <text>; pass them as task and reason. Report the tool output verbatim.
 `,
-	"audit-rollover": `---
-description: Archive a rebase-diverged audit and start a linked successor
----
-${OPENCODE_COMMAND_MARKER}Call the audit_rollover tool. Parse "$ARGUMENTS" as the exact task name, a required --reason <text>, and an optional --name <successor-task>; pass them as task, reason, and name. Report the tool output verbatim, including the range-diff instruction.
-`,
 	"audit-publish": `---
 description: Publish the audit to the current branch's pull request
 ---
