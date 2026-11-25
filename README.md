@@ -112,11 +112,11 @@ audit-trail publish [pr-number-or-url] [--set <comment-set-id>]
 audit-trail close
 ```
 
-CLI rows are attributed as `cli/<user>@<host>` in the TSV `session` cell. `audit-trail review` runs an allowlisted reviewer through a no-session `pi` subprocess against the TSV, Git diff, and repository (no transcript); unsupported model arguments fail before execution. Use `-C <dir>` to operate on another worktree.
+CLI rows are attributed per invocation as `cli/<user>@<host>:<uuid>` in the TSV `session` cell. `audit-trail review` runs an allowlisted reviewer through a no-session `pi` subprocess against the TSV, Git diff, and repository (no transcript); unsupported model arguments fail before execution. Use `-C <dir>` to operate on another worktree.
 
 ## MCP server
 
-`audit-trail mcp` serves the same eight operations as deterministic MCP tools over stdio — `audit_start`, `audit_resume`, `audit_reopen`, `audit_decision`, `audit_status`, `audit_review`, `audit_publish`, `audit_close` — for harnesses that integrate via MCP rather than a native extension. Rows are attributed as `mcp/<user>@<host>`. Example client registration:
+`audit-trail mcp` serves the same eight operations as deterministic MCP tools over stdio — `audit_start`, `audit_resume`, `audit_reopen`, `audit_decision`, `audit_status`, `audit_review`, `audit_publish`, `audit_close` — for harnesses that integrate via MCP rather than a native extension. Rows are attributed as `mcp/<user>@<host>:<uuid>`, stable for one server invocation (not a conversation ID). Neither generic surface invents a transcript entry ID. Example client registration:
 
 ```json
 {
