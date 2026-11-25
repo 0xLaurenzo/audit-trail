@@ -1,6 +1,20 @@
+import type { CommandRunner } from "./ports.ts";
 import { displayPath } from "./paths.ts";
 import type { AuditRow, AuditState } from "./types.ts";
 import { summarize } from "./validation.ts";
+
+/** Live checkout identity, not the provenance captured when the audit started. */
+export async function formatWorktreeTarget(root: string, runner: CommandRunner): Promise<string> {
+	const [repository, branch] = await Promise.all([
+		runner.exec("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"]),
+		runner.exec("git", ["branch", "--show-current"]),
+	]);
+	return [
+		`worktree: ${root}`,
+		`repository: ${repository.code === 0 ? repository.stdout.trim() : "unavailable"}`,
+		`branch: ${branch.code === 0 ? branch.stdout.trim() || "DETACHED" : "unavailable"}`,
+	].join("\n");
+}
 
 export function formatStatusLines(
 	state: AuditState,

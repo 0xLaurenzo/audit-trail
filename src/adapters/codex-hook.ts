@@ -117,7 +117,7 @@ export async function handleCodexHook(
 			output: JSON.stringify({
 				hookSpecificOutput: {
 					hookEventName: "SessionStart",
-					additionalContext: `${buildActiveAuditGuidance(lookup.state.logPath)}\nRecord decisions with the audit_decision tool from the audit-trail MCP server.`,
+					additionalContext: `${buildActiveAuditGuidance(lookup.state.logPath)}\nUse the audit_decision tool and other Codex MCP tools only for the SessionStart worktree. Pass the absolute implementation root as expectedWorktree; check audit_status first. If intentionally targeting a different linked worktree or MCP is unavailable, use audit-trail -C <target> for the whole workflow, including decisions. Report conflicting instructions; do not mix interfaces.`,
 				},
 			}),
 			exitCode: 0,

@@ -80,9 +80,9 @@ export function createGitHubStub(root: string): GitHubStub {
 		enabled: false,
 		prHeadOid: "head-contract",
 		handle(command, args) {
+			if (command === "git" && args[0] === "rev-parse" && args[1] === "--show-toplevel") return ok(root);
 			if (!stub.enabled) return undefined;
 			if (command === "git") {
-				if (args[0] === "rev-parse" && args[1] === "--show-toplevel") return ok(root);
 				if (args[0] === "remote") return ok("git@github.com:owner/repo.git");
 				if (args[0] === "branch") return ok("feature/contract");
 				if (args[0] === "rev-parse") return ok("head-contract");
@@ -534,13 +534,13 @@ export const createCodexDriver: DriverFactory = async (root) => {
 		exec: (command, args, options) =>
 			command === "codex" ? codexRunner.exec(command, args, options) : gitRunner.exec(command, args, options),
 	};
-	const server = createCodexMcpHandler(root, () => runner, "codex-contract-fallback", env);
+	const server = createCodexMcpHandler(root, () => runner, env);
 	const call = async (name: string, args: object): Promise<string> => {
 		const response: any = await server.handle({
 			jsonrpc: "2.0",
 			id: 1,
 			method: "tools/call",
-			params: { name, arguments: args, _meta: { threadId: "codex-contract-session" } },
+			params: { name, arguments: { ...args, expectedWorktree: root }, _meta: { threadId: "codex-contract-session" } },
 		});
 		const text = response.result.content[0].text;
 		if (response.result.isError) throw new Error(text);

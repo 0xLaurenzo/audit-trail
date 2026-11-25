@@ -21,7 +21,7 @@ async function cliAvailable(command: string): Promise<boolean> {
 const hasCodex = await cliAvailable("codex");
 const hasClaude = await cliAvailable("claude");
 
-async function callCodexMcp(bin: string, cwd: string, env: NodeJS.ProcessEnv, threadId: string): Promise<string> {
+async function callCodexMcp(bin: string, cwd: string, env: NodeJS.ProcessEnv, threadId: string, expectedWorktree: string): Promise<string> {
 	return new Promise((resolveCall, rejectCall) => {
 		const child = execFile(bin, ["mcp", "--harness", "codex"], { cwd, env, timeout: 10_000 }, (error, stdout, stderr) => {
 			if (error) return rejectCall(new Error(`installed Codex MCP failed: ${stderr || error.message}`));
@@ -34,7 +34,7 @@ async function callCodexMcp(bin: string, cwd: string, env: NodeJS.ProcessEnv, th
 		});
 		child.stdin?.end(
 			`${JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18" } })}\n` +
-				`${JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "audit_start", arguments: { task: "marketplace-codex" }, _meta: { threadId } } })}\n`,
+				`${JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "audit_start", arguments: { task: "marketplace-codex", expectedWorktree }, _meta: { threadId } } })}\n`,
 		);
 	});
 }
@@ -47,6 +47,7 @@ async function assertBarePluginRuns(cacheRoot: string, testCodexMcp = false): Pr
 	const worktree = await mkdtemp(join(tmpdir(), "audit-marketplace-wt-"));
 	const stateHome = await mkdtemp(join(tmpdir(), "audit-marketplace-state-"));
 	try {
+		await execFileAsync("git", ["init", worktree]);
 		const env = { ...process.env, XDG_STATE_HOME: stateHome };
 		for (const [command, payload] of [
 			["claude-hook", { hook_event_name: "SessionStart", session_id: "mk-1", source: "startup", cwd: worktree }],
@@ -60,7 +61,7 @@ async function assertBarePluginRuns(cacheRoot: string, testCodexMcp = false): Pr
 			});
 		}
 		if (testCodexMcp) {
-			assert.match(await callCodexMcp(bin, cacheRoot, env, "mk-2"), /Started decision audit/);
+			assert.match(await callCodexMcp(bin, cacheRoot, env, "mk-2", worktree), /Started decision audit/);
 			assert.match(await readFile(join(worktree, ".audit", "marketplace-codex.tsv"), "utf8"), /^id\tts\tsession/);
 			await assert.rejects(() => lstat(join(cacheRoot, ".audit")), /ENOENT/);
 		}
